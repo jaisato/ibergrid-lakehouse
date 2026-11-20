@@ -1,0 +1,28 @@
+# One monthly multi-ecosystem group: uv and GitHub Actions arrive together in a single PR, which
+# keeps CI runs (and Actions minutes) to one per month. The 7-day cooldown skips releases that are
+# only days old. Docker images are pinned by digest in the compose files and the Dockerfile and
+# are updated by hand.
+version: 2
+
+multi-ecosystem-groups:
+  monthly:
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: github-actions
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
