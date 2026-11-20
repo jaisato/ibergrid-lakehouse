@@ -1,0 +1,89 @@
+[project]
+name = "ibergrid"
+version = "0.1.0"
+description = "Open, multi-engine lakehouse for Iberian electricity data on Apache Iceberg"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jairo Sarabia" }]
+requires-python = ">=3.12,<3.13"
+classifiers = [
+  "Programming Language :: Python :: 3.12",
+  "Private :: Do Not Upload",
+]
+dependencies = [
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2.16,<3",
+  "structlog>=26,<27",
+  "typer>=0.27,<1",
+]
+
+[project.scripts]
+ibergrid = "ibergrid.cli:app"
+
+[dependency-groups]
+dev = [
+  "mypy>=2.4",
+  "pip-audit>=2.10",
+  "pre-commit>=4.7",
+  "pytest>=9.2",
+  "pytest-cov>=7.1",
+  "ruff==0.17.3",
+]
+
+[build-system]
+requires = ["hatchling>=1.33"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ibergrid"]
+
+[tool.uv]
+required-version = ">=0.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PT", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use throwaway credentials and drive docker compose through subprocess.
+"tests/**" = ["S101", "S105", "S106", "S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ibergrid"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+  "integration: needs the docker compose stack running (make up)",
+]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["ibergrid"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+]
