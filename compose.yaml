@@ -1,0 +1,211 @@
+# IberGrid Lakehouse: one container per service, environment-agnostic base.
+#   Local:      docker compose --profile local-storage up -d --wait --build   (make up)
+#               compose.override.yaml is loaded automatically: build from source, 127.0.0.1 ports.
+#   Production: docker compose -f compose.yaml -f compose.prod.yaml up -d --wait
+#               Object storage is Cloudflare R2, so the local-storage profile stays off.
+# Secrets come from .env (make env) with no defaults: compose refuses to start without them.
+name: ibergrid
+
+x-hardened: &hardened
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+x-lakekeeper-env: &lakekeeper-env
+  LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env (make env)}@catalog-db:5432/lakekeeper
+  LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env (make env)}@catalog-db:5432/lakekeeper
+  LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY:?set LAKEKEEPER_ENCRYPTION_KEY in .env (make env)}
+  LAKEKEEPER__BASE_URI: http://catalog:8181
+  RUST_LOG: info
+
+# The ibergrid app image (catalog-init, doctor). Same variable names as ibergrid.settings.
+x-app: &app
+  <<: *hardened
+  image: ibergrid-app:local
+  restart: "no"
+  mem_limit: 192m
+  environment:
+    IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:-http://storage:9000}
+    IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-us-east-1}
+    IBERGRID_S3_BUCKET: ${IBERGRID_S3_BUCKET:-ibergrid}
+    IBERGRID_S3_ACCESS_KEY: ${IBERGRID_S3_ACCESS_KEY:?set IBERGRID_S3_ACCESS_KEY in .env (make env)}
+    IBERGRID_S3_SECRET_KEY: ${IBERGRID_S3_SECRET_KEY:?set IBERGRID_S3_SECRET_KEY in .env (make env)}
+    IBERGRID_S3_PATH_STYLE: "true"
+    IBERGRID_CATALOG_URL: http://catalog:8181
+    IBERGRID_CATALOG_WAREHOUSE: ${IBERGRID_CATALOG_WAREHOUSE:-lakehouse}
+    IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
+    IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
+    IBERGRID_LOG_FORMAT: json
+
+services:
+  # --- Object storage (local only; production uses Cloudflare R2) --------------------------------
+  storage:
+    <<: *hardened
+    profiles: [local-storage]
+    image: rustfs/rustfs:1.0.6@sha256:ee717072290bec9b11abfc0365f8310b00df1cd9b3639943edae47bdef05044a
+    restart: on-failure
+    mem_limit: 512m
+    environment:
+      RUSTFS_ACCESS_KEY: ${IBERGRID_S3_ACCESS_KEY:?set IBERGRID_S3_ACCESS_KEY in .env (make env)}
+      RUSTFS_SECRET_KEY: ${IBERGRID_S3_SECRET_KEY:?set IBERGRID_S3_SECRET_KEY in .env (make env)}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - storage-data:/data
+    networks: [storage]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: create the bucket; an existing bucket is fine.
+  storage-init:
+    <<: *hardened
+    profiles: [local-storage]
+    image: amazon/aws-cli:2.41.2@sha256:7a77ccb39e3272191adbf905c50db8c127db88fd79454911a41a6b1c0e419e9b
+    user: "65534:65534"
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      storage:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: ${IBERGRID_S3_ACCESS_KEY:?set IBERGRID_S3_ACCESS_KEY in .env (make env)}
+      AWS_SECRET_ACCESS_KEY: ${IBERGRID_S3_SECRET_KEY:?set IBERGRID_S3_SECRET_KEY in .env (make env)}
+      AWS_DEFAULT_REGION: ${IBERGRID_S3_REGION:-us-east-1}
+      AWS_ENDPOINT_URL: http://storage:9000
+      BUCKET: ${IBERGRID_S3_BUCKET:-ibergrid}
+      HOME: /tmp
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if out=$$(aws s3api create-bucket --bucket "$$BUCKET" 2>&1); then
+          echo "created bucket $$BUCKET"
+        else
+          case "$$out" in
+            *BucketAlreadyOwnedByYou*) echo "bucket $$BUCKET already exists" ;;
+            *) echo "$$out" >&2; exit 1 ;;
+          esac
+        fi
+    networks: [storage]
+
+  # --- Catalog: Lakekeeper (Iceberg REST) on Postgres --------------------------------------------
+  catalog-db:
+    <<: *hardened
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
+    # The image's postgres user (uid 70) owns the data directory, so no capability is needed.
+    user: postgres
+    restart: on-failure
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: lakekeeper
+      POSTGRES_DB: lakekeeper
+      POSTGRES_PASSWORD: ${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env (make env)}
+    volumes:
+      - catalog-db-data:/var/lib/postgresql/data
+    networks: [catalog-db]
+    healthcheck:
+      # Over TCP: during the first start the entrypoint runs a socket-only server for initdb.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "lakekeeper", "-d", "lakekeeper"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: apply Lakekeeper's schema migrations.
+  catalog-migrate:
+    <<: *hardened
+    image: quay.io/lakekeeper/catalog:v0.15.1@sha256:22dcb6044c106a962c242b70051bd226bd50c9134c763121d8713c37fe9a70ec
+    command: ["migrate"]
+    restart: "no"
+    mem_limit: 256m
+    environment: *lakekeeper-env
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+    networks: [catalog-db]
+
+  catalog:
+    <<: *hardened
+    image: quay.io/lakekeeper/catalog:v0.15.1@sha256:22dcb6044c106a962c242b70051bd226bd50c9134c763121d8713c37fe9a70ec
+    command: ["serve"]
+    restart: on-failure
+    mem_limit: 256m
+    environment: *lakekeeper-env
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+      catalog-migrate:
+        condition: service_completed_successfully
+    # catalog-db for its state, catalog for clients, storage to validate and reach the warehouse.
+    networks: [catalog-db, catalog, storage]
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: bootstrap Lakekeeper and create the warehouse (idempotent).
+  catalog-init:
+    <<: *app
+    command: ["catalog", "bootstrap"]
+    depends_on:
+      catalog:
+        condition: service_healthy
+      # Only when the local-storage profile is on; in production the bucket already exists in R2.
+      storage-init:
+        condition: service_completed_successfully
+        required: false
+    networks: [catalog]
+
+  # --- Broker: Redpanda (Kafka API), single node -------------------------------------------------
+  broker:
+    <<: *hardened
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2@sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96
+    restart: on-failure
+    mem_limit: 1536m
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      # internal for containers; external is only reachable where compose.override.yaml publishes it.
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://broker:9092,external://127.0.0.1:29092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=broker:33145
+    volumes:
+      - broker-data:/var/lib/redpanda/data
+    networks: [broker]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy:[[:space:]]+true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # --- Tools -------------------------------------------------------------------------------------
+  # Readiness report from inside the network: `docker compose run --rm --no-deps doctor` (make smoke
+  # and the deploy job). scale 0: `up` never starts it. Its depends_on also matters to
+  # `up --wait`, which treats a one-shot that nothing depends on as failed once it exits; with a
+  # dependent, compose waits for catalog-init to complete successfully instead.
+  doctor:
+    <<: *app
+    scale: 0
+    command: ["doctor"]
+    depends_on:
+      catalog-init:
+        condition: service_completed_successfully
+    networks: [storage, catalog, broker]
+
+networks:
+  storage:
+  catalog:
+  broker:
+  # Postgres needs no egress: only Lakekeeper talks to it.
+  catalog-db:
+    internal: true
+
+volumes:
+  storage-data:
+  catalog-db-data:
+  broker-data:

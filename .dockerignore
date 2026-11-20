@@ -1,0 +1,8 @@
+# Only what the image build copies; everything else (including .env) stays out of the context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__

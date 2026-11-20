@@ -1,0 +1,20 @@
+# Local development, loaded automatically by `docker compose` (not when -f is given):
+# build the app image from source and publish ports on 127.0.0.1 only, in the 28xxx-29xxx range.
+x-build: &build
+  build:
+    context: .
+
+services:
+  storage:
+    ports:
+      - "127.0.0.1:29000:9000" # S3 API
+      - "127.0.0.1:29001:9001" # RustFS web console
+  catalog:
+    ports:
+      - "127.0.0.1:28181:8181" # Iceberg REST catalog and management API
+  broker:
+    ports:
+      - "127.0.0.1:29092:19092" # Kafka API (external listener)
+      - "127.0.0.1:29644:9644" # Redpanda admin API
+  catalog-init: *build
+  doctor: *build
