@@ -158,7 +158,6 @@ def test_transform_settings_reads_its_prefix_and_validates_threads(
 def test_quality_maintenance_and_lineage_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     defaults = Settings()
     assert defaults.quality.contracts_dir is None
-    assert defaults.quality.reconciliation_tolerance_eur_mwh == 0.02
     assert (
         defaults.maintenance.snapshot_retention_days,
         defaults.maintenance.retain_last_snapshots,

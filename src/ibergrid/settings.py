@@ -157,8 +157,6 @@ class QualitySettings(BaseSettings):
 
     # Baked at /opt/ibergrid/contracts/soda in the orchestration image; auto-discovered locally.
     contracts_dir: str | None = None
-    # Max EUR/MWh difference allowed between OMIE Spain day-ahead and REData peninsular spot.
-    reconciliation_tolerance_eur_mwh: float = Field(default=0.02, ge=0.0)
 
 
 class MaintenanceSettings(BaseSettings):
