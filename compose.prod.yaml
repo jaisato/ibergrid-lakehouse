@@ -47,9 +47,10 @@ services:
     <<: *long-running
     # Production mode instead of dev-container: no --unsafe-bypass-fsync, and Redpanda's startup
     # checks run. The image's redpanda.yaml sets developer_mode, which `rpk redpanda mode
-    # production` turns off first. --reserve-memory=0M: the container's limit is the reserve.
+    # production` turns off first; as in compose.yaml, the unauthenticated HTTP Proxy and Schema
+    # Registry sections go too. --reserve-memory=0M: the container's limit is the reserve.
     entrypoint:
-      ["/bin/bash", "-c", "rpk redpanda mode production > /dev/null && exec /entrypoint.sh \"$$@\"", "broker"]
+      ["/bin/bash", "-c", "rpk redpanda mode production > /dev/null && sed -i '/^pandaproxy:/d; /^schema_registry:/d' /etc/redpanda/redpanda.yaml && exec /entrypoint.sh \"$$@\"", "broker"]
     command:
       - redpanda
       - start
