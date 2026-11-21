@@ -14,3 +14,10 @@ indent_size = 2
 
 [Makefile]
 indent_style = tab
+
+# OMIE's files as downloaded: Latin-1, CRLF, never reformatted (the tests pin their SHA-256).
+[tests/fixtures/omie/**]
+charset = latin1
+end_of_line = crlf
+insert_final_newline = false
+trim_trailing_whitespace = false

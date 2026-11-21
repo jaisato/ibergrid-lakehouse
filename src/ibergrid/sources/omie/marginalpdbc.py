@@ -28,7 +28,7 @@ MADRID = ZoneInfo("Europe/Madrid")
 CUTOVER = date(2025, 10, 1)  # the first delivery day of 15-minute periods
 HEADER, TRAILER = "MARGINALPDBC;", "*"
 _PRICE = r"(-?\d+(?:\.\d+)?)"
-_LINE = re.compile(rf"(\d{{4}});(\d{{2}});(\d{{2}});(\d{{1,3}});{_PRICE};{_PRICE};")
+_LINE = re.compile(rf"(\d{{4}});(\d{{2}});(\d{{2}});([1-9]\d{{0,2}});{_PRICE};{_PRICE};")
 # SDAC's harmonised clearing-price limits, EUR/MWh: counted per column, never refused.
 PRICE_LIMITS = (-500.0, 4000.0)
 PRICE_COLUMNS = {"es": "price_es_eur_mwh", "pt": "price_pt_eur_mwh"}
@@ -51,11 +51,11 @@ V1, V2 = Contract(1, timedelta(hours=1)), Contract(2, timedelta(minutes=15))
 class InvalidFile(OmieError):
     """The file breaks its contract: nothing of its chunk was landed or written."""
 
-    def __init__(self, day: date, problems: list[str]) -> None:
+    def __init__(self, name: str, problems: list[str]) -> None:
         shown = "; ".join(problems[:MAX_PROBLEMS_SHOWN])
         more = len(problems) - MAX_PROBLEMS_SHOWN
         suffix = f" (and {more} more)" if more > 0 else ""
-        super().__init__(f"{file_name(day)}: invalid OMIE file: {shown}{suffix}")
+        super().__init__(f"{name}: invalid OMIE file: {shown}{suffix}")
         self.problems = problems
 
 
@@ -71,8 +71,13 @@ class Period:
 @dataclass(frozen=True)
 class DayFile:
     day: date
+    version: int  # OMIE's file version, the N of marginalpdbc_<YYYYMMDD>.N
     contract: Contract
     periods: tuple[Period, ...]
+
+    @property
+    def name(self) -> str:
+        return file_name(self.day, self.version)
 
 
 def contract_for(day: date) -> Contract:
@@ -88,15 +93,18 @@ def expected_periods(day: date, contract: Contract) -> int:
     return (utc_midnight(day + timedelta(days=1)) - utc_midnight(day)) // contract.resolution
 
 
-def parse(payload: bytes, day: date) -> DayFile:
-    """The periods of ``day``'s file, or ``InvalidFile`` listing every problem found."""
+def parse(payload: bytes, day: date, version: int = 1) -> DayFile:
+    """The periods of ``day``'s file (OMIE's version ``version``), or ``InvalidFile`` listing every
+    problem found."""
     lines = payload.decode("latin-1").split("\n")  # every byte is Latin-1: decoding cannot fail
     if lines[-1] == "":
         lines.pop()  # the final line end
     lines = [line.removesuffix("\r") for line in lines]
     if not lines or lines[0] != HEADER:
         first = lines[0][:40] if lines else ""
-        raise InvalidFile(day, [f"line 1 is {first!r}, not the header {HEADER!r}"])
+        raise InvalidFile(
+            file_name(day, version), [f"line 1 is {first!r}, not the header {HEADER!r}"]
+        )
     problems = []
     if len(lines) < 2 or lines[-1] != TRAILER:
         problems.append(f"the last line is not the trailer {TRAILER!r}")
@@ -116,10 +124,11 @@ def parse(payload: bytes, day: date) -> DayFile:
     if not problems:
         problems = _check_periods(day, contract, [row[0] for row in rows])
     if problems:
-        raise InvalidFile(day, problems)
+        raise InvalidFile(file_name(day, version), problems)
     start = utc_midnight(day)
     return DayFile(
         day,
+        version,
         contract,
         tuple(
             Period(
@@ -157,7 +166,8 @@ def to_rows(day_file: DayFile, **constant: Any) -> list[dict[str, Any]]:
             "price_es_eur_mwh": period.price_es,
             "price_pt_eur_mwh": period.price_pt,
             "contract_version": day_file.contract.version,
-            "source_file": file_name(day_file.day),
+            "source_file": day_file.name,
+            "file_version": day_file.version,
             **constant,
         }
         for period in day_file.periods

@@ -193,13 +193,27 @@ def _print_chunk(report: ChunkReport) -> None:
 def ingest_omie(
     start: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="First delivery day.")],
     end: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="Last delivery day.")],
+    require_published: Annotated[
+        bool,
+        typer.Option(
+            "--require-published",
+            help="Exit 1, not 0, when a delivery day after today is not published yet.",
+        ),
+    ] = False,
 ) -> None:
     """Download OMIE's day-ahead marginal prices for delivery days [start, end] and publish them
     to bronze.omie_day_ahead_prices, one month at a time; a rerun replaces the same rows. Stops
-    at the first day OMIE has not published yet (exit 0); exits 1 at the first failed chunk."""
+    at the first day OMIE has not published yet (exit 0, or 1 with --require-published); exits 1
+    at the first failed chunk."""
     settings = _load_settings()
     try:
-        reports = omie_ingest.ingest(settings, start.date(), end.date(), on_chunk=_print_omie_chunk)
+        reports = omie_ingest.ingest(
+            settings,
+            start.date(),
+            end.date(),
+            on_chunk=_print_omie_chunk,
+            require_published=require_published,
+        )
     # OSError: the catalog or the bucket did not answer; RESTError: the catalog refused.
     except (OmieError, WapError, ValueError, OSError, RESTError) as exc:
         _fail(exc)

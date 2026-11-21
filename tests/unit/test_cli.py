@@ -545,4 +545,28 @@ def test_ingest_omie_exits_1_at_a_missing_past_day() -> None:
     assert result.stdout.startswith("omie: 2025-09-30..2025-09-30: ")  # published, and kept
     assert "chunk(s) published" not in result.stdout
     error_line = result.stderr.splitlines()[-1]
-    assert error_line.startswith("error: OMIE has no marginalpdbc_20251002.1: delivery day")
+    assert error_line.startswith("error: OMIE has no marginalpdbc_20251002.1 to .5: delivery day")
+
+
+def test_ingest_omie_can_require_publication(
+    omie_stack: FakeOmie, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omie_ingest, "madrid_today", lambda: date(2026, 11, 17))
+    args = ["ingest", "omie", "--start", "2026-11-18", "--end", "2026-11-19", "--require-published"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert "chunk(s) published" not in result.stdout
+    assert result.stderr.splitlines()[-1] == (
+        "error: OMIE has not published marginalpdbc_20261119.1 to .5 yet (delivery day "
+        "2026-11-19, today is 2026-11-17 in Madrid) and publication was required"
+    )
+
+
+@pytest.mark.usefixtures("omie_stack")
+def test_ingest_omie_finds_a_republished_day() -> None:
+    result = runner.invoke(app, ["ingest", "omie", "--start", "2023-05-28", "--end", "2023-05-28"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("omie: 2023-05-28..2023-05-28: 1 file(s) (v1 1), 24 rows, ")

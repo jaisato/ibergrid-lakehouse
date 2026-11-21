@@ -128,16 +128,36 @@ def test_the_100_quarter_hour_day(
     assert_landed(wired, rows, target.landing_prefix)
 
 
+def test_a_day_omie_republished_under_version_3(
+    wired: Settings, target: Target, con: duckdb.DuckDBPyConnection
+) -> None:
+    [report] = ingest(
+        wired,
+        date(2025, 10, 30),
+        date(2025, 10, 30),
+        run_id_prefix="it-v3",
+        table=target.table,
+        landing_prefix=target.landing_prefix,
+    )
+
+    rows = main_rows(con, target.duck)
+    assert report.rows == len(rows) == 96
+    assert {(r["source_file"], r["file_version"]) for r in rows} == {("marginalpdbc_20251030.3", 3)}
+    assert_landed(wired, rows, target.landing_prefix)
+
+
 def assert_landed(settings: Settings, rows: list[dict[str, Any]], prefix: str) -> None:
     """Each original file sits, byte for byte, at its key under the prefix, outside the
     warehouse."""
     s3 = s3_filesystem(settings.storage, timeout=5)
-    for day, path in {(r["delivery_date"], r["landing_path"]) for r in rows}:
+    for day, version, path in {
+        (r["delivery_date"], r["file_version"], r["landing_path"]) for r in rows
+    }:
         key = path.removeprefix("s3://")
         assert key.startswith(f"{settings.storage.bucket}/{prefix}/{day:%Y}/{day:%m}/")
         assert not key.startswith(f"{settings.storage.bucket}/{settings.catalog.warehouse}/")
         with s3.open_input_stream(key) as stored:
             body = stored.read()
         assert body == omie_file(str(day))
-        assert key.endswith(f"-{hashlib.sha256(body).hexdigest()[:12]}.1")
+        assert key.endswith(f"-{hashlib.sha256(body).hexdigest()[:12]}.{version}")
         assert s3.get_file_info(key).type == fs.FileType.File

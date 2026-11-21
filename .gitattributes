@@ -1,4 +1,4 @@
 # LF everywhere: scripts and compose files run inside Linux containers and on a Linux server.
 * text=auto eol=lf
 # OMIE's files as downloaded (Latin-1, CRLF): the tests hash and parse these exact bytes.
-tests/fixtures/omie/*.1 -text
+tests/fixtures/omie/** -text

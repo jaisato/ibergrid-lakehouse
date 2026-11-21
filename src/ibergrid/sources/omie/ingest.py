@@ -6,9 +6,10 @@ lands at a key named by its day and content, and the rows go to an audit branch 
 the chunk's delivery days, the branch is read back and published. The audit requires the batch
 inside the window (row count and unique keys) and, outside it, as many rows as on the run's base.
 
-A day OMIE has no file for ends the ingestion where it is: a delivery day after today (Madrid)
-has simply not been published yet, so the days before it are written and nothing after it is
-asked for; a missing day up to today is an error and the chunk writes nothing. Chunks run in
+A day OMIE has no file for (no version ``.1`` to ``.5``) ends the ingestion where it is: a
+delivery day after today (Madrid) has not been published yet, so the days before it are written
+and nothing after it is asked for, unless the caller requires publication, which makes it an
+error; a missing day up to today is always an error, and the chunk writes nothing. Chunks run in
 order and stop at the first failure; the ones already published stay published.
 """
 
@@ -32,7 +33,7 @@ from ibergrid.lake import wap
 from ibergrid.lake.catalog import rest_catalog
 from ibergrid.lake.registry import OMIE_DAY_AHEAD_PRICES
 from ibergrid.settings import Settings
-from ibergrid.sources.omie.client import OmieClient, OmieError, file_name
+from ibergrid.sources.omie.client import OmieClient, OmieError, all_versions
 from ibergrid.sources.omie.marginalpdbc import MADRID, DayFile, outside_limits, parse, to_rows
 from ibergrid.storage import land, s3_filesystem
 
@@ -81,7 +82,7 @@ class ChunkReport:
     rows: int
     versions: dict[int, int]  # contract version -> files
     violations: dict[str, int]  # price column -> periods outside the harmonised limits
-    not_published_from: date | None  # the first delivery day OMIE had no file for yet
+    not_published_from: date | None  # the first delivery day after today OMIE had no file for
     snapshot_id: int | None  # main's head after the publish
     run_id: str | None
 
@@ -99,14 +100,17 @@ def plan(start: date, end: date) -> list[Chunk]:
     return chunks
 
 
-def landing_key(prefix: str, day: date, content_sha256: str) -> str:
-    """Outside the warehouse prefix, named by day and content: a rerun that downloads the same
-    bytes overwrites the same object, a file OMIE changed gets its own."""
-    return f"{prefix}/{day:%Y}/{day:%m}/marginalpdbc_{day:%Y%m%d}-{content_sha256[:12]}.1"
+def landing_key(prefix: str, day: date, version: int, content_sha256: str) -> str:
+    """Outside the warehouse prefix, named by day, content and OMIE's version (the extension): a
+    rerun that downloads the same bytes overwrites the same object, a file OMIE changed, in place
+    or under a new version, gets its own."""
+    stem = f"marginalpdbc_{day:%Y%m%d}-{content_sha256[:12]}"
+    return f"{prefix}/{day:%Y}/{day:%m}/{stem}.{version}"
 
 
-def madrid_today() -> date:
-    return datetime.now(MADRID).date()
+def madrid_today(now: datetime | None = None) -> date:
+    """The date in Madrid at ``now`` (default: the system clock)."""
+    return (now or datetime.now(UTC)).astimezone(MADRID).date()
 
 
 def ingest(
@@ -118,8 +122,14 @@ def ingest(
     *,
     table: tuple[str, str] = OMIE_DAY_AHEAD_PRICES.identifier,
     landing_prefix: str = LANDING_PREFIX,
+    require_published: bool = False,
 ) -> list[ChunkReport]:
     """Ingest delivery days [start, end], up to the last one OMIE has published.
+
+    The last report's ``not_published_from`` is the first delivery day OMIE had no file for yet
+    (None when every day was out); with ``require_published`` such a day raises ``OmieError``
+    instead, after the chunks before it are published. Today (Madrid) is read once, when the call
+    starts: a run that crosses Madrid's midnight still judges by the day it started on.
 
     ``run_id_prefix`` names the runs (an orchestrator's run id, for example); by default a UTC
     timestamp and a random suffix. ``on_chunk`` sees each chunk's report once it is done.
@@ -148,6 +158,7 @@ def ingest(
             prefix,
             landing_prefix,
             today=today,
+            require_published=require_published,
         )
         if on_chunk is not None:
             on_chunk(report)
@@ -167,20 +178,27 @@ def ingest_chunk(
     landing_prefix: str = LANDING_PREFIX,
     *,
     today: date,
+    require_published: bool = False,
 ) -> ChunkReport:
     downloads: list[tuple[DayFile, bytes, datetime]] = []
     not_published = None
     for day in chunk.days:
-        payload = client.fetch(day)
-        if payload is None:
+        found = client.fetch(day)
+        if found is None:
             if day <= today:
                 raise OmieError(
-                    f"OMIE has no {file_name(day)}: delivery day {day} is not in the future "
+                    f"OMIE has no {all_versions(day)}: delivery day {day} is not in the future "
                     f"(today is {today} in Madrid), so its results should be out"
+                )
+            if require_published:
+                raise OmieError(
+                    f"OMIE has not published {all_versions(day)} yet (delivery day {day}, today "
+                    f"is {today} in Madrid) and publication was required"
                 )
             not_published = day
             break
-        downloads.append((parse(payload, day), payload, datetime.now(UTC)))
+        parsed = parse(found.payload, day, found.version)
+        downloads.append((parsed, found.payload, datetime.now(UTC)))
     if not downloads:
         log.info(
             "omie.not_published", window=f"{chunk.start}/{chunk.end}", since=str(not_published)
@@ -191,7 +209,7 @@ def ingest_chunk(
     landed = []
     for day_file, payload, fetched_at in downloads:
         sha256 = hashlib.sha256(payload).hexdigest()
-        key = landing_key(landing_prefix, day_file.day, sha256)
+        key = landing_key(landing_prefix, day_file.day, day_file.version, sha256)
         path = land(filesystem, bucket, key, payload, content_type="text/plain; charset=ISO-8859-1")
         landed.append(
             (day_file, {"fetched_at": fetched_at, "content_sha256": sha256, "landing_path": path})

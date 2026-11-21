@@ -199,11 +199,13 @@ NOT_PUBLISHED = b'<!DOCTYPE html>\n<html lang="es" dir="ltr">\n  <head>\n'
 
 
 class FakeOmie:
-    """OMIE's file downloads answered from the recorded files (``tests/fixtures/omie``); a day
-    without one gets OMIE's 404 page. ``files`` replaces or adds a day's bytes by file name."""
+    """OMIE's file downloads answered from the recorded files (``tests/fixtures/omie``, under
+    OMIE's own names); any other name gets OMIE's 404 page. ``files`` replaces or adds a file's
+    bytes by name, and the names in ``gone`` answer 404 (a file OMIE replaced)."""
 
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
+        self.gone: set[str] = set()
 
     def __call__(self, request: Recorded) -> tuple[int, Any]:
         path, _, query = request.path.partition("?")
@@ -211,6 +213,8 @@ class FakeOmie:
         if path != "/es/file-download" or params.get("parents") != "marginalpdbc":
             return 404, NOT_PUBLISHED
         name = params.get("filename", "")
+        if name in self.gone:
+            return 404, NOT_PUBLISHED
         if name in self.files:
             return 200, self.files[name]
         answer = OMIE_FIXTURES / name
@@ -222,8 +226,9 @@ class FakeOmie:
 
 
 def omie_file(day: str) -> bytes:
-    """The recorded file of an ISO delivery day."""
-    return (OMIE_FIXTURES / f"marginalpdbc_{day.replace('-', '')}.1").read_bytes()
+    """The recorded file of an ISO delivery day, whatever its version."""
+    [path] = OMIE_FIXTURES.glob(f"marginalpdbc_{day.replace('-', '')}.*")
+    return path.read_bytes()
 
 
 def error(kind: str, message: str, code: int) -> dict[str, Any]:

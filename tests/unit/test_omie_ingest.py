@@ -36,7 +36,7 @@ from ibergrid.sources.omie.ingest import (
     ingest_chunk,
     plan,
 )
-from ibergrid.sources.omie.marginalpdbc import MADRID, InvalidFile
+from ibergrid.sources.omie.marginalpdbc import InvalidFile
 
 from .conftest import FakeOmie, LocalServer, Responder, omie_file
 
@@ -90,8 +90,26 @@ def run(
     chunk: Chunk,
     prefix: str = "t",
     today: date = TODAY,
+    require_published: bool = False,
 ) -> ChunkReport:
-    return ingest_chunk(table, client, landing, BUCKET, chunk, prefix, today=today)
+    return ingest_chunk(
+        table,
+        client,
+        landing,
+        BUCKET,
+        chunk,
+        prefix,
+        today=today,
+        require_published=require_published,
+    )
+
+
+def asked(server: LocalServer) -> list[str]:
+    """The file names requested, in order."""
+    return [request.path.rpartition("filename=")[2] for request in server.requests]
+
+
+TRIED_20261119 = [f"marginalpdbc_20261119.{v}" for v in range(1, 6)]
 
 
 def main_rows(table: Table, *drop: str, where: str | None = None) -> list[dict[str, Any]]:
@@ -217,11 +235,117 @@ def test_a_file_that_breaks_its_contract_lands_and_writes_nothing(
 def test_a_missing_past_day_is_an_error_and_writes_nothing(
     table: Table, client: OmieClient, landing: fs.FileSystem
 ) -> None:
-    with pytest.raises(OmieError, match=r"OMIE has no marginalpdbc_20251002\.1: delivery day"):
+    with pytest.raises(
+        OmieError, match=r"OMIE has no marginalpdbc_20251002\.1 to \.5: delivery day 2025-10-02 "
+    ):
         run(table, client, landing, days("2025-10-01", "2025-10-02"))
 
     assert landed(landing) == []
     assert refs(table) == set()
+
+
+def test_a_missing_file_for_today_is_an_error(
+    table: Table, client: OmieClient, landing: fs.FileSystem
+) -> None:
+    """Day D's results come out on D-1: on D itself a missing file is late, not pending."""
+    with pytest.raises(OmieError, match=r"\(today is 2025-10-02 in Madrid\), so its results"):
+        run(table, client, landing, days("2025-10-01", "2025-10-02"), today=date(2025, 10, 2))
+
+    assert refs(table) == set()
+
+
+def test_a_missing_file_for_tomorrow_is_not_published_yet(
+    table: Table, client: OmieClient, landing: fs.FileSystem
+) -> None:
+    report = run(table, client, landing, days("2025-10-01", "2025-10-02"), today=date(2025, 10, 1))
+
+    assert (report.written, report.not_published_from) == (OCT_1, date(2025, 10, 2))
+    assert report.rows == 96
+
+
+def test_requiring_publication_makes_tomorrow_an_error_and_writes_nothing(
+    table: Table, client: OmieClient, landing: fs.FileSystem
+) -> None:
+    with pytest.raises(
+        OmieError,
+        match=r"^OMIE has not published marginalpdbc_20251002\.1 to \.5 yet \(delivery day "
+        r"2025-10-02, today is 2025-10-01 in Madrid\) and publication was required$",
+    ):
+        run(
+            table,
+            client,
+            landing,
+            days("2025-10-01", "2025-10-02"),
+            today=date(2025, 10, 1),
+            require_published=True,
+        )
+
+    assert landed(landing) == []
+    assert refs(table) == set()
+
+
+def test_a_republished_day_is_ingested_under_its_version(
+    table: Table, client: OmieClient, landing: fs.FileSystem
+) -> None:
+    """OMIE has only marginalpdbc_20251030.3 for that day."""
+    report = run(table, client, landing, days("2025-10-30"))
+
+    rows = main_rows(table)
+    assert report.rows == len(rows) == 96
+    sha256 = hashlib.sha256(omie_file("2025-10-30")).hexdigest()
+    key = f"{BUCKET}/landing/omie/marginalpdbc/2025/10/marginalpdbc_20251030-{sha256[:12]}.3"
+    assert landed(landing) == [key]
+    assert {(r["source_file"], r["file_version"], r["landing_path"]) for r in rows} == {
+        ("marginalpdbc_20251030.3", 3, f"s3://{key}")
+    }
+
+
+def test_a_file_republished_under_a_new_version_replaces_the_old_rows(
+    table: Table, client: OmieClient, landing: fs.FileSystem, omie: FakeOmie
+) -> None:
+    """OMIE replaces .1 by .2 (a correction): a rerun of the day picks .2 up."""
+    run(table, client, landing, SEPT_30)
+    omie.gone.add("marginalpdbc_20250930.1")
+    omie.files["marginalpdbc_20250930.2"] = omie_file("2025-09-30").replace(
+        b"2025;09;30;1;", b"2025;09;30;1;1"
+    )
+
+    run(table, client, landing, SEPT_30)
+
+    rows = main_rows(table)
+    assert len(rows) == 24
+    assert {(r["source_file"], r["file_version"]) for r in rows} == {("marginalpdbc_20250930.2", 2)}
+    assert str(rows[0]["price_pt_eur_mwh"]).startswith("1")
+    assert sorted(path.rpartition(".")[2] for path in landed(landing)) == ["1", "2"]
+
+
+def test_a_rerun_of_one_day_rewrites_its_file_and_keeps_the_others_rows(
+    table: Table, client: OmieClient, landing: fs.FileSystem, omie: FakeOmie
+) -> None:
+    """2025-10-25 and 26 are written by one run, into one file; a rerun of the 26th alone keeps
+    the 25th's rows exactly, run id and fetch time included (copy-on-write of that file)."""
+    omie.files["marginalpdbc_20251025.1"] = omie_file("2025-10-01").replace(
+        b"2025;10;01;", b"2025;10;25;"
+    )
+    first = run(table, client, landing, days("2025-10-25", "2025-10-26"))
+    the_25th = main_rows(table, where=days("2025-10-25").row_filter())
+
+    again = run(table, client, landing, OCT_26)
+
+    assert main_rows(table, where=days("2025-10-25").row_filter()) == the_25th
+    assert {r["run_id"] for r in the_25th} == {first.run_id}
+    assert {r["run_id"] for r in main_rows(table, where=OCT_26.row_filter())} == {again.run_id}
+    table.refresh()
+    head = table.current_snapshot()
+    assert head is not None
+    assert head.parent_snapshot_id is not None
+    rewrite = table.snapshot_by_id(head.parent_snapshot_id)
+    assert rewrite is not None
+    assert rewrite.summary is not None
+    summary = rewrite.summary.additional_properties
+    # The shared file is replaced: its 196 rows go, the 25th's 96 come back in a new file.
+    assert (summary["deleted-data-files"], summary["deleted-records"]) == ("1", "196")
+    assert (summary["added-data-files"], summary["added-records"]) == ("1", "96")
 
 
 def test_days_not_published_yet_end_the_chunk_where_they_start(
@@ -232,7 +356,8 @@ def test_days_not_published_yet_end_the_chunk_where_they_start(
 
     assert (report.written, report.not_published_from) == (days("2026-11-18"), date(2026, 11, 19))
     assert report.rows == 96
-    assert len(omie_server.requests) == 2  # nothing after the first missing day is asked for
+    # Every version of the first missing day, and nothing after it.
+    assert asked(omie_server) == ["marginalpdbc_20261118.1", *TRIED_20261119]
     summary = table.current_snapshot().summary  # type: ignore[union-attr]
     assert summary is not None
     assert summary["ibergrid.omie.window"] == "2026-11-18/2026-11-18"
@@ -491,7 +616,18 @@ def test_ingest_stops_at_the_first_day_not_published_yet(
 
     [november] = reports  # December and January are not asked for
     assert november.not_published_from == date(2026, 11, 19)
-    assert len(omie_server.requests) == 2
+    assert asked(omie_server) == ["marginalpdbc_20261118.1", *TRIED_20261119]
+
+
+def test_ingest_publishes_up_to_a_required_day_then_fails(
+    wired: Settings, monkeypatch: pytest.MonkeyPatch, table: Table
+) -> None:
+    monkeypatch.setattr(ingest_module, "madrid_today", lambda: date(2025, 10, 1))
+
+    with pytest.raises(OmieError, match="publication was required"):
+        ingest(wired, date(2025, 9, 30), date(2025, 10, 2), require_published=True)
+
+    assert {r["delivery_date"] for r in main_rows(table)} == {date(2025, 9, 30)}
 
 
 def test_ingest_names_its_runs_when_no_prefix_is_given(wired: Settings) -> None:
@@ -548,5 +684,20 @@ def test_plan_cuts_calendar_months() -> None:
         plan(date(2025, 9, 30), date(2025, 9, 29))
 
 
-def test_the_live_today_is_madrids() -> None:
-    assert ingest_module.madrid_today() == datetime.now(MADRID).date()
+@pytest.mark.parametrize(
+    ("now", "today"),
+    [
+        (datetime(2026, 11, 21, 22, 59, tzinfo=UTC), date(2026, 11, 21)),  # 23:59 CET
+        (datetime(2026, 11, 21, 23, 30, tzinfo=UTC), date(2026, 11, 22)),  # 00:30 CET
+        (datetime(2026, 7, 1, 21, 59, tzinfo=UTC), date(2026, 7, 1)),  # 23:59 CEST
+        (datetime(2026, 7, 1, 22, 0, tzinfo=UTC), date(2026, 7, 2)),  # midnight CEST
+    ],
+)
+def test_today_is_madrids_date(now: datetime, today: date) -> None:
+    assert ingest_module.madrid_today(now) == today
+
+
+def test_today_defaults_to_the_system_clock() -> None:
+    before = ingest_module.madrid_today(datetime.now(UTC))
+    found = ingest_module.madrid_today()
+    assert before <= found <= ingest_module.madrid_today(datetime.now(UTC))

@@ -63,10 +63,13 @@ OMIE_DAY_AHEAD_PRICES = TableSpec(
             8, "contract_version", IntegerType(), required=True, doc="1 hourly, 2 quarter-hourly"
         ),
         NestedField(9, "source_file", StringType(), required=True, doc="OMIE's file name"),
-        NestedField(10, "content_sha256", StringType(), required=True, doc="of the file's bytes"),
-        NestedField(11, "fetched_at", TimestamptzType(), required=True),
-        NestedField(12, "run_id", StringType(), required=True),
-        NestedField(13, "landing_path", StringType(), required=True, doc="the original file"),
+        NestedField(
+            10, "file_version", IntegerType(), required=True, doc="the N of the file name's .N"
+        ),
+        NestedField(11, "content_sha256", StringType(), required=True, doc="of the file's bytes"),
+        NestedField(12, "fetched_at", TimestamptzType(), required=True),
+        NestedField(13, "run_id", StringType(), required=True),
+        NestedField(14, "landing_path", StringType(), required=True, doc="the original file"),
     ),
     partition_spec=PartitionSpec(
         PartitionField(
