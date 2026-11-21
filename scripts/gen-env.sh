@@ -24,6 +24,9 @@ IBERGRID_S3_SECRET_KEY=$(random_hex 24)
 LAKEKEEPER_DB_PASSWORD=$(random_hex 24)
 LAKEKEEPER_ENCRYPTION_KEY=$(random_hex 32)
 DAGSTER_DB_PASSWORD=$(random_hex 24)
+REDPANDA_ADMIN_PASSWORD=$(random_hex 24)
+REDPANDA_PRODUCER_PASSWORD=$(random_hex 24)
+REDPANDA_CONSUMER_PASSWORD=$(random_hex 24)
 ENV
 
 echo "created $target with random local secrets"

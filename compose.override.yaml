@@ -18,11 +18,12 @@ services:
       - "127.0.0.1:28181:8181" # Iceberg REST catalog and management API
   broker:
     ports:
-      - "127.0.0.1:29092:19092" # Kafka API (external listener)
-      - "127.0.0.1:29644:9644" # Redpanda admin API
+      - "127.0.0.1:29092:19092" # Kafka API (external listener, SASL/SCRAM); the admin API stays inside
   catalog-init: *build
   doctor: *build
   ingest: *build
+  stream-producer: *build
+  stream-consumer: *build
   orchestration-migrate: *build-orchestration
   dagster-code: *build-orchestration
   dagster-daemon: *build-orchestration

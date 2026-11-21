@@ -19,14 +19,16 @@ GIT_COMMON_DIR = $(shell git rev-parse --path-format=absolute --git-common-dir)
 
 # Dummy values that only let `docker compose config` validate the files without a real .env.
 COMPOSE_DUMMY_ENV := IBERGRID_S3_ACCESS_KEY=x IBERGRID_S3_SECRET_KEY=x \
-	LAKEKEEPER_DB_PASSWORD=x LAKEKEEPER_ENCRYPTION_KEY=x DAGSTER_DB_PASSWORD=x
+	LAKEKEEPER_DB_PASSWORD=x LAKEKEEPER_ENCRYPTION_KEY=x DAGSTER_DB_PASSWORD=x \
+	REDPANDA_ADMIN_PASSWORD=x REDPANDA_PRODUCER_PASSWORD=x REDPANDA_CONSUMER_PASSWORD=x
 PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 	IBERGRID_S3_ENDPOINT_URL=https://account-id.r2.cloudflarestorage.com \
 	IBERGRID_APP_DIGEST=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
 	IBERGRID_ORCHESTRATION_DIGEST=sha256:2222222222222222222222222222222222222222222222222222222222222222
 
-.PHONY: help sync lock lint format typecheck test test-integration test-live audit ci compose-config \
-	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke
+.PHONY: help sync lock lint format typecheck test test-integration test-live contracts audit ci compose-config \
+	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke \
+	stream-up stream-down stream-status chaos-stream
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -60,6 +62,10 @@ test-integration: ## Integration tests against the running stack (make up first)
 
 test-live: ## Opt-in smoke tests against REData and omie.es (a handful of requests)
 	$(UV) run pytest -m live tests/live
+
+contracts: ## Rewrite the committed JSON Schemas from the pydantic contracts (a unit test compares them)
+	$(UV) run python -c "from ibergrid.stream.contract import json_schema; print(json_schema(), end='')" \
+		> contracts/redata-demand-realtime.v1.json
 
 audit: ## Known vulnerabilities in the locked dependencies (pip-audit)
 	$(UV) export --frozen --all-groups --no-emit-project --format requirements-txt \
@@ -113,3 +119,15 @@ logs: ## Follow the logs; SERVICE=<name> for one service
 
 smoke: ## ibergrid doctor from inside the compose network
 	$(COMPOSE) run --rm --no-deps doctor
+
+# --- Streaming lane (ADR 0006) -------------------------------------------------------------------
+
+stream-up: ## Create the lake's tables, then start the stream producer and consumer (they poll REData)
+	$(COMPOSE) run --rm --no-deps doctor lake init
+	$(STACK) --profile stream up -d --wait stream-producer stream-consumer
+
+stream-down: ## Stop the stream producer and consumer (the consumer flushes first)
+	$(COMPOSE) --profile stream stop stream-producer stream-consumer
+
+stream-status: ## The stream table's checkpoint, the lag per partition and the dead letters
+	$(COMPOSE) run --rm --no-deps stream-consumer stream status
