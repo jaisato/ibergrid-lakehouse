@@ -53,6 +53,7 @@ def test_pins_the_digest_in_release_env_and_leaves_env_untouched(server: Path) -
     assert (server / ".env").read_bytes() == SECRETS
     assert docker_calls(server) == [
         f"{COMPOSE} pull --quiet",
+        f"{COMPOSE} run --rm doctor lake init",
         f"{COMPOSE} up -d --wait --remove-orphans",
         f"{COMPOSE} run --rm --no-deps doctor",
     ]

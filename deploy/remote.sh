@@ -3,7 +3,8 @@
 #   ssh <user>@<host> bash -s -- <deploy-dir> <app sha256:digest> <orchestration sha256:digest> \
 #     < deploy/remote.sh
 # Pins the released app and orchestration image digests in <deploy-dir>/release.env, pulls the
-# images, starts the stack (waiting for health checks and one-shots) and runs `ibergrid doctor`.
+# images, creates the lake's tables (idempotent), starts the stack (waiting for health checks and
+# one-shots) and runs `ibergrid doctor`.
 # It never writes <deploy-dir>/.env, which holds the secrets. Re-running it with the previous
 # digests is the rollback.
 set -euo pipefail
@@ -42,5 +43,7 @@ mv "$tmp" release.env
 
 compose=(docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml)
 "${compose[@]}" pull --quiet
+# The tables exist before Dagster's schedules start; `run` first starts the catalog and catalog-init.
+"${compose[@]}" run --rm doctor lake init
 "${compose[@]}" up -d --wait --remove-orphans
 "${compose[@]}" run --rm --no-deps doctor
