@@ -6,6 +6,7 @@ from typing import Annotated, NoReturn
 import duckdb
 import typer
 from pydantic import ValidationError
+from pyiceberg.exceptions import RESTError
 
 from ibergrid.catalog_admin import (
     CatalogAdmin,
@@ -96,12 +97,16 @@ def lake_init() -> None:
     """Create the registry's namespaces and tables; existing tables only gain optional columns
     and changed properties, and any other difference fails."""
     settings = _load_settings()
+    if not registry.TABLES:
+        typer.echo("lake: no tables registered")
+        return
     try:
         catalog = rest_catalog(settings)
         for spec in registry.TABLES:
             result = ensure_table(catalog, spec)
             typer.echo(f"lake: {spec.namespace}.{spec.name} {_outcome(result)}")
-    except (IncompatibleTableChange, OSError) as exc:  # OSError: requests' connection errors
+    # OSError: requests' connection errors; RESTError: any HTTP error answer from the catalog.
+    except (IncompatibleTableChange, OSError, RESTError) as exc:
         _fail(exc)
 
 

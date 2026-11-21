@@ -2,8 +2,10 @@
 
 A spec may only grow: new optional columns and changed properties are applied to an existing
 table; anything else (a type change, a dropped or renamed column, a new required column, another
-partition spec, sort order or format version) raises ``IncompatibleTableChange`` and changes
-nothing, because rewriting existing data is a migration, not an ``init``.
+partition spec or format version) raises ``IncompatibleTableChange`` and changes nothing, because
+rewriting existing data is a migration, not an ``init``. There is no sort order: PyIceberg 0.12
+writes data files without one (``sort_order_id`` stays unset), so declaring it would promise
+nothing.
 """
 
 from collections.abc import Mapping
@@ -14,7 +16,6 @@ from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
-from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.types import IcebergType, ListType, MapType, NestedField, StructType
 
 # Explicit rather than library defaults, so that every engine and version writes the same tables.
@@ -22,8 +23,6 @@ DEFAULT_PROPERTIES: Mapping[str, str] = {
     # v2: what PyIceberg 0.12 writes fully and DuckDB 2.0.1 creates by default.
     "format-version": "2",
     "write.target-file-size-bytes": str(128 * 1024 * 1024),
-    # Batch and streaming writers share tables: a lost commit race retries on fresh metadata.
-    "commit.retry.num-retries": "8",
 }
 
 
@@ -37,7 +36,6 @@ class TableSpec:
     name: str
     schema: Schema
     partition_spec: PartitionSpec = UNPARTITIONED_PARTITION_SPEC
-    sort_order: SortOrder = UNSORTED_SORT_ORDER
     properties: Mapping[str, str] = field(default_factory=dict)
 
     @property
@@ -65,7 +63,6 @@ def ensure_table(catalog: Catalog, spec: TableSpec) -> EnsureResult:
             spec.identifier,
             spec.schema,
             partition_spec=spec.partition_spec,
-            sort_order=spec.sort_order,
             properties=spec.table_properties(),
         )
         return EnsureResult(created=True)
@@ -105,8 +102,6 @@ def _check_compatible(table: Table, spec: TableSpec) -> list[NestedField]:
         spec.partition_spec, spec.schema
     ):
         problems.append(f"partition spec changes from {table.spec()} to {spec.partition_spec}")
-    if _ordering(table.sort_order(), table.schema()) != _ordering(spec.sort_order, spec.schema):
-        problems.append(f"sort order changes from {table.sort_order()} to {spec.sort_order}")
     version = int(spec.table_properties()["format-version"])
     if table.format_version != version:
         problems.append(f"format version changes from {table.format_version} to {version}")
@@ -135,16 +130,4 @@ def _describe(column: NestedField) -> str:
 def _partitioning(spec: PartitionSpec, schema: Schema) -> list[tuple[str, str, str]]:
     return [
         (schema.find_column_name(f.source_id) or "", str(f.transform), f.name) for f in spec.fields
-    ]
-
-
-def _ordering(order: SortOrder, schema: Schema) -> list[tuple[str, str, str, str]]:
-    return [
-        (
-            schema.find_column_name(f.source_id) or "",
-            str(f.transform),
-            str(f.direction),
-            str(f.null_order),
-        )
-        for f in order.fields
     ]

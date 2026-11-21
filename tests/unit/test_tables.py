@@ -6,8 +6,7 @@ import pytest
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.table.sorting import SortField, SortOrder
-from pyiceberg.transforms import DayTransform, IdentityTransform, MonthTransform
+from pyiceberg.transforms import DayTransform, MonthTransform
 from pyiceberg.types import (
     DoubleType,
     IntegerType,
@@ -20,7 +19,6 @@ from pyiceberg.types import (
     TimestamptzType,
 )
 
-from ibergrid.lake.registry import TABLES
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, TableSpec, ensure_table
 
 SCHEMA = Schema(
@@ -44,7 +42,6 @@ SPEC = TableSpec(
     partition_spec=PartitionSpec(
         PartitionField(source_id=1, field_id=1000, transform=MonthTransform(), name="at_month")
     ),
-    sort_order=SortOrder(SortField(source_id=2, transform=IdentityTransform())),
     properties={"write.metadata.previous-versions-max": "50"},
 )
 
@@ -61,7 +58,7 @@ def test_creates_the_namespace_and_the_table(catalog: SqlCatalog) -> None:
     assert [f.name for f in table.schema().fields] == ["at", "indicator", "value", "attributes"]
     assert [f.name for f in table.spec().fields] == ["at_month"]
     assert table.properties["write.target-file-size-bytes"] == str(128 * 1024 * 1024)
-    assert table.properties["commit.retry.num-retries"] == "8"
+    assert "commit.retry.num-retries" not in table.properties  # PyIceberg's default
     assert table.properties["write.metadata.previous-versions-max"] == "50"
 
 
@@ -162,7 +159,6 @@ FIELDS = {f.name: f for f in SCHEMA.fields}
             },
             "partition spec changes",
         ),
-        ({"sort_order": SortOrder()}, "sort order changes"),
         ({"properties": {"format-version": "3"}}, "format version changes from 2 to 3"),
     ],
 )
@@ -177,8 +173,3 @@ def test_incompatible_changes_fail_loudly_and_change_nothing(
 
     assert str(failure.value).startswith("bronze.readings: ")
     assert catalog.load_table(SPEC.identifier).metadata_location == before
-
-
-def test_every_registered_table_can_be_created(catalog: SqlCatalog) -> None:
-    for spec in TABLES:
-        assert ensure_table(catalog, spec).created
