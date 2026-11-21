@@ -4,12 +4,13 @@ An open, multi-engine lakehouse for Iberian electricity data: Red Eléctrica's R
 day-ahead market files, stored as Apache Iceberg tables behind a REST catalog and readable from
 DuckDB, Polars and PyIceberg without a JVM.
 
-**Status: phase 1 (batch ingestion), in progress.** The stack runs end to end (object storage,
-Iceberg REST catalog, broker) with CI/CD around it; the lake library writes Iceberg tables through
-Write-Audit-Publish and reads them with DuckDB; and two connectors ingest Red Eléctrica's REData
-API (demand, daily generation mix, prices) into `bronze.redata_observations` and OMIE's day-ahead
-marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`. Dagster orchestration
-comes next (see [Roadmap](#roadmap)).
+**Status: phase 1 (batch ingestion) complete.** The stack runs end to end (object storage,
+Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes Iceberg
+tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
+Eléctrica's REData API (demand, daily generation mix, prices) into `bronze.redata_observations`
+and OMIE's day-ahead marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`;
+and Dagster runs them as partitioned assets, with daily schedules, backfills from 2023-01-01 and
+a sweeper for the audit branches of dead runs. Streaming is next (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -57,15 +58,20 @@ the Python tooling.
 
 ```bash
 make env     # .env with random local secrets (never overwrites an existing one)
-make up      # build the app image, start the stack, wait for health checks and one-shots
+make up      # build the images, start the stack, wait for health checks and one-shots
 make smoke   # ibergrid doctor from inside the compose network
+docker compose run --rm --no-deps doctor lake init   # create the lake's tables, once
 ```
 
-Then create the lake's tables and ingest a day of REData and of OMIE, from inside the compose
-network:
+The Dagster UI is at <http://127.0.0.1:28300>: pick an asset of the `bronze` group, choose
+partitions (one day, a range, or all of them since 2023-01-01) and materialize them: a range is
+one run, the selected REData assets in sequence and OMIE in a run of its own
+([Orchestration](#orchestration)). The schedules start stopped locally, so
+nothing calls REData or OMIE until you do.
+
+The same ingestion runs from the CLI, from inside the compose network:
 
 ```bash
-docker compose run --rm --no-deps doctor lake init
 docker compose run --rm --no-deps ingest redata --dataset demand_hourly \
   --start 2026-11-20 --end 2026-11-20
 docker compose run --rm --no-deps ingest omie --start 2026-11-20 --end 2026-11-20
@@ -165,7 +171,7 @@ redata: 1 chunk(s) published
   one hour early. Not verified, so joining Canarias to other systems on `ts_utc` is unsafe for
   now ([ADR 0003](docs/adr/0003-redata-ingestion.md)).
 - **Library.** `ibergrid.sources.redata.ingest.ingest(settings, dataset, start, end, systems,
-  run_id_prefix)` is what the CLI calls and what the Dagster assets will call.
+  run_id_prefix)` is what the CLI and the Dagster assets call.
 
 ### OMIE
 
@@ -193,7 +199,7 @@ omie: 2 chunk(s) published
   republication replaces it under the next number (`20230528.2`, `20251030.3`, `20251127.2` so
   far). The connector asks for `.1`, then `.2` up to `.5`, and takes the first that exists;
   `source_file` and `file_version` record which. A rerun picks up a republished or rewritten
-  file; the Dagster schedule will re-ingest the last 7 delivery days for that. Daily files start
+  file; the Dagster schedules re-ingest the last 7 delivery days for that. Daily files start
   on 2023-01-01 (older years are yearly archives, not read).
 - **UTC intervals.** `interval_start_utc` is the Madrid midnight of the delivery day plus
   (period - 1) times the resolution, contiguous on every DST day; `resolution_minutes` and
@@ -218,6 +224,34 @@ omie: 2 chunk(s) published
   where the zones decouple, on the recorded days that can tell them apart (2025-04-28 and
   2025-10-01); on days the zones agree it confirms only the timing. Phase 4 turns it into a gate.
 
+## Orchestration
+
+Dagster runs the connectors as assets; [ADR 0005](docs/adr/0005-dagster-orchestration.md) has the
+choice against Airflow, the measurements behind the schedules and the decisions.
+
+| Asset (group `bronze`) | Partitions (Madrid days) | Pool | Schedule (Madrid time) |
+|---|---|---|---|
+| `bronze/redata_observations/<dataset>`, one per REData dataset | 2023-01-01 to yesterday | `redata` | 08:00, yesterday |
+| `bronze/omie_day_ahead_prices` | 2023-01-01 to tomorrow | `omie` | 16:00, tomorrow if out; 21:30, tomorrow required; both re-ingest the last 7 delivery days |
+
+- **Backfills are one run per range.** A run hands its whole partition range to one connector
+  call, which cuts it into its own chunks (months; years for daily generation), so a backfill of
+  any length never becomes one Write-Audit-Publish run per day. Partitions are recorded as their
+  chunks publish: a run that fails part way keeps what it published, and rerunning is safe.
+- **Each partition records what snapshot expiry would erase**: for REData the day's expected and
+  received points per system and each chunk's rule violations, dropped series, snapshot, run id
+  and raw answer; for OMIE the chunk's rows, contract versions, out-of-range prices, snapshot and
+  run id.
+- **One writer per table, one request a second per source.** Each pool has a limit of 1, checked
+  before a run is launched; REData and OMIE runs may overlap.
+- **Audit branches of dead runs.** Every Write-Audit-Publish run is named after its Dagster run;
+  `sweep_audit_branches` (05:30) removes the `audit-*` branches whose run has finished and keeps
+  the others.
+- **Schedules start stopped** unless `IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING=true`, the
+  production default; start them from the UI to try them locally.
+- **Runs** execute in `dagster-code`; their metadata, logs and schedule ticks live in
+  `orchestration-db` (Postgres), and survive `make down` (not `make down-volumes`).
+
 ## Services
 
 One container per service. Ports are published on 127.0.0.1 only, and only in local development.
@@ -233,8 +267,15 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `broker` | `redpandadata/redpanda:v26.2.2` | Kafka API, single node | 29092 Kafka, 29644 admin |
 | `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
 | `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...`, `ingest omie ...` (384 MiB limit) | |
+| `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs, schedules | |
+| `orchestration-migrate` | orchestration image (`dagster instance migrate`) | One-shot: Dagster's schema | |
+| `dagster-code` | orchestration image | Dagster code server; runs execute here | |
+| `dagster-webserver` | orchestration image | Dagster UI and GraphQL API | [28300](http://127.0.0.1:28300) |
+| `dagster-daemon` | orchestration image | Schedules, backfills, run queue and pools, run monitoring | |
 
-Every third-party image is pinned by tag and digest in [compose.yaml](compose.yaml).
+Every third-party image is pinned by tag and digest in [compose.yaml](compose.yaml). The app and
+orchestration images are two targets of one [Dockerfile](Dockerfile): the orchestration image is
+the app plus Dagster, so the app image stays without it.
 
 ## Development
 
@@ -256,11 +297,11 @@ through [SECURITY.md](SECURITY.md).
 
 ## Deployment
 
-Pushes to `main` publish the app image to `ghcr.io/jaisato/ibergrid-lakehouse`. Tags `v*.*.*`
-rerun CI, publish the version and deploy it to a single server over SSH: the job copies
-[compose.yaml](compose.yaml) and [compose.prod.yaml](compose.prod.yaml), pins the image digest in
-`release.env` (the secrets in `.env` are never rewritten), runs `docker compose up -d --wait` and
-then `ibergrid doctor`
+Pushes to `main` publish the app and orchestration images to `ghcr.io/jaisato/ibergrid-lakehouse`
+and `ghcr.io/jaisato/ibergrid-lakehouse-orchestration`. Tags `v*.*.*` rerun CI, publish the
+version and deploy it to a single server over SSH: the job copies [compose.yaml](compose.yaml) and
+[compose.prod.yaml](compose.prod.yaml), pins both image digests in `release.env` (the secrets in
+`.env` are never rewritten), runs `docker compose up -d --wait` and then `ibergrid doctor`
 ([deploy/remote.sh](deploy/remote.sh)). Production storage is Cloudflare R2. The deploy job stays
 skipped until the server's variables exist ([deploy/deploy.env.example](deploy/deploy.env.example)).
 
@@ -289,7 +330,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Foundation and risk spike: compose stack, `ibergrid` CLI, CI/CD, docs; the lake library and the measured engine capabilities ([ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) | Done |
-| 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md), done) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md), done) connectors, orchestrated with Dagster (assets, partitions, schedules, backfills) | In progress |
+| 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md)) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md)) connectors, orchestrated with Dagster: assets, partitions, schedules, backfills ([ADR 0005](docs/adr/0005-dagster-orchestration.md)) | Done |
 | 2 | Streaming lane: Redpanda producer and consumer, dead-letter queue, deduplication, exactly-once into Bronze | Planned |
 | 3 | dbt medallion: Silver and Gold models | Planned |
 | 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |

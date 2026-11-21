@@ -1,13 +1,15 @@
 # Architecture
 
 The stack runs the storage, catalog and broker layers and the CLI that wires them together; the
-lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, and the phase-1 connectors
+lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, the phase-1 connectors
 (`ibergrid.sources.redata` and `ibergrid.sources.omie`) ingest REData and OMIE into Bronze
-through it. Dagster and streaming build on these next. The decisions behind the stack are in
+through it, and Dagster (`ibergrid.orchestration`) runs the connectors as partitioned assets on
+schedules and backfills. Streaming builds on these next. The decisions behind the stack are in
 [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
 Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
 ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
-[ADR 0004](adr/0004-omie-ingestion.md).
+[ADR 0004](adr/0004-omie-ingestion.md); how both are orchestrated, in
+[ADR 0005](adr/0005-dagster-orchestration.md).
 
 ## System context (C4 level 1)
 
@@ -40,6 +42,10 @@ C4Container
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
+    Container(webserver, "dagster-webserver", "Dagster 1.13, orchestration image", "UI and GraphQL API: partitions, runs, backfills, metadata")
+    Container(daemon, "dagster-daemon", "Dagster 1.13, orchestration image", "Schedules, backfills, run queue with pools of 1, run monitoring")
+    Container(code, "dagster-code", "Dagster 1.13, orchestration image", "Code server with ibergrid.orchestration; runs execute here and call the connectors")
+    ContainerDb(orchdb, "orchestration-db", "Postgres 17", "Runs, event logs (materializations and metadata), schedules")
     Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
@@ -52,6 +58,16 @@ C4Container
   System_Ext(omie, "OMIE", "Daily marginalpdbc files, public downloads, no token")
 
   Rel(analyst, catalog, "Iceberg REST", "HTTP")
+  Rel(analyst, webserver, "Materializes partitions, launches backfills", "HTTP, 127.0.0.1:28300 locally")
+  Rel(webserver, code, "Loads definitions, launches runs", "gRPC")
+  Rel(daemon, code, "Evaluates schedules, launches queued runs", "gRPC")
+  Rel(webserver, orchdb, "Reads and writes", "SQL")
+  Rel(daemon, orchdb, "Reads and writes", "SQL")
+  Rel(code, orchdb, "Runs write their events", "SQL")
+  Rel(code, ree, "REData assets: one run at a time, at most 1 request/s", "HTTPS")
+  Rel(code, omie, "OMIE asset: one run at a time, at most 1 request/s", "HTTPS")
+  Rel(code, catalog, "Iceberg REST (WAP)", "HTTP")
+  Rel(code, storage, "Table data and landed raw answers and files", "S3 API")
   Rel(app, ree, "ingest redata: at most 1 request/s", "HTTPS")
   Rel(app, omie, "ingest omie: one file per delivery day, at most 1 request/s", "HTTPS")
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
@@ -75,21 +91,32 @@ C4Container
 | `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node, dev-container mode | broker | 29092 (Kafka), 29644 (admin) |
 | `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
 | `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
+| `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs and schedules | orchestration-db (internal) | |
+| `orchestration-migrate` | `ibergrid-orchestration` (this repository) | One-shot: `dagster instance migrate` | orchestration-db | |
+| `dagster-code` | `ibergrid-orchestration` (this repository) | `dagster code-server start`: the definitions; runs execute here (1.5 GiB limit) | orchestration, orchestration-db, storage, catalog | |
+| `dagster-webserver` | `ibergrid-orchestration` (this repository) | `dagster-webserver`: UI and GraphQL | orchestration, orchestration-db, orchestration-ui (local only) | 28300 |
+| `dagster-daemon` | `ibergrid-orchestration` (this repository) | `dagster-daemon run`: schedules, backfills, run queue, run monitoring | orchestration, orchestration-db | |
 
 Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
-healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `docker compose up
---wait` returns once every long-running service is healthy and every one-shot has exited 0.
+healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`; `orchestration-db`
+healthy, then `orchestration-migrate`; both one-shots done, then `dagster-code` healthy; then
+`dagster-webserver` and `dagster-daemon`. `docker compose up --wait` returns once every
+long-running service is healthy and every one-shot has exited 0.
 
 ## Design notes
 
 - **Least connectivity.** Each network groups the services that must talk to each other.
   Postgres sits on an `internal` network with no egress; only Lakekeeper reaches it. The catalog
-  joins `storage` because it validates the warehouse location and manages files there.
+  joins `storage` because it validates the warehouse location and manages files there. Dagster's
+  Postgres and gRPC networks are internal too; only `dagster-code`, where runs execute, joins
+  `storage` and `catalog` (and so has egress to the sources) and holds the lake's keys. Locally the
+  webserver also joins `orchestration-ui`, because Docker publishes no port through an internal
+  network.
 - **Hardening.** Every container, one-shots included, runs with `no-new-privileges`, all
   capabilities dropped, a memory limit and a non-root user: RustFS as `rustfs` (10001), the AWS
   CLI as `nobody` (65534), Postgres as `postgres` (70), Lakekeeper as distroless `nonroot`
   (65532, set in compose because the image declares no user), Redpanda as `redpanda` (101) and
-  the app as 10001.
+  the app and orchestration images as 10001.
 - **Secrets.** Compose reads them from `.env` with `${VAR:?}` and no defaults, so a missing secret
   stops `docker compose` before anything starts. The app keeps them as `SecretStr` and its
   validation errors never echo input values.
@@ -125,9 +152,18 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   with unauthenticated Kafka and admin APIs. Locally both listen on 127.0.0.1 only; in production
   no port is published. Phase 2 hardens the broker, and authentication is a prerequisite for the
   public endpoints of phase 6.
-- **One image for the CLI.** `catalog-init` and `doctor` run the same app image. In production it
-  is pulled from GHCR by the digest the release job recorded: the image that job built, ran once
-  (`ibergrid version`) and pushed. The server never builds anything.
+- **Two images, one Dockerfile.** `catalog-init`, `doctor` and `ingest` run the app image; the
+  Dagster services run the orchestration image (`--target orchestration`: the same environment
+  plus Dagster, `dagster.yaml` and `workspace.yaml`). In production both are pulled from GHCR by
+  the digests the release job recorded: the images that job built, ran once (`ibergrid version`;
+  the Dagster definitions validated) and pushed. The server never builds anything.
+- **Orchestration ([ADR 0005](adr/0005-dagster-orchestration.md)).** Runs execute as subprocesses
+  of `dagster-code` (the default run launcher: no Docker socket anywhere), whose memory limit
+  covers them. The daemon launches a queued run only when its pool (`redata`, `omie`, limit 1) is
+  free. Run metadata, materializations and schedule ticks live in `orchestration-db`; compute
+  logs in a volume written by `dagster-code` and read by the webserver. Run monitoring cancels runs
+  past 12 hours, so a run whose code server died is eventually marked over and the daily sweeper
+  frees its audit branches.
 - **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
   creates it and never updates them. After rotating `IBERGRID_S3_*`, run
   `ibergrid catalog update-credential` (see `.env.example`), which also resets the storage-profile
@@ -140,7 +176,9 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
 |---|---|---|
 | Object storage | RustFS container (`local-storage` profile) | Cloudflare R2, `https://<account-id>.r2.cloudflarestorage.com`, region `auto` |
 | App image | Built from source (`compose.override.yaml`) | `ghcr.io/jaisato/ibergrid-lakehouse@sha256:...`, digest in `release.env` |
+| Orchestration image | Built from source (`--target orchestration`) | `ghcr.io/jaisato/ibergrid-lakehouse-orchestration@sha256:...`, digest in `release.env` |
+| Dagster schedules | Stopped (start them in the UI) | Running (`IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING`) |
 | Env files | `.env` | `.env` (secrets, never written by the deploy) and `release.env` |
-| Host ports | 127.0.0.1, 28xxx-29xxx | None |
+| Host ports | 127.0.0.1, 28xxx-29xxx (Dagster UI 28300) | None |
 | Restart policy | `on-failure` | `unless-stopped` |
 | Logs | Docker defaults | `json-file`, 3 x 10 MB per container |
