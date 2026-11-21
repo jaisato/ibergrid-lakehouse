@@ -249,9 +249,12 @@ choice against Airflow, the measurements behind the schedules and the decisions.
   the others.
 - **Schedules start stopped** unless `IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING=true`, the
   production default; start them from the UI to try them locally.
-- **Failures.** A scheduled run retries a failed step twice, 15 minutes apart; backfills are not
-  retried (a retry redoes the whole range). A failed run shows in the UI, and the trailing windows
-  refill missed days; nothing sends notifications yet (phase 6).
+- **Failures.** A scheduled run retries a failed step twice, 15 minutes apart; a backfill's
+  failed step is not retried. A run that dies without a failed step (its worker killed, then failed
+  by the 2-hour runtime limit) is queued again up to twice and redoes its whole range, backfills
+  included, so a planned backfill longer than 2 hours gets a higher `dagster/max_runtime_seconds`
+  tag or a split range. A failed run shows in the UI, and the trailing windows refill missed days;
+  nothing sends notifications yet (phase 6).
 - **Runs** execute in `dagster-code`; their metadata, logs and schedule ticks live in
   `orchestration-db` (Postgres), and survive `make down` (not `make down-volumes`).
 

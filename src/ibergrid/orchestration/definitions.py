@@ -25,7 +25,8 @@ REDATA_TRAILING_DAYS = 3
 # in-place rewrite and republication by D+2 (ADR 0004).
 OMIE_TRAILING_DAYS = 7
 # A scheduled run whose step fails runs it again twice, 15 minutes apart (a source not ready yet,
-# a transient outage); backfills are not retried, since a retry redoes the whole range.
+# a transient outage). Backfill runs carry no step retries, since a retry would redo the whole
+# range (dagster.yaml's run_retries still requeues a run that dies without a failed step).
 SCHEDULED_RETRIES = dg.RetryPolicy(max_retries=2, delay=900)
 STATUS = (
     dg.DefaultScheduleStatus.RUNNING

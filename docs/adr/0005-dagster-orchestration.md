@@ -193,11 +193,18 @@ measured), and they fill a day whose run failed, up to three days later. Older r
 Bronze only when a backfill reruns the window. Both trailing windows stop at 2023-01-01.
 
 **Retries and failures.** A scheduled run whose step fails runs it again twice, 15 minutes apart
-(`op_retry_policy` on the three scheduled jobs: a source not ready yet, a transient outage). A run
-that fails without a failed step (one that never started, for example) is queued again up to twice
-(`run_retries`, which has no delay of its own). Backfills are not retried, since a retry redoes the
-whole range. What is left is a failed run, visible in the UI and in its run status, and the next
-days' trailing windows; nothing sends a notification yet (phase 6, with the public endpoints).
+(`op_retry_policy` on the three scheduled jobs: a source not ready yet, a transient outage). A
+backfill's failed step is not retried: backfill runs carry no such policy, since a retry would redo
+the whole range. But a run that fails without a failed step is queued again up to twice
+(`run_retries`, which has no delay of its own), backfills included: one that never started, or one
+whose worker died and the runtime limit failed (below), redoes its whole range, idempotently
+(Write-Audit-Publish); the review saw a backfill run come back as retry 1 with the same range and
+succeed. So a backfill that legitimately runs past 2 hours is killed and restarted up to twice:
+split the range, or launch a planned long backfill with the tags `dagster/max_runtime_seconds`
+(higher) and `dagster/max_retries` (0). The automatic retry needs the code server: if it is down
+when a run fails, Dagster drops the retry (seen in review: gRPC UNAVAILABLE). What is left is a
+failed run, visible in the UI and in its run status, and the next days' trailing windows; nothing
+sends a notification yet (phase 6, with the public endpoints).
 
 ### The sweeper: ownership, not age
 
@@ -216,11 +223,13 @@ the review measured a restart in 10.9 s that killed the run worker, left the run
 a second run of its pool queued; with the grace period, a stop during a 31-day OMIE run took 29.8 s
 and the run ended in success (measured on a fresh stack, 2026-11-21). A run whose worker is killed
 anyway (a stop beyond 5 minutes, an out-of-memory kill) never reports its end, and the default
-launcher cannot check a run worker's health: run monitoring cancels it past
+launcher cannot check a run worker's health: run monitoring fails it past
 `max_runtime_seconds`, 2 hours (4 times the full backfill's 30 minutes; a longer run sets the
-`dagster/max_runtime_seconds` tag). Until then the run holds its pool (Dagster counts starting,
-started and canceling runs against run-granularity pools), so that source's runs queue for up to 2
-hours; the next sweep frees its branches.
+`dagster/max_runtime_seconds` tag), and `run_retries` queues it again (above). Until then the run
+holds its pool (Dagster counts starting, started and canceling runs against run-granularity
+pools), so that source's runs queue for up to 2 hours; the next sweep frees its branches. A stop
+while a run waits between step retries (up to 15 minutes) outlasts the 5-minute grace period: that
+run is orphaned the same way, failed after 2 hours and queued again.
 
 ### Services and run launcher
 
@@ -295,8 +304,8 @@ included, and both tables kept their totals. Daily generation (1,674 rows) was n
 window is not the backfill's (the year 2025), and REData's sums differ in the last bit between the
 two (58 values and 77 shares, at most 4.8e-16 relative). Rerunning the backfill's own window (2025,
 6 requests, 70 s) restored the exact October hash. A rerun of the same window is identical; another
-window of daily generation can differ by rounding, which the daily schedule (one day at a time)
-will show against backfilled years.
+window of daily generation can differ by rounding, which the daily schedule (yesterday and the 3
+days before, one window) will show against backfilled years.
 
 **The two-call schedule, live.** The `omie_afternoon_schedule` tick for 2026-11-21 16:00 was
 evaluated in the code server (the UI's "test schedule") and its run request launched: partition
@@ -324,8 +333,8 @@ defaults (no trailing window), which a unit test now pins against the schedule's
   range (idempotent, but the requests are spent again); narrow the range to resume.
 - Bad: `backfill_policy` is a Dagster beta parameter: a minor release may change it.
 - Bad: runs live and die with `dagster-code`: a stop waits up to 5 minutes for them, and a run
-  killed anyway holds its pool until the 2-hour runtime limit cancels it; the sweeper frees its
-  branches the next day.
+  killed anyway holds its pool until the 2-hour runtime limit fails it, and is then queued again
+  and redone whole; the sweeper frees its branches the next day.
 - Bad: the orchestration image adds 247 MB over the app image, and the stack four long-running
   services and a one-shot.
 - Bad: OMIE's evening run fails, after its retries, on the few days (3 % of the 15-minute era, an
