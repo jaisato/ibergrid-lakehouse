@@ -1,6 +1,7 @@
 """The lake library on the real stack: PyIceberg writes and publishes, DuckDB reads."""
 
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -395,7 +396,8 @@ print(json.dumps({"created": created, **counts}))
 def test_the_app_image_runs_init_wap_and_describe_in_the_network(namespace: str) -> None:
     result = compose_run("doctor", "lake", "init")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout == "lake: no tables registered\n"
+    # The registry's Bronze table: created by the first init on this stack, unchanged afterwards.
+    assert re.fullmatch(r"lake: bronze\.redata_observations (created|unchanged)\n", result.stdout)
 
     run_id = f"it-{datetime.now(UTC):%Y%m%d%H%M%S%f}"
     result = compose_run("doctor", "-c", IN_NETWORK_RUN, namespace, run_id, entrypoint="python")

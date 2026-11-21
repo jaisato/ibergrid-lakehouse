@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import urllib.parse
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,8 +12,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.exceptions import NoSuchTableError
+
+from ibergrid.sources.redata.datasets import DATASETS
 
 
 @dataclass(frozen=True)
@@ -23,8 +27,9 @@ class Recorded:
     body: Any
 
 
-# A responder returns (status, payload): a JSON-serialisable value, raw bytes, or None for no body.
-Responder = Callable[[Recorded], tuple[int, Any]]
+# A responder returns (status, payload) or (status, payload, headers); the payload is a
+# JSON-serialisable value, raw bytes, or None for no body.
+Responder = Callable[[Recorded], tuple[int, Any] | tuple[int, Any, dict[str, str]]]
 
 
 class LocalServer:
@@ -53,7 +58,7 @@ class LocalServer:
                     self.command, self.path, headers, json.loads(raw) if raw else None
                 )
                 server.requests.append(request)
-                status, payload = server.responder(request)
+                status, payload, *extra = server.responder(request)
                 if payload is None:
                     body = b""
                 elif isinstance(payload, bytes):
@@ -62,6 +67,8 @@ class LocalServer:
                     body = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
+                for name, value in (extra[0] if extra else {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 if self.command != "HEAD":
                     self.wfile.write(body)
@@ -144,6 +151,48 @@ class FakeIcebergRest:
         return 404, error("NotFound", f"no route for {request.method} {request.path}", 404)
 
 
+REDATA_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "redata"
+# What REData answers, with 502, for a window it has no data for (and, the same, when it fails).
+UNAVAILABLE = {
+    "errors": [
+        {
+            "status": "502",
+            "title": "Internal error",
+            "detail": "The requested data is currently unavailable. Please try again later.",
+        }
+    ]
+}
+
+
+class FakeRedata:
+    """REData's ``/en/datos/`` widgets answered from the recorded fixtures
+    (``tests/fixtures/redata``); a window without a fixture gets REData's no-data 502.
+
+    ``payloads`` replaces a fixture's body by file name, for answers the API never gave.
+    """
+
+    def __init__(self) -> None:
+        self.payloads: dict[str, bytes] = {}
+
+    def __call__(self, request: Recorded) -> tuple[int, Any]:
+        path, _, query = request.path.partition("?")
+        params = dict(urllib.parse.parse_qsl(query))
+        [dataset] = [d for d in DATASETS.values() if path == f"/en/datos/{d.widget}"]
+        unscoped = [s.name for s in dataset.systems if s.geo_id is None]
+        system = params.get("geo_limit") or (unscoped[0] if unscoped else None)
+        if system is None:  # like demanda/evolucion asked without geo parameters
+            return 400, json.loads(fixture("error-400.json"))
+        name = f"{dataset.name}-{system}-{params['start_date'][:10]}_{params['end_date'][:10]}.json"
+        if name in self.payloads:
+            return 200, self.payloads[name]
+        answer = REDATA_FIXTURES / name
+        return (200, answer.read_bytes()) if answer.exists() else (502, UNAVAILABLE)
+
+
+def fixture(name: str) -> bytes:
+    return (REDATA_FIXTURES / name).read_bytes()
+
+
 def error(kind: str, message: str, code: int) -> dict[str, Any]:
     return {"error": {"type": kind, "message": message, "code": code}}
 
@@ -181,6 +230,13 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(os.environ):
         if name.startswith("IBERGRID_"):
             monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def default_logging() -> Iterator[None]:
+    """The CLI points structlog at the test runner's stderr, which is closed once a test ends."""
+    yield
+    structlog.reset_defaults()
 
 
 @pytest.fixture

@@ -82,6 +82,7 @@ testpaths = ["tests/unit"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
   "integration: needs the docker compose stack running (make up)",
+  "live: calls the live REData API (make test-live); never run by default or in CI",
 ]
 xfail_strict = true
 

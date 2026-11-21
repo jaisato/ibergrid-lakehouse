@@ -18,12 +18,13 @@ x-lakekeeper-env: &lakekeeper-env
   # request's Host header, so host clients get 127.0.0.1:28181 and containers get catalog:8181.
   RUST_LOG: info
 
-# The ibergrid app image (catalog-init, doctor). Same variable names as ibergrid.settings.
+# The ibergrid app image (catalog-init, doctor, ingest). Same variable names as ibergrid.settings.
 x-app: &app
   <<: *hardened
   image: ibergrid-app:local
   restart: "no"
-  mem_limit: 192m
+  # A month of five-minute demand (35,760 rows) peaks at 195 MiB of cgroup memory (ADR 0003).
+  mem_limit: 384m
   environment:
     IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:-http://storage:9000}
     IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-us-east-1}
@@ -33,6 +34,9 @@ x-app: &app
     IBERGRID_CATALOG_URL: http://catalog:8181
     IBERGRID_CATALOG_WAREHOUSE: ${IBERGRID_CATALOG_WAREHOUSE:-lakehouse}
     IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
+    IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
+    IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
+    IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
     IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
     IBERGRID_LOG_FORMAT: json
 
@@ -186,9 +190,11 @@ services:
 
   # --- Tools -------------------------------------------------------------------------------------
   # Readiness report from inside the network: `docker compose run --rm --no-deps doctor` (make smoke
-  # and the deploy job). scale 0: `up` never starts it. Its depends_on also matters to
-  # `up --wait`, which treats a one-shot that nothing depends on as failed once it exits; with a
-  # dependent, compose waits for catalog-init to complete successfully instead.
+  # and the deploy job); with arguments it runs any ibergrid command, such as `lake init` or
+  # `ingest redata` (REData is on the public internet: the default networks allow egress).
+  # scale 0: `up` never starts it. Its depends_on also matters to `up --wait`, which treats a
+  # one-shot that nothing depends on as failed once it exits; with a dependent, compose waits for
+  # catalog-init to complete successfully instead.
   doctor:
     <<: *app
     scale: 0

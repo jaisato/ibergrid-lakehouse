@@ -1,0 +1,28 @@
+"""Opt-in smoke test against the live REData API: `make test-live`. Never run by default or in CI.
+
+One request per dataset for the day before yesterday (Madrid), paced at one a second; it checks
+that the answers still parse, validate and come complete, nothing is written anywhere.
+"""
+
+from datetime import datetime, timedelta
+
+import pytest
+
+from ibergrid.sources.redata.client import RedataClient
+from ibergrid.sources.redata.datasets import DATASETS, MADRID, plan
+from ibergrid.sources.redata.normalize import completeness, granularities, parse
+
+pytestmark = pytest.mark.live
+
+CLIENT = RedataClient("https://apidatos.ree.es", timeout=120)  # one client: one pace for all
+
+
+@pytest.mark.parametrize("name", list(DATASETS))
+def test_a_recent_day_parses_and_is_complete(name: str) -> None:
+    day = datetime.now(MADRID).date() - timedelta(days=2)
+    chunk = plan(DATASETS[name], day, day)[0]
+
+    points = parse(CLIENT.fetch(chunk), chunk)
+    measured = completeness(points, granularities(points, chunk), chunk)
+
+    assert measured.received == measured.expected > 0, measured.incomplete

@@ -73,6 +73,18 @@ class DuckDBSettings(BaseSettings):
     extension_directory: str | None = None
 
 
+class RedataSettings(BaseSettings):
+    """Red Eléctrica's REData API: public, no token."""
+
+    model_config = _config("IBERGRID_REDATA_")
+
+    base_url: HttpUrl = HttpUrl("https://apidatos.ree.es")
+    # Seconds per request: a year of national daily generation took 19 s on 2026-11-21.
+    timeout: float = Field(default=60.0, gt=0)
+    # Politeness towards a free public API: never more than one request per second.
+    max_rps: float = Field(default=1.0, gt=0, le=1)
+
+
 class LogSettings(BaseSettings):
     """structlog output: ``json`` in containers, ``console`` for humans."""
 
@@ -96,6 +108,7 @@ class Settings(BaseModel):
     catalog: CatalogSettings = Field(default_factory=CatalogSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     duckdb: DuckDBSettings = Field(default_factory=DuckDBSettings)
+    redata: RedataSettings = Field(default_factory=RedataSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -106,7 +119,14 @@ def base_url(url: HttpUrl) -> str:
 
 def describe_validation_error(exc: ValidationError) -> str:
     """One line per problem, named by environment variable and without the input values."""
-    groups = (StorageSettings, CatalogSettings, BrokerSettings, DuckDBSettings, LogSettings)
+    groups = (
+        StorageSettings,
+        CatalogSettings,
+        BrokerSettings,
+        DuckDBSettings,
+        RedataSettings,
+        LogSettings,
+    )
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}
     return "\n".join(
         f"  {prefix.get(exc.title, '')}{str(error['loc'][0]).upper()}: {error['msg']}"

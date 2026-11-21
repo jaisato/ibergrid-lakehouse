@@ -83,3 +83,24 @@ def test_bootstrap_servers_must_be_host_port_pairs(value: str) -> None:
 def test_base_url_drops_the_trailing_slash() -> None:
     assert base_url(HttpUrl("http://catalog:8181")) == "http://catalog:8181"
     assert base_url(HttpUrl("http://catalog:8181/prefix/")) == "http://catalog:8181/prefix"
+
+
+@pytest.mark.usefixtures("credentials")
+def test_redata_defaults_are_polite(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings()
+
+    assert base_url(settings.redata.base_url) == "https://apidatos.ree.es"
+    assert (settings.redata.timeout, settings.redata.max_rps) == (60.0, 1.0)
+    monkeypatch.setenv("IBERGRID_REDATA_MAX_RPS", "0.5")
+    assert Settings().redata.max_rps == 0.5
+
+
+@pytest.mark.usefixtures("credentials")
+@pytest.mark.parametrize(("name", "value"), [("MAX_RPS", "2"), ("MAX_RPS", "0"), ("TIMEOUT", "0")])
+def test_redata_limits_are_enforced(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    monkeypatch.setenv(f"IBERGRID_REDATA_{name}", value)
+
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+
+    assert describe_validation_error(caught.value).startswith(f"  IBERGRID_REDATA_{name}: ")

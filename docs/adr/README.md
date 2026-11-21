@@ -8,3 +8,4 @@ never edited to say something else, it is superseded by a new record.
 |---|---|---|
 | [0001](0001-stack-and-scope.md) | Stack and scope | Accepted |
 | [0002](0002-iceberg-write-and-read-paths.md) | Iceberg write and read paths | Accepted |
+| [0003](0003-redata-ingestion.md) | REData ingestion into Bronze | Accepted |
