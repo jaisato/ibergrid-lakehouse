@@ -49,15 +49,16 @@ pull request's reviewer the same day and are not repeated here. The probes' summ
 committed; the answers the tests replay are (`tests/fixtures/redata`, recorded by
 `scripts/record_redata_fixtures.py`, which keeps only some series of the large answers).
 
-Widgets and parameters (`data.type` is the answer's own name for what it returns, the same on
-every date probed):
+Widgets and parameters (`data.id` and `data.type` are the answer's own identifier and name for
+what it returns, the same on every date probed; the names are display strings, some Spanish
+under `/en/`):
 
-| Dataset | Widget and `data.type` | `time_trunc` | Points | Systems |
+| Dataset | Widget, `data.id` and `data.type` | `time_trunc` | Points | Systems |
 |---|---|---|---|---|
-| `demand_realtime` | `demanda/demanda-tiempo-real`, "Demanda nacional en tiempo real" | `hour` | 5 minutes: 288 a day, 276 on 2026-03-29, 300 on 2026-10-25 | national (see below); geo parameters answer 400 or 502 |
-| `demand_hourly` | `demanda/evolucion`, "Evolución de la demanda" | `hour` | 24 a day (23, 25) | `geo_trunc=electric_system`, `geo_limit` and `geo_ids`: peninsular 8741, canarias 8742, baleares 8743, ceuta 8744, melilla 8745; every system's series has id 10297; without geo parameters: 400 |
-| `generation_daily` | `generacion/estructura-generacion`, "Generation structure by technology" | `day` | one per technology and day | without geo parameters (national: the sum of the systems, 724,850 MWh on 2026-11-20 against 687,088 peninsular) and each of the five systems, each with its own technologies |
-| `market_prices` | `mercados/precios-mercados-tiempo-real`, "Precios mercado peninsular en tiempo real" | `hour` | PVPC 24 a day; spot 24 a day until 2024-12-31, 96 from 2025-01-01 (each hourly value four times until the 15-minute market, distinct by 2026-11) | without geo parameters; with them only PVPC comes back |
+| `demand_realtime` | `demanda/demanda-tiempo-real`, `dem15`, "Demanda nacional en tiempo real" | `hour` | 5 minutes: 288 a day, 276 on 2026-03-29, 300 on 2026-10-25 | national (see below); geo parameters answer 400 or 502 |
+| `demand_hourly` | `demanda/evolucion`, `dem1`, "Evolución de la demanda" | `hour` | 24 a day (23, 25) | `geo_trunc=electric_system`, `geo_limit` and `geo_ids`: peninsular 8741, canarias 8742, baleares 8743, ceuta 8744, melilla 8745; every system's series has id 10297; without geo parameters: 400 |
+| `generation_daily` | `generacion/estructura-generacion`, `gen1`, "Generation structure by technology" | `day` | one per technology and day | without geo parameters (national: the sum of the systems, 724,850 MWh on 2026-11-20 against 687,088 peninsular) and each of the five systems, each with its own technologies |
+| `market_prices` | `mercados/precios-mercados-tiempo-real`, `mer13`, "Precios mercado peninsular en tiempo real" | `hour` | PVPC 24 a day; spot 24 a day until 2024-12-31, 96 from 2025-01-01 (each hourly value four times until the 15-minute market, distinct by 2026-11) | without geo parameters; with them only PVPC comes back |
 
 `demand_realtime` is national, as its `data.type` says, not peninsular: on 2026-11-20 its daily
 Real is 756,672 MWh against 714,959 for the five systems' hourly demand and 675,062 for the
@@ -92,6 +93,10 @@ Other answers:
   for `precios`, today for `evolucion` and `estructura-generacion`, and 2014-01-01 for
   `demanda-tiempo-real`. Today's five-minute demand answers 200 with a partial Real series (53 of
   288 points at 04:33).
+- The body embeds REData's cache status in `data.meta` (`{"cache-control": {"cache": "MISS"}}`,
+  or `"HIT"` with an `expireAt`; 53 of the 59 answers saved while measuring said MISS, 6 HIT). In
+  review, two answers for the same window with identical `included` differed only there, and so
+  did their raw SHA-256.
 - Datetimes carry their offset, and every system is stamped with peninsular offsets (Canarias
   included: `2026-11-18T00:00:00.000+01:00`). The 25-hour day has both `02:00+02:00` and
   `02:00+01:00`.
@@ -150,9 +155,9 @@ a direct dependency) because REData's days are, for every system. A chunk replac
 rows of its dataset and system with `ts_utc` in [UTC of the first local midnight, UTC of the
 midnight after the last day). A UTC day would cut REData's days in two and could not be requested.
 
-So a rerun of the same window publishes the same rows, apart from `fetched_at` and `run_id`
-(pinned by unit tests on the SQL catalog, also for the days around a rerun day, and by an
-integration test on the stack). A rerun replaces the window with what REData answers now: if a
+So a rerun of the same window publishes the same rows, apart from `fetched_at` and `run_id`,
+also when REData's cache metadata differs between the two answers (pinned by unit tests on the
+SQL catalog, also for the days around a rerun day, and by an integration test on the stack). A rerun replaces the window with what REData answers now: if a
 series disappears from an answer, its rows in that window go too, and the run records it (below).
 Chunks run in order and stop at the first failure; the published ones stay.
 
@@ -169,8 +174,8 @@ owner decides which, and when.
 ### Refuse what corrupts, measure the rest
 
 Before anything is landed or written, the whole chunk is refused (`InvalidResponse`) on:
-another `data.type` than the dataset expects (the widget changed scope, as a peninsular reading
-of the national widget would have hidden); a shape or type problem; a number that is not finite;
+another `data.id` than the dataset expects (the widget changed what it returns; the id rather than
+the display name `data.type`, which REE could translate, and which the error message quotes); a shape or type problem; a number that is not finite;
 a datetime without an offset; a point outside the window; a repeated (series, timestamp); or no
 point at all, so that an empty answer never empties a window.
 
@@ -196,10 +201,12 @@ the snapshot summary (`ibergrid.redata.*`):
 The raw body goes, after the structural checks and before the run, to
 `s3://<bucket>/landing/redata/<dataset>/<system>/<YYYY>/<MM>/<start>_<end>-<sha256[:12]>.json`,
 outside the warehouse prefix, through pyarrow's S3 client (`ibergrid.storage.s3_filesystem`,
-shared with `doctor`). The hash in the key makes the object immutable per answer: a rerun with
-the same answer writes the same object again, a different answer gets its own, so the
-`landing_path` of the rows on main always names the body they came from, also when a later run
-landed and then failed. Each row also carries the body's SHA-256.
+shared with `doctor`). The hash, in the key and in each row's `payload_sha256`, is over what the
+answer says: the SHA-256 of its canonical JSON (sorted keys, no whitespace) without `data.meta`,
+REData's cache status. The body is landed whole, cache status included. So a rerun whose answer
+says the same writes the same key again, an answer that says something else gets its own, and the
+`landing_path` of the rows on main always names an object with the data they came from, also when
+a later run landed and then failed.
 
 ### HTTP client
 
@@ -231,8 +238,12 @@ on the new `main`, up to three attempts. A process killed between start and disc
   need a concurrency limit of 1 (a Dagster pool), not just per-partition isolation.
 - The request pace is per process: N workers send up to N requests a second. The same limit of 1
   keeps the pace.
-- Backfills must use the month and year chunks of `plan()`, not one run per day and dataset: a
-  day's run costs a request, a WAP cycle and two snapshots.
+- Daily partitions suit the schedule (one run a day per dataset). Backfills must not run them one
+  by one: a day's run costs a request, a WAP cycle and two snapshots. A backfill policy that hands
+  a range of partitions to one `ingest(settings, dataset, start, end, ...)` call lets `plan()` cut
+  it into month and year chunks.
+- The completeness, rule-violation and dropped-series numbers live in snapshot summaries, which
+  snapshot expiry removes: to keep them, the assets record them as materialization metadata.
 
 ### Hourly generation is not in REData
 
@@ -246,7 +257,8 @@ daily generation.
 ## Consequences
 
 - Good: any window can be rerun or backfilled without cleanup; the Dagster assets of a later pull
-  request call `ingest(settings, dataset, start, end, systems, run_id_prefix)` per partition.
+  request call `ingest(settings, dataset, start, end, systems, run_id_prefix)` for a daily
+  partition or, in a backfill, for a range of them.
 - Good: gaps, implausible values and vanished series are visible per run in the CLI and in the
   snapshot summary without blocking a partial source (today's demand, a series that started late).
 - Good: four widgets, one table, one normaliser; a widget with the same shape is a registry

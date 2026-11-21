@@ -145,8 +145,9 @@ redata: 1 chunk(s) published
   are phase 4.
 - **Raw answers.** Each response body lands at
   `s3://<bucket>/landing/redata/<dataset>/<system>/<YYYY>/<MM>/<start>_<end>-<sha256[:12]>.json`,
-  outside the warehouse: one object per window and answer. Every row carries that path and the
-  body's SHA-256.
+  outside the warehouse: one object per window and answer content (the hash leaves out
+  REData's cache status, which changes between identical answers). Every row carries that path
+  and that hash.
 - **Canarias' timestamps are as delivered.** REData stamps every system with peninsular offsets;
   Canarias' load shape suggests Canarian wall-clock times instead, which would put its `ts_utc`
   one hour early. Not verified, so joining Canarias to other systems on `ts_utc` is unsafe for
