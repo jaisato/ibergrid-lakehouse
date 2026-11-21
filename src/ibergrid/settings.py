@@ -97,6 +97,17 @@ class OmieSettings(BaseSettings):
     max_rps: float = Field(default=1.0, gt=0, le=1)
 
 
+class OrchestrationSettings(BaseSettings):
+    """Dagster's code server (ADR 0005). Not part of ``Settings``: loading the definitions must
+    not need the storage keys."""
+
+    model_config = _config("IBERGRID_ORCHESTRATION_")
+
+    # The schedules start stopped, so a local stack never calls the sources on its own; production
+    # turns them on.
+    schedules_running: bool = False
+
+
 class LogSettings(BaseSettings):
     """structlog output: ``json`` in containers, ``console`` for humans."""
 

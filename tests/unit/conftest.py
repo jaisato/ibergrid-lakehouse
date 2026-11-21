@@ -33,13 +33,14 @@ Responder = Callable[[Recorded], tuple[int, Any] | tuple[int, Any, dict[str, str
 
 
 class LocalServer:
-    """An HTTP server on an ephemeral 127.0.0.1 port that records requests and answers them."""
+    """An HTTP server on an ephemeral port that records requests and answers them; on 127.0.0.1
+    unless another local address is given (one that containers reach, for Dagster's runs)."""
 
-    def __init__(self, responder: Responder) -> None:
+    def __init__(self, responder: Responder, host: str = "127.0.0.1") -> None:
         self.responder = responder
         self.requests: list[Recorded] = []
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.url = f"http://127.0.0.1:{self._httpd.server_port}"
+        self._httpd = ThreadingHTTPServer((host, 0), self._handler())
+        self.url = f"http://{host}:{self._httpd.server_port}"
         # A short poll interval keeps shutdown() (and so each test teardown) fast.
         threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True).start()
 
