@@ -11,6 +11,7 @@ from pyarrow import fs
 
 from ibergrid import _http
 from ibergrid.settings import BrokerSettings, CatalogSettings, Settings, StorageSettings, base_url
+from ibergrid.storage import s3_filesystem
 
 
 @dataclass(frozen=True)
@@ -36,18 +37,8 @@ def check_storage(storage: StorageSettings, timeout: float) -> CheckResult:
     Cloudflare R2 has no equivalent, so the check that works on both is an authenticated
     HeadBucket.
     """
-    endpoint = base_url(storage.endpoint_url)
-    s3 = fs.S3FileSystem(
-        access_key=storage.access_key.get_secret_value(),
-        secret_key=storage.secret_key.get_secret_value(),
-        region=storage.region,
-        endpoint_override=endpoint,
-        force_virtual_addressing=False,
-        connect_timeout=timeout,
-        request_timeout=timeout,
-        retry_strategy=fs.AwsStandardS3RetryStrategy(max_attempts=1),
-    )
-    what = f"HeadBucket {endpoint}/{storage.bucket}"
+    s3 = s3_filesystem(storage, timeout=timeout, max_attempts=1)
+    what = f"HeadBucket {base_url(storage.endpoint_url)}/{storage.bucket}"
     started = time.monotonic()
     try:
         info = s3.get_file_info(storage.bucket)
