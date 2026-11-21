@@ -24,7 +24,7 @@ PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 	IBERGRID_S3_ENDPOINT_URL=https://account-id.r2.cloudflarestorage.com \
 	IBERGRID_APP_DIGEST=sha256:1111111111111111111111111111111111111111111111111111111111111111
 
-.PHONY: help sync lock lint format typecheck test test-integration audit ci compose-config \
+.PHONY: help sync lock lint format typecheck test test-integration test-live audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke
 
 help: ## Show this help
@@ -56,6 +56,9 @@ test: ## Unit tests with branch coverage (fails under 90 %)
 
 test-integration: ## Integration tests against the running stack (make up first)
 	$(UV) run pytest -m integration tests/integration
+
+test-live: ## Opt-in smoke test against the live REData API (one request per dataset)
+	$(UV) run pytest -m live tests/live
 
 audit: ## Known vulnerabilities in the locked dependencies (pip-audit)
 	$(UV) export --frozen --all-groups --no-emit-project --format requirements-txt \

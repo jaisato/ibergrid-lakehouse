@@ -706,3 +706,33 @@ def test_a_run_cannot_touch_another_table(catalog: SqlCatalog, loaded: Table) ->
         wap.write(other, audit, rows(("2026-01-01", 1)))
     with pytest.raises(wap.WapError, match="belongs to table"):
         wap.publish(other, audit, audit.base_snapshot_id)
+
+
+def test_write_records_the_callers_snapshot_properties(loaded: Table) -> None:
+    audit = wap.start(loaded, "measured")
+
+    head = wap.write(
+        loaded,
+        audit,
+        rows(("2026-01-02", 20)),
+        overwrite_filter="day == '2026-01-02'",
+        snapshot_properties={"ibergrid.redata.received-points": "1"},
+    )
+
+    run = [s.summary for s in loaded.snapshots() if s.summary and s.summary[wap.RUN_ID_PROPERTY]]
+    # An overwrite commits two snapshots (delete, append); both carry the run id and the property.
+    assert [summary[wap.RUN_ID_PROPERTY] for summary in run] == ["measured", "measured"]
+    assert [summary["ibergrid.redata.received-points"] for summary in run] == ["1", "1"]
+    assert wap.publish(loaded, audit, head) == head
+
+
+@pytest.mark.parametrize("key", [wap.RUN_ID_PROPERTY, wap.CHECKPOINT_PROPERTY])
+def test_write_refuses_the_protocols_own_properties(loaded: Table, key: str) -> None:
+    audit = wap.start(loaded, "spoof")
+    before = loaded.metadata.refs[audit.name].snapshot_id
+
+    with pytest.raises(ValueError, match="are set by the WAP protocol"):
+        wap.write(loaded, audit, rows(("2026-01-03", 3)), snapshot_properties={key: "x"})
+
+    loaded.refresh()
+    assert loaded.metadata.refs[audit.name].snapshot_id == before

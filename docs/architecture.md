@@ -1,10 +1,12 @@
 # Architecture
 
-Phase 0 runs the storage, catalog and broker layers and the CLI that wires them together, and the
-lake library (`ibergrid.lake`) writes and reads Iceberg tables on them. The pipelines
-(connectors, Dagster, streaming) build on these in later phases. The decisions behind the stack
-are in [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
-Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md).
+The stack runs the storage, catalog and broker layers and the CLI that wires them together; the
+lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, and the first connector
+(`ibergrid.sources.redata`, phase 1) ingests REData into Bronze through it. Dagster, OMIE and
+streaming build on these next. The decisions behind the stack are in
+[ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
+Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
+ingested, in [ADR 0003](adr/0003-redata-ingestion.md).
 
 ## System context (C4 level 1)
 
@@ -32,12 +34,12 @@ C4Context
 
 ```mermaid
 C4Container
-  title IberGrid Lakehouse - containers (C4 level 2, phase 0)
+  title IberGrid Lakehouse - containers (C4 level 2, phase 1)
 
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands")
+    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(broker, "broker", "Redpanda 26.2", "Kafka API for streaming ingestion (topics from phase 2)")
@@ -45,10 +47,12 @@ C4Container
   }
 
   System_Ext(r2, "Cloudflare R2", "Object storage in production")
+  System_Ext(ree, "Red Electrica REData API", "Public JSON:API, no token")
 
   Rel(analyst, catalog, "Iceberg REST", "HTTP")
+  Rel(app, ree, "ingest redata: at most 1 request/s", "HTTPS")
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
-  Rel(app, storage, "Table data with its own keys; HeadBucket", "S3 API")
+  Rel(app, storage, "Table data and landed raw answers, with its own keys; HeadBucket", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
   Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
@@ -67,6 +71,7 @@ C4Container
 | `catalog-init` | `ibergrid-app` (this repository) | One-shot: `ibergrid catalog bootstrap` | catalog | |
 | `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node, dev-container mode | broker | 29092 (Kafka), 29644 (admin) |
 | `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
+| `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
 
 Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
 healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `docker compose up
@@ -94,6 +99,13 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   no credentials, and the warehouse has remote signing off, so each client applies its own
   `IBERGRID_S3_*` endpoint and keys: the same code runs in containers and from the host. The app
   image bakes DuckDB's extensions at build time and never downloads them at runtime.
+- **Ingestion ([ADR 0003](adr/0003-redata-ingestion.md)).** `ibergrid ingest redata` runs in
+  the `ingest` one-shot, whose networks have egress to the public API. Per chunk (a dataset, a
+  system and a calendar month or year of local days) it fetches, checks the structure, lands the
+  raw answer under `landing/` in the bucket (outside the warehouse prefix) and publishes the rows
+  to `bronze.redata_observations` through Write-Audit-Publish, replacing exactly that window. It
+  has a 384 MiB memory limit, since a month of five-minute demand peaks at 238 MiB; the other app
+  one-shots keep 192 MiB.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.

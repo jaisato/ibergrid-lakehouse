@@ -1,5 +1,6 @@
 """The ``ibergrid`` command line: the entrypoint of the app image."""
 
+from datetime import datetime
 from importlib.metadata import version as package_version
 from typing import Annotated, NoReturn
 
@@ -18,8 +19,14 @@ from ibergrid.doctor import run_checks
 from ibergrid.lake import duck, registry
 from ibergrid.lake.catalog import rest_catalog
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
+from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
 from ibergrid.settings import Settings, base_url, describe_validation_error
+from ibergrid.sources.redata.client import RedataError
+from ibergrid.sources.redata.datasets import DATASETS
+from ibergrid.sources.redata.ingest import ChunkReport, ingest
+
+SHOWN_DAYS = 5  # incomplete days named per chunk line
 
 app = typer.Typer(
     help="IberGrid Lakehouse operations.",
@@ -33,6 +40,8 @@ catalog_app = typer.Typer(
 app.add_typer(catalog_app, name="catalog")
 lake_app = typer.Typer(help="Create and inspect the lake's Iceberg tables.", no_args_is_help=True)
 app.add_typer(lake_app, name="lake")
+ingest_app = typer.Typer(help="Pull source data into the Bronze tables.", no_args_is_help=True)
+app.add_typer(ingest_app, name="ingest")
 
 
 def _load_settings() -> Settings:
@@ -131,6 +140,50 @@ def lake_describe(
     typer.echo(f"snapshot:   {snapshot}")
     typer.echo(f"refs:       {refs or 'none'}")
     typer.echo(f"data files: {info.data_files} ({info.data_bytes} bytes)")
+
+
+@ingest_app.command("redata")
+def ingest_redata(
+    dataset: Annotated[str, typer.Option(help=f"One of: {', '.join(DATASETS)}.")],
+    start: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="First local day.")],
+    end: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="Last local day.")],
+    system: Annotated[
+        list[str] | None,
+        typer.Option(help="Electric system; repeat for several. Default: all of the dataset's."),
+    ] = None,
+) -> None:
+    """Fetch REData for local days [start, end] and publish it to bronze.redata_observations,
+    one chunk at a time; a rerun replaces the same rows. Exits 1 at the first failed chunk."""
+    settings = _load_settings()
+    try:
+        reports = ingest(
+            settings, dataset, start.date(), end.date(), system or (), on_chunk=_print_chunk
+        )
+    # OSError: the catalog or the bucket did not answer; RESTError: the catalog refused.
+    except (RedataError, WapError, ValueError, OSError, RESTError) as exc:
+        _fail(exc)
+    typer.echo(f"redata: {len(reports)} chunk(s) published")
+
+
+def _print_chunk(report: ChunkReport) -> None:
+    chunk, measured = report.chunk, report.completeness
+    share = 100 * measured.received / measured.expected if measured.expected else 0
+    line = (
+        f"redata: {chunk.dataset.name} {chunk.system.name} {chunk.start}..{chunk.end}: "
+        f"{report.rows} rows, {measured.received}/{measured.expected} points ({share:.1f} %), "
+        f"snapshot {report.snapshot_id}"
+    )
+    if measured.incomplete:
+        shown = measured.incomplete[:SHOWN_DAYS]  # the snapshot summary keeps all of them
+        days = ", ".join(f"{day} {received}/{expected}" for day, expected, received in shown)
+        more = len(measured.incomplete) - len(shown)
+        line += f"; incomplete days: {days}" + (f" and {more} more" if more else "")
+    if report.violations:
+        broken = ", ".join(f"{series} {count}" for series, count in report.violations.items())
+        line += f"; points breaking the value rules: {broken}"
+    if report.dropped_series:
+        line += f"; series no longer in the answer: {', '.join(report.dropped_series)}"
+    typer.echo(line)
 
 
 def _outcome(result: EnsureResult) -> str:

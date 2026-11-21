@@ -18,6 +18,8 @@ dependencies = [
   "pyiceberg[pyarrow,pyiceberg-core]==0.12.0",
   "structlog>=26,<27",
   "typer>=0.27,<1",
+  # zoneinfo's Europe/Madrid (REData's days) wherever the OS has no time zone database.
+  "tzdata>=2025.2",
 ]
 
 [project.scripts]
@@ -82,6 +84,7 @@ testpaths = ["tests/unit"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
   "integration: needs the docker compose stack running (make up)",
+  "live: calls the live REData API (make test-live); never run by default or in CI",
 ]
 xfail_strict = true
 

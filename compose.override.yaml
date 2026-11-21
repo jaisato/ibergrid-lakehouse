@@ -18,3 +18,4 @@ services:
       - "127.0.0.1:29644:9644" # Redpanda admin API
   catalog-init: *build
   doctor: *build
+  ingest: *build

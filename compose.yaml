@@ -18,7 +18,7 @@ x-lakekeeper-env: &lakekeeper-env
   # request's Host header, so host clients get 127.0.0.1:28181 and containers get catalog:8181.
   RUST_LOG: info
 
-# The ibergrid app image (catalog-init, doctor). Same variable names as ibergrid.settings.
+# The ibergrid app image (catalog-init, doctor, ingest). Same variable names as ibergrid.settings.
 x-app: &app
   <<: *hardened
   image: ibergrid-app:local
@@ -33,6 +33,9 @@ x-app: &app
     IBERGRID_CATALOG_URL: http://catalog:8181
     IBERGRID_CATALOG_WAREHOUSE: ${IBERGRID_CATALOG_WAREHOUSE:-lakehouse}
     IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
+    IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
+    IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
+    IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
     IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
     IBERGRID_LOG_FORMAT: json
 
@@ -186,9 +189,10 @@ services:
 
   # --- Tools -------------------------------------------------------------------------------------
   # Readiness report from inside the network: `docker compose run --rm --no-deps doctor` (make smoke
-  # and the deploy job). scale 0: `up` never starts it. Its depends_on also matters to
-  # `up --wait`, which treats a one-shot that nothing depends on as failed once it exits; with a
-  # dependent, compose waits for catalog-init to complete successfully instead.
+  # and the deploy job); with arguments it runs other ibergrid commands, such as `lake init`.
+  # scale 0: `up` never starts it. Its depends_on also matters to `up --wait`, which treats a
+  # one-shot that nothing depends on as failed once it exits; with a dependent, compose waits for
+  # catalog-init to complete successfully instead.
   doctor:
     <<: *app
     scale: 0
@@ -197,6 +201,17 @@ services:
       catalog-init:
         condition: service_completed_successfully
     networks: [storage, catalog, broker]
+
+  # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...`. REData is
+  # on the public internet (these networks have egress). A month of five-minute demand (35,760
+  # rows) peaks at 238 MiB of cgroup memory (ADR 0003), hence its own limit.
+  ingest:
+    <<: *app
+    scale: 0
+    mem_limit: 384m
+    entrypoint: ["ibergrid", "ingest"]
+    command: ["--help"]
+    networks: [storage, catalog]
 
 networks:
   storage:
