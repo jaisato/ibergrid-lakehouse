@@ -53,8 +53,9 @@ src = ["src", "tests"]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PT", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests assert, use throwaway credentials and drive docker compose through subprocess.
-"tests/**" = ["S101", "S105", "S106", "S603", "S607"]
+# Tests assert, use throwaway credentials, drive docker compose through subprocess and build SQL
+# from the table names they generate.
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "S608"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["ibergrid"]
