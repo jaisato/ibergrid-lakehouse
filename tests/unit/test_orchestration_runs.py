@@ -10,11 +10,6 @@ from typing import Any
 
 import dagster as dg
 import pytest
-from dagster._core.remote_origin import (
-    RegisteredCodeLocationOrigin,
-    RemoteJobOrigin,
-    RemoteRepositoryOrigin,
-)
 from pyarrow import fs
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.table import Table
@@ -382,6 +377,30 @@ def test_tomorrow_not_published_yet_is_not_materialized_unless_required(
     assert rows(catalog, OMIE_DAY_AHEAD_PRICES.identifier) == 0
 
 
+def test_a_required_tomorrow_fails_the_run_but_the_trailing_days_stay_published(
+    lake: Lake,
+    instance: dg.DagsterInstance,
+    omie: FakeOmie,
+    today: date,
+    catalog: SqlCatalog,
+    calls: list[tuple[Any, ...]],
+) -> None:
+    """The evening run's shape without its retry policy: today is re-ingested and recorded, then
+    tomorrow, not out, fails the run."""
+    omie_day(omie, TODAY)
+    config = OmieConfig(trailing_days=1, require_published=True)
+
+    result = materialize(omie_day_ahead_prices, lake, instance, "2026-11-21", config=config)
+
+    assert not result.success
+    assert calls == [
+        ("omie", TODAY, TODAY, False),
+        ("omie", date(2026, 11, 21), date(2026, 11, 21), True),
+    ]
+    assert materialized(instance, OMIE_KEY) == [str(TODAY)]
+    assert rows(catalog, OMIE_DAY_AHEAD_PRICES.identifier) == 96
+
+
 def test_the_scheduled_afternoon_job_carries_its_config(
     lake: Lake,
     instance: dg.DagsterInstance,
@@ -414,21 +433,27 @@ def test_the_scheduled_afternoon_job_carries_its_config(
 # What the sweeper may remove, spelled out rather than taken from sweeper.FINISHED: every other
 # status, including any Dagster adds later, must keep its branch.
 REMOVABLE = {dg.DagsterRunStatus.SUCCESS, dg.DagsterRunStatus.FAILURE, dg.DagsterRunStatus.CANCELED}
-# A queued run needs its code location's origin; Dagster has no public constructor for one.
-ORIGIN = RemoteJobOrigin(
-    RemoteRepositoryOrigin(RegisteredCodeLocationOrigin("ibergrid"), "__repository__"),
-    "redata_daily",
-)
 
 
 def runs_in_every_status(instance: dg.DagsterInstance) -> dict[dg.DagsterRunStatus, str]:
+    # A queued run needs its code location's origin; Dagster has no public constructor for one.
+    from dagster._core.remote_origin import (
+        RegisteredCodeLocationOrigin,
+        RemoteJobOrigin,
+        RemoteRepositoryOrigin,
+    )
+
+    origin = RemoteJobOrigin(
+        RemoteRepositoryOrigin(RegisteredCodeLocationOrigin("ibergrid"), "__repository__"),
+        "redata_daily",
+    )
     return {
         status: instance.add_run(
             dg.DagsterRun(
                 job_name="redata_daily",
                 run_id=str(uuid.uuid4()),
                 status=status,
-                remote_job_origin=ORIGIN,
+                remote_job_origin=origin,
             )
         ).run_id
         for status in dg.DagsterRunStatus

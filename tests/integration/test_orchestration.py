@@ -72,6 +72,8 @@ def fresh() -> None:
     """Skip on an instance that holds materializations of the real asset keys."""
     nodes = graphql("{ assetNodes { partitionStats { numMaterialized } } }")["assetNodes"]
     found = sum((node["partitionStats"] or {}).get("numMaterialized", 0) for node in nodes)
+    if found and os.environ.get("CI"):
+        pytest.fail(f"CI's stack must be fresh, but the instance holds {found} materializations")
     if found:
         pytest.skip(
             f"the instance holds {found} materialized partitions of the real assets: these tests "
@@ -238,6 +240,34 @@ def test_the_dagster_services_are_healthy() -> None:
     }
     assert all(s["healthy"] for s in statuses), statuses
     assert instance["poolConfig"] == {"poolGranularity": "run", "defaultPoolLimit": 1}
+
+
+def test_a_stopping_code_server_lets_its_runs_finish_and_killed_runs_are_bounded() -> None:
+    """The stop grace period, the runtime limit and the run retries (ADR 0005), as the running
+    services have them."""
+    code = compose("ps", "-q", "dagster-code")
+    assert run(["docker", "inspect", "-f", "{{.Config.StopTimeout}}", code]) == "300"
+    loaded = compose(
+        "exec",
+        "-T",
+        "dagster-code",
+        "python",
+        "-c",
+        "from dagster import DagsterInstance; i = DagsterInstance.get(); print("
+        "i.run_monitoring_max_runtime_seconds, i.run_retries_max_retries, "
+        "i.run_retries_retry_on_asset_or_op_failure)",
+    )
+    assert loaded.split() == ["7200", "2", "False"]
+
+
+def run(command: list[str]) -> str:
+    return subprocess.run(
+        command, cwd=REPO, capture_output=True, text=True, check=True, timeout=120
+    ).stdout.strip()
+
+
+def compose(*args: str) -> str:
+    return run(["docker", "compose", *args])
 
 
 def test_a_run_through_the_webserver_materializes_partitions_with_their_measurements(
