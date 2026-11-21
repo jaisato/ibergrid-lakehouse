@@ -417,12 +417,25 @@ def test_plugin_identifier_validation_and_missing_bronze_table(
     # Standalone fallback when no active context is bound.
     assert plugin.current_context().bronze_namespace == "bronze"
 
-    # Catalog has NO Bronze tables created -> dbt build fails cleanly naming lake init.
+    # Missing Bronze table fails cleanly naming lake init (with target tables present).
+    for spec in registry.MEDALLION_TABLES:
+        ensure_table(catalog, spec)
     rest = serve(FakeIcebergRest(catalog))
     monkeypatch.setenv("IBERGRID_CATALOG_URL", rest.url)
     monkeypatch.setattr(transform_runner, "rest_catalog", lambda _s: catalog)
     with pytest.raises(TransformError, match="lake init"):
         run_medallion(Settings())
+
+
+def test_missing_target_table_fails_before_dbt_build(
+    catalog: SqlCatalog, serve: Serve, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> None:
+    """Missing Silver/Gold table fails fast in pre-build head capture without running dbt."""
+    rest = serve(FakeIcebergRest(catalog))
+    monkeypatch.setenv("IBERGRID_CATALOG_URL", rest.url)
+    monkeypatch.setattr(transform_runner, "rest_catalog", lambda _s: catalog)
+    with pytest.raises(TransformError, match="does not exist in catalog"):
+        run_medallion(Settings(), select=("mibel_daily_summary",))
 
 
 def test_align_to_schema_and_publish_table_edge_cases(
@@ -445,12 +458,12 @@ def test_align_to_schema_and_publish_table_edge_cases(
             catalog,
             spec.identifier,
             empty,
+            expected_base=None,
             run_id_prefix="r1",
             bronze_snapshots={},
             dbt_tests_passed=1,
         )
 
-    # PublishConflict retries and succeeds on second attempt; exhausts on 3rd.
     ensure_table(catalog, spec)
     one_row = pa.table(
         {
@@ -469,60 +482,76 @@ def test_align_to_schema_and_publish_table_edge_cases(
         },
         schema=spec.schema.as_arrow(),
     )
-    real_publish = wap.publish
-    calls = 0
-
-    def flaky_publish(*args: Any, **kwargs: Any) -> int | None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise wap.PublishConflict("main moved")
-        return real_publish(*args, **kwargs)
-
-    monkeypatch.setattr(wap, "publish", flaky_publish)
-    snap, _ = _publish_table(
+    # Publish succeeds when main is still at expected_base (None on empty table).
+    first_snap, _ = _publish_table(
         catalog,
         spec.identifier,
         one_row,
-        run_id_prefix="retry",
+        expected_base=None,
+        run_id_prefix="first",
         bronze_snapshots={},
         dbt_tests_passed=1,
     )
-    assert snap is not None
-    assert calls == 2
+    assert first_snap is not None
     assert wap.audit_branches(catalog.load_table(spec.identifier)) == []
 
+    # Concurrent publish during dbt build (expected_base is stale): refused without overwriting!
+    price_idx = one_row.schema.get_field_index("price_es_mean_eur_mwh")
+    stale_row = one_row.set_column(
+        price_idx,
+        one_row.schema.field(price_idx),
+        pa.array([999.0], pa.float64()),
+    )
+    with pytest.raises(wap.PublishConflict, match="during dbt build"):
+        _publish_table(
+            catalog,
+            spec.identifier,
+            stale_row,
+            expected_base=None,
+            run_id_prefix="stale-build",
+            bronze_snapshots={},
+            dbt_tests_passed=1,
+        )
+    table = catalog.load_table(spec.identifier)
+    assert table.metadata.current_snapshot_id == first_snap
+    assert table.scan().to_arrow()["price_es_mean_eur_mwh"].to_pylist() == [10.0]
+    assert wap.audit_branches(table) == []
+
     # Audit row count mismatch discards branch and raises TransformError.
-    monkeypatch.setattr(wap, "publish", real_publish)
     monkeypatch.setattr(wap, "head", lambda _t, _a: None)
     with pytest.raises(TransformError, match="audit mismatch"):
         _publish_table(
             catalog,
             spec.identifier,
             one_row,
+            expected_base=first_snap,
             run_id_prefix="mismatch",
             bronze_snapshots={},
             dbt_tests_passed=1,
         )
     assert wap.audit_branches(catalog.load_table(spec.identifier)) == []
 
-    # Persistent conflict exhausts MAX_PUBLISH_ATTEMPTS and propagates PublishConflict.
+    # PublishConflict during wap.publish discards branch and propagates without retrying stale rows.
     monkeypatch.undo()
 
     def always_conflict(*_a: Any, **_kw: Any) -> int | None:
-        raise wap.PublishConflict("conflict")
+        raise wap.PublishConflict("main moved")
 
     monkeypatch.setattr(wap, "publish", always_conflict)
-    with pytest.raises(wap.PublishConflict):
+    with pytest.raises(wap.PublishConflict, match="main moved"):
         _publish_table(
             catalog,
             spec.identifier,
-            one_row,
-            run_id_prefix="exhaust",
+            stale_row,
+            expected_base=first_snap,
+            run_id_prefix="conflict",
             bronze_snapshots={},
             dbt_tests_passed=1,
         )
-    assert wap.audit_branches(catalog.load_table(spec.identifier)) == []
+    table = catalog.load_table(spec.identifier)
+    assert table.metadata.current_snapshot_id == first_snap
+    assert table.scan().to_arrow()["price_es_mean_eur_mwh"].to_pylist() == [10.0]
+    assert wap.audit_branches(table) == []
 
 
 def test_load_dbt_missing_package_and_failure_summary(monkeypatch: pytest.MonkeyPatch) -> None:

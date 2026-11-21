@@ -10,8 +10,10 @@ transformation from publication:
    ``main`` is modified.
 3. Only after every model and test passes, each selected Silver and Gold table is exported from the
    staging DuckDB to Arrow, aligned strictly to its ``TableSpec`` schema and published to Lakekeeper
-   through ``ibergrid.lake.wap`` (``start`` -> ``write`` -> branch count audit -> ``publish``), with
-   retries on ``PublishConflict`` and ``discard`` on any failure.
+   through ``ibergrid.lake.wap`` (``start`` -> ``write`` -> branch count audit -> ``publish``),
+   fenced against each target table's ``main`` snapshot captured before ``dbt build``. On a
+   ``PublishConflict`` the audit branch is discarded and the conflict propagates so callers
+   (CLI or Dagster retries) rebuild from current Bronze snapshots instead of publishing stale rows.
 """
 
 import json
@@ -33,6 +35,7 @@ from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import AlwaysTrue
 from pyiceberg.table import Table
+from pyiceberg.table.refs import MAIN_BRANCH
 
 from ibergrid.lake import registry, wap
 from ibergrid.lake.catalog import rest_catalog
@@ -41,7 +44,6 @@ from ibergrid.settings import Settings
 
 log = structlog.get_logger(__name__)
 
-MAX_PUBLISH_ATTEMPTS = 3
 MEDALLION_BY_NAME: dict[str, TableSpec] = {spec.name: spec for spec in registry.MEDALLION_TABLES}
 MEDALLION_BY_QUALIFIED: dict[str, TableSpec] = {
     f"{spec.namespace}.{spec.name}": spec for spec in registry.MEDALLION_TABLES
@@ -145,6 +147,11 @@ def run_medallion(
     source_ns = bronze_namespace or "bronze"
     context = plugin_module.TransformContext(settings=settings, bronze_namespace=source_ns)
 
+    # Capture each target table's main head before dbt build starts: if another transform process
+    # publishes newer output during the build or write, we refuse to overwrite it with stale rows.
+    lake_catalog = catalog if catalog is not None else rest_catalog(settings)
+    expected_bases = _capture_target_heads(lake_catalog, targets, target_namespace=target_namespace)
+
     with tempfile.TemporaryDirectory(prefix="ibergrid-dbt-") as tmp:
         work = Path(tmp)
         staging_db = work / "staging.duckdb"
@@ -167,11 +174,11 @@ def run_medallion(
         )
         dbt_seconds = round(time.monotonic() - dbt_started, 3)
 
-        lake_catalog = catalog if catalog is not None else rest_catalog(settings)
         reports = _publish_all(
             staging_db,
             lake_catalog,
             targets,
+            expected_bases=expected_bases,
             target_namespace=target_namespace,
             run_id_prefix=prefix,
             bronze_snapshots=dict(context.bronze_snapshots),
@@ -306,11 +313,33 @@ def _describe_dbt_failure(result: Any) -> str:
     return str(exc) if exc is not None else "unknown dbt error"
 
 
+def _capture_target_heads(
+    catalog: Catalog,
+    targets: tuple[TableSpec, ...],
+    *,
+    target_namespace: str | None,
+) -> dict[tuple[str, str], int | None]:
+    """Load each target table before ``dbt build`` and record its current ``main`` snapshot id."""
+    heads: dict[tuple[str, str], int | None] = {}
+    for spec in targets:
+        identifier = (target_namespace or spec.namespace, spec.name)
+        try:
+            table: Table = catalog.load_table(identifier)
+        except NoSuchTableError as exc:
+            raise TransformError(
+                f"{'.'.join(identifier)} does not exist in catalog; run `ibergrid lake init` first"
+            ) from exc
+        ref = table.metadata.refs.get(MAIN_BRANCH)
+        heads[identifier] = None if ref is None else ref.snapshot_id
+    return heads
+
+
 def _publish_all(
     staging_db: Path,
     catalog: Catalog,
     targets: tuple[TableSpec, ...],
     *,
+    expected_bases: dict[tuple[str, str], int | None],
     target_namespace: str | None,
     run_id_prefix: str,
     bronze_snapshots: dict[str, int | None],
@@ -333,6 +362,7 @@ def _publish_all(
                 catalog,
                 identifier,
                 aligned,
+                expected_base=expected_bases[identifier],
                 run_id_prefix=run_id_prefix,
                 bronze_snapshots=bronze_snapshots,
                 dbt_tests_passed=dbt_tests_passed,
@@ -390,11 +420,17 @@ def _publish_table(
     identifier: tuple[str, str],
     rows: pa.Table,
     *,
+    expected_base: int | None,
     run_id_prefix: str,
     bronze_snapshots: dict[str, int | None],
     dbt_tests_passed: int,
 ) -> tuple[int | None, str]:
-    """Full-refresh overwrite of one Silver/Gold table through WAP with conflict retries."""
+    """Full-refresh overwrite of one Silver/Gold table through WAP, fenced on ``expected_base``.
+
+    Never retries with stale rows on ``PublishConflict``: if another writer moved ``main`` during
+    the dbt build or WAP write, the audit branch is discarded and ``PublishConflict`` propagates
+    so the caller rebuilds from current Bronze snapshots.
+    """
     try:
         table: Table = catalog.load_table(identifier)
     except NoSuchTableError as exc:
@@ -410,53 +446,44 @@ def _publish_table(
         "ibergrid.transform.bronze-snapshots": json.dumps(bronze_snapshots, sort_keys=True),
     }
     slug = f"transform-{identifier[1].replace('_', '-')}"
-
-    attempt = 1
-    while True:
-        run_id = f"{run_id_prefix}-{slug}-a{attempt}-{uuid.uuid4().hex[:4]}"
-        audit = wap.start(table, run_id)
-        try:
-            # Skip overwrite on a brand-new empty table with 0 rows: an empty delete on an empty
-            # branch leaves nothing to audit or publish, and DuckDB cannot read an empty root.
-            if rows.num_rows == 0 and audit.base_snapshot_id is None:
-                wap.discard(table, audit)
-                return None, run_id
-            wap.write(
-                table,
-                audit,
-                rows,
-                overwrite_filter=None if audit.base_snapshot_id is None else AlwaysTrue(),
-                snapshot_properties=properties,
+    run_id = f"{run_id_prefix}-{slug}-{uuid.uuid4().hex[:4]}"
+    audit = wap.start(table, run_id)
+    try:
+        if audit.base_snapshot_id != expected_base:
+            raise wap.PublishConflict(
+                f"{'.'.join(identifier)}: main moved from {expected_base} to "
+                f"{audit.base_snapshot_id} during dbt build; rebuild from current Bronze snapshots"
             )
-            audited = wap.head(table, audit)
-            actual_rows = (
-                0
-                if audited is None
-                else table.scan(
-                    snapshot_id=audited,
-                    selected_fields=(table.schema().fields[0].name,),
-                )
-                .to_arrow()
-                .num_rows
-            )
-            if actual_rows != rows.num_rows:
-                raise TransformError(
-                    f"{'.'.join(identifier)} audit mismatch: branch has {actual_rows} "
-                    f"row(s), expected {rows.num_rows}"
-                )
-            published = wap.publish(table, audit, audited)
-            return published, run_id
-        except wap.PublishConflict:
+        # Skip overwrite on a brand-new empty table with 0 rows: an empty delete on an empty
+        # branch leaves nothing to audit or publish, and DuckDB cannot read an empty root.
+        if rows.num_rows == 0 and audit.base_snapshot_id is None:
             wap.discard(table, audit)
-            if attempt >= MAX_PUBLISH_ATTEMPTS:
-                raise
-            log.warning(
-                "transform.table.conflict_retry",
-                table=".".join(identifier),
-                attempt=attempt,
-                run_id=run_id,
+            return None, run_id
+        wap.write(
+            table,
+            audit,
+            rows,
+            overwrite_filter=None if audit.base_snapshot_id is None else AlwaysTrue(),
+            snapshot_properties=properties,
+        )
+        audited = wap.head(table, audit)
+        actual_rows = (
+            0
+            if audited is None
+            else table.scan(
+                snapshot_id=audited,
+                selected_fields=(table.schema().fields[0].name,),
             )
-            attempt += 1
-        except Exception:
-            wap.discard(table, audit)
-            raise
+            .to_arrow()
+            .num_rows
+        )
+        if actual_rows != rows.num_rows:
+            raise TransformError(
+                f"{'.'.join(identifier)} audit mismatch: branch has {actual_rows} "
+                f"row(s), expected {rows.num_rows}"
+            )
+        published = wap.publish(table, audit, audited)
+        return published, run_id
+    except Exception:
+        wap.discard(table, audit)
+        raise

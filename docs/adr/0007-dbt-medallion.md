@@ -200,12 +200,15 @@ All 9 Silver and Gold tables are declared as `TableSpec`s in `ibergrid.lake.regi
    `assert_mibel_hourly_dst_continuity`, `assert_mibel_redata_spot_reconciliation`,
    `assert_stream_batch_reconciliation`) plus 81 schema tests gate publication. Any failure aborts
    before touching Iceberg.
-4. Each selected table is read from the staging DuckDB to Arrow, aligned strictly to
-   `spec.schema.as_arrow()`, and published via `wap.start` -> `wap.write` (append on a first empty
-   table, `AlwaysTrue()` overwrite thereafter) -> single-column branch row-count audit ->
-   `wap.publish`, retrying `PublishConflict` up to 3 times and discarding audit branches on any
-   failure. Every snapshot summary records `ibergrid.transform.bronze-snapshots` and
-   `ibergrid.transform.dbt-tests-passed`.
+4. Before `dbt build` starts, `run_medallion` captures each target table's current `main` snapshot
+   id. Each selected table is then read from the staging DuckDB to Arrow, aligned strictly to
+   `spec.schema.as_arrow()`, and published via `wap.start` -> pre-build `main` head check ->
+   `wap.write` (append on a first empty table, `AlwaysTrue()` overwrite thereafter) ->
+   single-column branch row-count audit -> `wap.publish`. If another transform process moved `main`
+   during the build or write, the audit branch is discarded and `PublishConflict` propagates
+   without retrying stale Arrow rows, so the caller (CLI or Dagster step retry) rebuilds from
+   current Bronze snapshots. Every snapshot summary records `ibergrid.transform.bronze-snapshots`
+   and `ibergrid.transform.dbt-tests-passed`.
 
 ### CLI, container and Dagster orchestration
 
