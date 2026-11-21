@@ -9,11 +9,13 @@ from zoneinfo import ZoneInfo
 import dagster as dg
 import pytest
 
+from ibergrid.lake.registry import MEDALLION_TABLES
 from ibergrid.orchestration import definitions
 from ibergrid.orchestration.assets import (
     OMIE_PARTITIONS,
     REDATA_ASSETS,
     REDATA_PARTITIONS,
+    medallion_models,
     omie_day_ahead_prices,
 )
 from ibergrid.sources.redata.datasets import DATASETS
@@ -39,16 +41,26 @@ def test_the_definitions_load_and_validate() -> None:
     keys = {
         key.to_user_string() for key in definitions.defs.resolve_asset_graph().get_all_asset_keys()
     }
-    assert keys == {f"bronze/redata_observations/{name}" for name in DATASETS} | {
-        "bronze/omie_day_ahead_prices"
-    }
-    for job in ("redata_daily", "omie_afternoon", "omie_evening", "sweep_audit_branches"):
+    expected = (
+        {f"bronze/redata_observations/{name}" for name in DATASETS}
+        | {"bronze/omie_day_ahead_prices", "bronze/redata_demand_stream"}
+        | {f"{spec.namespace}/{spec.name}" for spec in MEDALLION_TABLES}
+    )
+    assert keys == expected
+    for job in (
+        "redata_daily",
+        "omie_afternoon",
+        "omie_evening",
+        "medallion_transform",
+        "sweep_audit_branches",
+    ):
         assert definitions.defs.resolve_job_def(job).name == job
 
 
-def test_redata_assets_share_one_pool_and_omie_has_its_own() -> None:
+def test_redata_assets_share_one_pool_and_omie_and_transform_have_their_own() -> None:
     assert {asset.op.pool for asset in REDATA_ASSETS} == {"redata"}
     assert omie_day_ahead_prices.op.pool == "omie"
+    assert medallion_models.op.pool == "transform"
 
 
 def test_a_backfill_is_one_run_per_range() -> None:
@@ -129,14 +141,16 @@ def test_the_schedules_run_at_their_madrid_times() -> None:
 
     assert times == {
         "redata_daily_schedule": ["0", "9"],
+        "medallion_morning_schedule": ["30", "9"],
         "omie_afternoon_schedule": ["0", "16"],
+        "medallion_afternoon_schedule": ["30", "16"],
         "omie_evening_schedule": ["30", "21"],
         "sweep_audit_branches_schedule": ["30", "5"],
     }
 
 
 def test_scheduled_jobs_retry_a_failed_step_twice_and_backfills_do_not() -> None:
-    for job in ("redata_daily", "omie_afternoon", "omie_evening"):
+    for job in ("redata_daily", "omie_afternoon", "omie_evening", "medallion_transform"):
         policy = definitions.defs.resolve_job_def(job).op_retry_policy
         assert policy == dg.RetryPolicy(max_retries=2, delay=900), job
     assert definitions.defs.resolve_implicit_global_asset_job_def().op_retry_policy is None

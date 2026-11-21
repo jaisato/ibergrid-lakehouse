@@ -1,0 +1,11 @@
+ibergrid:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: "{{ env_var('IBERGRID_DBT_DUCKDB_PATH', ':memory:') }}"
+      schema: main
+      threads: "{{ env_var('IBERGRID_TRANSFORM_THREADS', '1') | int }}"
+      keep_open: true
+      plugins:
+        - module: ibergrid.transform.plugin

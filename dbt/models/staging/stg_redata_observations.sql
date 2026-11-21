@@ -1,0 +1,20 @@
+select
+    dataset,
+    widget,
+    electric_system,
+    series_id,
+    series_type,
+    series_title,
+    granularity,
+    ts_utc,
+    cast(ts_utc at time zone 'Europe/Madrid' as date) as madrid_date,
+    cast(extract(hour from (ts_utc at time zone 'Europe/Madrid')) as integer) as madrid_hour,
+    ts_local,
+    value,
+    percentage,
+    series_last_update,
+    fetched_at,
+    run_id,
+    landing_path,
+    payload_sha256
+from {{ source('bronze', 'redata_observations') }}

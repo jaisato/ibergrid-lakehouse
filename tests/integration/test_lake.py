@@ -16,7 +16,7 @@ from pyiceberg.table import Table
 from pyiceberg.transforms import MonthTransform
 from pyiceberg.types import DateType, LongType, NestedField
 
-from ibergrid.lake import duck, maintenance, wap
+from ibergrid.lake import duck, maintenance, registry, wap
 from ibergrid.lake.catalog import LakeCatalog, rest_catalog
 from ibergrid.lake.tables import TableSpec, ensure_table
 from ibergrid.settings import Settings
@@ -396,13 +396,12 @@ print(json.dumps({"created": created, **counts}))
 def test_the_app_image_runs_init_wap_and_describe_in_the_network(namespace: str) -> None:
     result = compose_run("doctor", "lake", "init")
     assert result.returncode == 0, result.stdout + result.stderr
-    # The registry's Bronze tables: created by the first init on this stack, unchanged afterwards.
-    assert re.fullmatch(
-        r"lake: bronze\.redata_observations (created|unchanged)\n"
-        r"lake: bronze\.omie_day_ahead_prices (created|unchanged)\n"
-        r"lake: bronze\.redata_demand_stream (created|unchanged)\n",
-        result.stdout,
+    # Every registered Bronze, Silver and Gold table: created once, unchanged afterwards.
+    expected = "".join(
+        rf"lake: {re.escape(spec.namespace)}\.{re.escape(spec.name)} (created|unchanged)\n"
+        for spec in registry.TABLES
     )
+    assert re.fullmatch(expected, result.stdout), result.stdout
 
     run_id = f"it-{datetime.now(UTC):%Y%m%d%H%M%S%f}"
     result = compose_run("doctor", "-c", IN_NETWORK_RUN, namespace, run_id, entrypoint="python")

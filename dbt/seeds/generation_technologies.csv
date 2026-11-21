@@ -1,0 +1,18 @@
+series_id,technology_slug,technology_name,energy_class,is_renewable
+10288,hydro,Hydro,renewable,true
+10289,coal,Coal,non_renewable,false
+10290,fuel_gas,Fuel + Gas,non_renewable,false
+10291,wind,Wind,renewable,true
+10292,other_renewables,Other renewables,renewable,true
+10293,cogeneration,Cogeneration,non_renewable,false
+10294,non_renewable_waste,Non-renewable waste,non_renewable,false
+10295,renewable_waste,Renewable waste,renewable,true
+10296,total_generation,Total generation,total,false
+10344,diesel_engines,Diesel engines,non_renewable,false
+1446,nuclear,Nuclear,non_renewable,false
+1450,gas_turbine,Gas turbine,non_renewable,false
+1451,steam_turbine,Steam turbine,non_renewable,false
+1454,combined_cycle,Combined cycle,non_renewable,false
+1455,hydroeolian,Hydroeolian,renewable,true
+1458,solar_pv,Solar photovoltaic,renewable,true
+1459,thermal_solar,Thermal solar,renewable,true

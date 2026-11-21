@@ -133,3 +133,22 @@ def test_the_stream_reads_its_own_prefix_and_the_broker_its_scram_user(
     assert settings.stream.group_id == "redata-demand-to-bronze"
     assert (settings.stream.flush_age, settings.stream.flush_records) == (30.0, 10_000)
     assert settings.stream.watchdog_timeout == 900.0
+
+
+@pytest.mark.usefixtures("credentials")
+def test_transform_settings_reads_its_prefix_and_validates_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert Settings().transform.dbt_project_dir is None
+    assert Settings().transform.threads == 1
+
+    monkeypatch.setenv("IBERGRID_TRANSFORM_DBT_PROJECT_DIR", "/opt/ibergrid/dbt")
+    monkeypatch.setenv("IBERGRID_TRANSFORM_THREADS", "4")
+    settings = Settings()
+    assert settings.transform.dbt_project_dir == "/opt/ibergrid/dbt"
+    assert settings.transform.threads == 4
+
+    monkeypatch.setenv("IBERGRID_TRANSFORM_THREADS", "0")
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+    assert describe_validation_error(caught.value).startswith("  IBERGRID_TRANSFORM_THREADS: ")

@@ -9,8 +9,10 @@ import dagster as dg
 
 from ibergrid.orchestration.assets import (
     REDATA_ASSETS,
+    REDATA_DEMAND_STREAM_ASSET,
     IngestConfig,
     OmieConfig,
+    medallion_models,
     omie_day_ahead_prices,
 )
 from ibergrid.orchestration.resources import Lake
@@ -67,20 +69,48 @@ omie_evening = dg.define_asset_job(
     op_retry_policy=SCHEDULED_RETRIES,
     description="Tomorrow's OMIE prices, which must be out by now, and the last 7 days again.",
 )
+medallion_transform = dg.define_asset_job(
+    "medallion_transform",
+    selection=[medallion_models],
+    op_retry_policy=SCHEDULED_RETRIES,
+    description="Build, test and WAP-publish all Silver and Gold dbt medallion tables (ADR 0007).",
+)
 
 defs = dg.Definitions(
-    assets=[*REDATA_ASSETS, omie_day_ahead_prices],
-    jobs=[redata_daily, omie_afternoon, omie_evening, sweep_audit_branches],
+    assets=[REDATA_DEMAND_STREAM_ASSET, *REDATA_ASSETS, omie_day_ahead_prices, medallion_models],
+    jobs=[
+        redata_daily,
+        omie_afternoon,
+        omie_evening,
+        medallion_transform,
+        sweep_audit_branches,
+    ],
     schedules=[
         # Yesterday: on 2026-11-21 every dataset's D-1 was complete at 08:50 and 09:46, REData's
         # last update of hourly demand and daily generation having been at 06:47 (ADR 0005).
         dg.build_schedule_from_partitioned_job(
             redata_daily, hour_of_day=9, minute_of_hour=0, default_status=STATUS
         ),
+        # Refresh Silver and Gold after REData's 09:00 daily batch finishes.
+        dg.ScheduleDefinition(
+            name="medallion_morning_schedule",
+            job=medallion_transform,
+            cron_schedule="30 9 * * *",
+            execution_timezone=TIMEZONE,
+            default_status=STATUS,
+        ),
         # Tomorrow, "not published yet" tolerated: 91 % of the 15-minute era's files were final by
         # 16:00 on D-1.
         dg.build_schedule_from_partitioned_job(
             omie_afternoon, hour_of_day=16, minute_of_hour=0, default_status=STATUS
+        ),
+        # Refresh Silver and Gold after OMIE's 16:00 afternoon publication lands.
+        dg.ScheduleDefinition(
+            name="medallion_afternoon_schedule",
+            job=medallion_transform,
+            cron_schedule="30 16 * * *",
+            execution_timezone=TIMEZONE,
+            default_status=STATUS,
         ),
         # Tomorrow, required: 97 % final by 21:30. A later file fails this run (retried at 21:45
         # and 22:00), and the next day's trailing window ingests it.

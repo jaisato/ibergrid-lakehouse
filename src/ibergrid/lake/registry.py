@@ -1,9 +1,10 @@
-"""The tables ``ibergrid lake init`` creates: the connectors' Bronze tables."""
+"""The tables ``ibergrid lake init`` creates: Bronze, Silver and Gold medallion tables."""
 
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.transforms import IdentityTransform, MonthTransform
 from pyiceberg.types import (
+    BooleanType,
     DateType,
     DoubleType,
     IntegerType,
@@ -119,4 +120,275 @@ REDATA_DEMAND_STREAM = TableSpec(
     properties={"commit.manifest-merge.enabled": "true"},
 )
 
-TABLES: tuple[TableSpec, ...] = (REDATA_OBSERVATIONS, OMIE_DAY_AHEAD_PRICES, REDATA_DEMAND_STREAM)
+# --- Silver medallion tables (ADR 0007) ----------------------------------------------------------
+
+# Reconciled 5-minute national demand: batch wins on closed Madrid days, deduplicated stream
+# supplies open days (highest (coalesce(stream_epoch, 0), kafka_offset) per (series_id, ts_utc)).
+SILVER_DEMAND_NATIONAL_5MIN = TableSpec(
+    namespace="silver",
+    name="demand_national_5min",
+    schema=Schema(
+        NestedField(1, "ts_utc", TimestamptzType(), required=True),
+        NestedField(2, "madrid_date", DateType(), required=True),
+        NestedField(3, "demand_real_mw", DoubleType(), required=False),
+        NestedField(4, "demand_forecast_mw", DoubleType(), required=False),
+        NestedField(5, "demand_scheduled_mw", DoubleType(), required=False),
+        NestedField(6, "demand_total_scheduled_mw", DoubleType(), required=False),
+        NestedField(7, "source_lane", StringType(), required=True, doc="batch or stream"),
+        NestedField(8, "series_last_update_utc", TimestamptzType(), required=False),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=MonthTransform(), name="ts_utc_month"),
+    ),
+)
+
+# Hourly demand per Spanish electric system, strictly separating peninsular and non-peninsular
+# systems and flagging Canarias timestamps as unverified (ADR 0003).
+SILVER_DEMAND_SYSTEM_HOURLY = TableSpec(
+    namespace="silver",
+    name="demand_system_hourly",
+    schema=Schema(
+        NestedField(1, "ts_utc", TimestamptzType(), required=True),
+        NestedField(2, "madrid_date", DateType(), required=True),
+        NestedField(3, "madrid_hour", IntegerType(), required=True),
+        NestedField(4, "electric_system", StringType(), required=True),
+        NestedField(
+            5, "system_scope", StringType(), required=True, doc="peninsular or non_peninsular"
+        ),
+        NestedField(
+            6,
+            "ts_utc_verified",
+            BooleanType(),
+            required=True,
+            doc="false for canarias pending clock confirmation (ADR 0003)",
+        ),
+        NestedField(7, "demand_mw", DoubleType(), required=True),
+        NestedField(8, "series_last_update_utc", TimestamptzType(), required=False),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=MonthTransform(), name="ts_utc_month"),
+    ),
+)
+
+# OMIE day-ahead MIBEL prices at native delivery resolution (v1 60 min, v2 15 min from 2025-10-01).
+SILVER_MIBEL_PRICES_PERIOD = TableSpec(
+    namespace="silver",
+    name="mibel_prices_period",
+    schema=Schema(
+        NestedField(1, "delivery_date", DateType(), required=True),
+        NestedField(2, "period", IntegerType(), required=True),
+        NestedField(3, "resolution_minutes", IntegerType(), required=True),
+        NestedField(4, "interval_start_utc", TimestamptzType(), required=True),
+        NestedField(5, "interval_end_utc", TimestamptzType(), required=True),
+        NestedField(6, "price_es_eur_mwh", DoubleType(), required=True),
+        NestedField(7, "price_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(8, "spread_es_minus_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(9, "is_decoupled", BooleanType(), required=True),
+        NestedField(10, "is_zero_or_negative_es", BooleanType(), required=True),
+        NestedField(11, "is_zero_or_negative_pt", BooleanType(), required=True),
+        NestedField(12, "contract_version", IntegerType(), required=True),
+        NestedField(13, "file_version", IntegerType(), required=True),
+        NestedField(14, "source_file", StringType(), required=True),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="delivery_date_month"
+        ),
+    ),
+)
+
+# Standardized hourly MIBEL price series across both contract eras, enriched with REData peninsular
+# PVPC and spot price for cross-source reconciliation.
+SILVER_MIBEL_PRICES_HOURLY = TableSpec(
+    namespace="silver",
+    name="mibel_prices_hourly",
+    schema=Schema(
+        NestedField(1, "hour_utc", TimestamptzType(), required=True),
+        NestedField(2, "delivery_date", DateType(), required=True),
+        NestedField(3, "madrid_hour", IntegerType(), required=True),
+        NestedField(4, "contract_version", IntegerType(), required=True),
+        NestedField(5, "periods_in_hour", IntegerType(), required=True),
+        NestedField(6, "price_es_eur_mwh", DoubleType(), required=True),
+        NestedField(7, "price_es_min_eur_mwh", DoubleType(), required=True),
+        NestedField(8, "price_es_max_eur_mwh", DoubleType(), required=True),
+        NestedField(9, "price_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(10, "spread_es_minus_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(11, "is_decoupled", BooleanType(), required=True),
+        NestedField(12, "is_zero_or_negative_es", BooleanType(), required=True),
+        NestedField(13, "pvpc_eur_mwh", DoubleType(), required=False),
+        NestedField(14, "redata_spot_eur_mwh", DoubleType(), required=False),
+        NestedField(15, "omie_redata_diff_eur_mwh", DoubleType(), required=False),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="hour_utc_month"
+        ),
+    ),
+)
+
+# Daily net generation per electric system and technology, excluding Total generation (10296) from
+# technology rows while carrying reported_total_mwh so sums never double-count.
+SILVER_GENERATION_DAILY = TableSpec(
+    namespace="silver",
+    name="generation_daily",
+    schema=Schema(
+        NestedField(1, "generation_date", DateType(), required=True),
+        NestedField(2, "electric_system", StringType(), required=True),
+        NestedField(
+            3,
+            "system_scope",
+            StringType(),
+            required=True,
+            doc="national, peninsular or non_peninsular",
+        ),
+        NestedField(4, "series_id", StringType(), required=True),
+        NestedField(5, "technology_slug", StringType(), required=True),
+        NestedField(6, "technology_name", StringType(), required=True),
+        NestedField(7, "energy_class", StringType(), required=True),
+        NestedField(8, "is_renewable", BooleanType(), required=True),
+        NestedField(9, "generation_mwh", DoubleType(), required=True),
+        NestedField(10, "reported_total_mwh", DoubleType(), required=True),
+        NestedField(11, "share_pct", DoubleType(), required=False),
+        NestedField(12, "series_last_update_utc", TimestamptzType(), required=False),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="generation_date_month"
+        ),
+    ),
+)
+
+# --- Gold medallion tables (ADR 0007) ------------------------------------------------------------
+
+# Peninsular hourly market mart: standardized OMIE ES/PT prices, peninsular-only hourly demand,
+# 1-hour ramps, intraday price rank, daily peninsular renewable shares and attribution.
+GOLD_MIBEL_HOURLY_MARKET = TableSpec(
+    namespace="gold",
+    name="mibel_hourly_market",
+    schema=Schema(
+        NestedField(1, "hour_utc", TimestamptzType(), required=True),
+        NestedField(2, "delivery_date", DateType(), required=True),
+        NestedField(3, "madrid_hour", IntegerType(), required=True),
+        NestedField(4, "day_type", StringType(), required=True, doc="weekday or weekend"),
+        NestedField(5, "price_es_eur_mwh", DoubleType(), required=True),
+        NestedField(6, "price_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(7, "spread_es_minus_pt_eur_mwh", DoubleType(), required=True),
+        NestedField(8, "is_decoupled", BooleanType(), required=True),
+        NestedField(9, "is_zero_or_negative_es", BooleanType(), required=True),
+        NestedField(10, "pvpc_eur_mwh", DoubleType(), required=False),
+        NestedField(11, "peninsular_demand_mw", DoubleType(), required=False),
+        NestedField(12, "demand_ramp_1h_mw", DoubleType(), required=False),
+        NestedField(13, "price_ramp_1h_eur_mwh", DoubleType(), required=False),
+        NestedField(14, "intraday_price_rank", IntegerType(), required=True),
+        NestedField(15, "is_evening_ramp_window", BooleanType(), required=True),
+        NestedField(16, "peninsular_renewable_share_pct", DoubleType(), required=False),
+        NestedField(17, "peninsular_solar_share_pct", DoubleType(), required=False),
+        NestedField(18, "peninsular_wind_share_pct", DoubleType(), required=False),
+        NestedField(19, "source_attribution", StringType(), required=True),
+        NestedField(20, "updated_at_utc", TimestamptzType(), required=True),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="hour_utc_month"
+        ),
+    ),
+)
+
+# Daily MIBEL executive summary (Madrid day): peninsular and non-peninsular demand kept in separate
+# columns and never mixed.
+GOLD_MIBEL_DAILY_SUMMARY = TableSpec(
+    namespace="gold",
+    name="mibel_daily_summary",
+    schema=Schema(
+        NestedField(1, "delivery_date", DateType(), required=True),
+        NestedField(2, "hours_in_day", IntegerType(), required=True),
+        NestedField(3, "price_es_mean_eur_mwh", DoubleType(), required=True),
+        NestedField(4, "price_es_min_eur_mwh", DoubleType(), required=True),
+        NestedField(5, "price_es_max_eur_mwh", DoubleType(), required=True),
+        NestedField(6, "price_es_peak_eur_mwh", DoubleType(), required=False),
+        NestedField(7, "price_es_offpeak_eur_mwh", DoubleType(), required=False),
+        NestedField(8, "price_pt_mean_eur_mwh", DoubleType(), required=True),
+        NestedField(9, "spread_mean_eur_mwh", DoubleType(), required=True),
+        NestedField(10, "spread_abs_mean_eur_mwh", DoubleType(), required=True),
+        NestedField(11, "decoupled_hours", IntegerType(), required=True),
+        NestedField(12, "zero_or_negative_es_hours", IntegerType(), required=True),
+        NestedField(13, "peninsular_demand_mwh", DoubleType(), required=False),
+        NestedField(14, "peninsular_peak_demand_mw", DoubleType(), required=False),
+        NestedField(15, "evening_ramp_max_mw", DoubleType(), required=False),
+        NestedField(16, "non_peninsular_demand_mwh", DoubleType(), required=False),
+        NestedField(17, "peninsular_renewable_share_pct", DoubleType(), required=False),
+        NestedField(18, "peninsular_solar_share_pct", DoubleType(), required=False),
+        NestedField(19, "peninsular_wind_share_pct", DoubleType(), required=False),
+        NestedField(20, "source_attribution", StringType(), required=True),
+        NestedField(21, "updated_at_utc", TimestamptzType(), required=True),
+    ),
+)
+
+# Daily demand and renewable share per electric system (peninsular + four non-peninsular systems).
+GOLD_SYSTEM_DEMAND_DAILY = TableSpec(
+    namespace="gold",
+    name="system_demand_daily",
+    schema=Schema(
+        NestedField(1, "demand_date", DateType(), required=True),
+        NestedField(2, "electric_system", StringType(), required=True),
+        NestedField(3, "system_scope", StringType(), required=True),
+        NestedField(4, "ts_utc_verified", BooleanType(), required=True),
+        NestedField(5, "hours_in_day", IntegerType(), required=True),
+        NestedField(6, "demand_total_mwh", DoubleType(), required=True),
+        NestedField(7, "demand_mean_mw", DoubleType(), required=True),
+        NestedField(8, "demand_min_mw", DoubleType(), required=True),
+        NestedField(9, "demand_peak_mw", DoubleType(), required=True),
+        NestedField(10, "generation_total_mwh", DoubleType(), required=False),
+        NestedField(11, "renewable_generation_mwh", DoubleType(), required=False),
+        NestedField(12, "renewable_share_pct", DoubleType(), required=False),
+        NestedField(13, "solar_share_pct", DoubleType(), required=False),
+        NestedField(14, "wind_share_pct", DoubleType(), required=False),
+        NestedField(15, "source_attribution", StringType(), required=True),
+        NestedField(16, "updated_at_utc", TimestamptzType(), required=True),
+    ),
+)
+
+# Calendar-month x day-type x Madrid-hour profile for industrial / data-center load shifting.
+GOLD_OPTIMAL_CONSUMPTION_WINDOWS = TableSpec(
+    namespace="gold",
+    name="optimal_consumption_windows",
+    schema=Schema(
+        NestedField(1, "calendar_month", IntegerType(), required=True),
+        NestedField(2, "day_type", StringType(), required=True),
+        NestedField(3, "madrid_hour", IntegerType(), required=True),
+        NestedField(4, "sample_hours", IntegerType(), required=True),
+        NestedField(5, "price_es_mean_eur_mwh", DoubleType(), required=True),
+        NestedField(6, "price_es_p10_eur_mwh", DoubleType(), required=True),
+        NestedField(7, "price_es_p50_eur_mwh", DoubleType(), required=True),
+        NestedField(8, "price_es_p90_eur_mwh", DoubleType(), required=True),
+        NestedField(9, "zero_or_negative_es_pct", DoubleType(), required=True),
+        NestedField(10, "decoupled_pct", DoubleType(), required=True),
+        NestedField(11, "peninsular_demand_mean_mw", DoubleType(), required=False),
+        NestedField(12, "peninsular_renewable_share_mean_pct", DoubleType(), required=False),
+        NestedField(13, "window_rank", IntegerType(), required=True),
+        NestedField(14, "is_optimal_4h_window", BooleanType(), required=True),
+        NestedField(15, "source_attribution", StringType(), required=True),
+        NestedField(16, "updated_at_utc", TimestamptzType(), required=True),
+    ),
+)
+
+BRONZE_TABLES: tuple[TableSpec, ...] = (
+    REDATA_OBSERVATIONS,
+    OMIE_DAY_AHEAD_PRICES,
+    REDATA_DEMAND_STREAM,
+)
+SILVER_TABLES: tuple[TableSpec, ...] = (
+    SILVER_DEMAND_NATIONAL_5MIN,
+    SILVER_DEMAND_SYSTEM_HOURLY,
+    SILVER_MIBEL_PRICES_PERIOD,
+    SILVER_MIBEL_PRICES_HOURLY,
+    SILVER_GENERATION_DAILY,
+)
+GOLD_TABLES: tuple[TableSpec, ...] = (
+    GOLD_MIBEL_HOURLY_MARKET,
+    GOLD_MIBEL_DAILY_SUMMARY,
+    GOLD_SYSTEM_DEMAND_DAILY,
+    GOLD_OPTIMAL_CONSUMPTION_WINDOWS,
+)
+MEDALLION_TABLES: tuple[TableSpec, ...] = (*SILVER_TABLES, *GOLD_TABLES)
+TABLES: tuple[TableSpec, ...] = (*BRONZE_TABLES, *SILVER_TABLES, *GOLD_TABLES)

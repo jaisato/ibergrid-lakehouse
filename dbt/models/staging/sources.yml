@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Snapshot-pinned Bronze Iceberg inputs exposed by ibergrid.transform.plugin in schema
+      bronze_input (empty typed tables when a Bronze table has no snapshot yet).
+    schema: bronze_input
+    tables:
+      - name: redata_observations
+        description: Red Electrica REData long-format observations (ADR 0003).
+      - name: omie_day_ahead_prices
+        description: OMIE MIBEL day-ahead marginal prices for Spain and Portugal (ADR 0004).
+      - name: redata_demand_stream
+        description: Append-only 5-minute national realtime demand events from Redpanda (ADR 0006).

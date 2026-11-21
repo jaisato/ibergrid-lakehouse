@@ -60,6 +60,7 @@ from ibergrid.stream.kafka import (
     producer_config,
 )
 from ibergrid.stream.producer import DeliveryFailed, StreamProducer, replay_chunk
+from ibergrid.transform import TableReport, TransformError, run_medallion
 
 SHOWN_DAYS = 5  # incomplete days named per chunk line
 
@@ -88,6 +89,11 @@ stream_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(stream_app, name="stream")
+transform_app = typer.Typer(
+    help="Build Silver and Gold medallion tables with dbt + DuckDB and publish via WAP (ADR 0007).",
+    no_args_is_help=True,
+)
+app.add_typer(transform_app, name="transform")
 
 
 def _load[T](factory: Callable[[], T]) -> T:
@@ -453,6 +459,35 @@ def stream_drop_property(
     except (ConsumerError, WapError) as exc:
         _fail(exc)
     typer.echo(f"stream: dropped {name}")
+
+
+@transform_app.command("run")
+def transform_run(
+    select: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Layer (`silver`, `gold`) or table name; repeat for several. Default: all."
+        ),
+    ] = None,
+) -> None:
+    """Build and test the dbt medallion in a staging DuckDB, then publish to Iceberg via WAP."""
+    settings = _load_settings()
+    try:
+        report = run_medallion(settings, select=select or (), on_table=_print_transform_table)
+    except (TransformError, WapError, ValueError, OSError, RESTError) as exc:
+        _fail(exc)
+    typer.echo(
+        f"transform: {len(report.tables)} table(s) published, "
+        f"{report.dbt_tests_passed} dbt test(s) passed in {report.total_seconds:.2f} s"
+    )
+
+
+def _print_transform_table(report: TableReport) -> None:
+    snapshot = "none" if report.snapshot_id is None else str(report.snapshot_id)
+    typer.echo(
+        f"transform: {report.qualified}: {report.rows} rows, "
+        f"snapshot {snapshot} ({report.seconds:.2f} s)"
+    )
 
 
 def _stream_clients(settings: Settings, client_id: str) -> tuple[Consumer, AdminClient]:

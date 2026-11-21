@@ -22,6 +22,7 @@ from ibergrid.orchestration.assets import (
     REDATA_ASSETS,
     IngestConfig,
     OmieConfig,
+    medallion_models,
     omie_day_ahead_prices,
 )
 from ibergrid.orchestration.resources import Lake
@@ -31,8 +32,18 @@ from ibergrid.sources.omie import ingest as omie_ingest
 from ibergrid.sources.omie.client import OmieClient
 from ibergrid.sources.redata import ingest as redata_ingest
 from ibergrid.sources.redata.client import RedataClient
+from ibergrid.transform import runner as transform_runner
 
-from .conftest import FakeOmie, FakeRedata, LocalServer, Responder, fixture, omie_file, restamped
+from .conftest import (
+    FakeIcebergRest,
+    FakeOmie,
+    FakeRedata,
+    LocalServer,
+    Responder,
+    fixture,
+    omie_file,
+    restamped,
+)
 
 Serve = Callable[[Responder], LocalServer]
 ASSETS = {asset.key.path[-1]: asset for asset in REDATA_ASSETS}
@@ -531,3 +542,47 @@ def test_the_sweeper_skips_a_table_that_does_not_exist_yet(
     )
 
     assert result.success
+
+
+# --- Medallion transforms (ADR 0007) -------------------------------------------------------------
+
+
+def test_medallion_models_materialize_all_and_subsets_in_process(
+    lake: Lake,
+    instance: dg.DagsterInstance,
+    catalog: SqlCatalog,
+    serve: Serve,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bronze ingestion + Dagster medallion materialization (full and subset) on SqlCatalog."""
+    monkeypatch.setenv("IBERGRID_CATALOG_URL", serve(FakeIcebergRest(catalog)).url)
+    monkeypatch.setattr(transform_runner, "rest_catalog", lambda _settings: catalog)
+
+    assert materialize(omie_day_ahead_prices, lake, instance, str(NOVEMBER)).success
+
+    full = dg.materialize(
+        [medallion_models],
+        resources={"lake": lake},
+        instance=instance,
+        raise_on_error=False,
+    )
+    assert full.success
+    assert rows(catalog, ("silver", "mibel_prices_hourly")) == 24
+    assert rows(catalog, ("gold", "mibel_daily_summary")) == 1
+
+    # Subset materialization: runs dbt for +mibel_daily_summary and emits only that asset's result.
+    subset = dg.materialize(
+        [medallion_models],
+        selection=[dg.AssetKey(["gold", "mibel_daily_summary"])],
+        resources={"lake": lake},
+        instance=instance,
+        raise_on_error=False,
+    )
+    assert subset.success
+    mat_events = subset.get_asset_materialization_events()
+    assert [e.asset_key for e in mat_events] == [dg.AssetKey(["gold", "mibel_daily_summary"])]
+    meta = {k: v.value for k, v in (mat_events[0].materialization.metadata or {}).items()}
+    assert meta["rows"] == 1
+    assert isinstance(meta["dbt_tests_passed"], int)
+    assert meta["dbt_tests_passed"] > 0
+    assert meta["snapshot_id"] != "none"
