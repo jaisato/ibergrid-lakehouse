@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import structlog
+from confluent_kafka import OFFSET_BEGINNING, KafkaError, TopicPartition
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.exceptions import NoSuchTableError
 
@@ -306,3 +308,118 @@ def catalog(tmp_path: Path) -> SqlCatalog:
     return SqlCatalog(
         "test", uri=f"sqlite:///{tmp_path / 'catalog.db'}", warehouse=warehouse.as_uri()
     )
+
+
+@dataclass(frozen=True)
+class FakeMessage:
+    """What confluent-kafka's consumer hands out: the same accessors, plain values."""
+
+    topic_: str
+    partition_: int
+    offset_: int
+    key_: bytes | None
+    value_: bytes | None
+    timestamp_: tuple[int, int] = (1, 1_795_000_000_000)  # (create time, milliseconds)
+    error_: KafkaError | None = None
+
+    def topic(self) -> str:
+        return self.topic_
+
+    def partition(self) -> int:
+        return self.partition_
+
+    def offset(self) -> int:
+        return self.offset_
+
+    def key(self) -> bytes | None:
+        return self.key_
+
+    def value(self) -> bytes | None:
+        return self.value_
+
+    def timestamp(self) -> tuple[int, int]:
+        return self.timestamp_
+
+    def error(self) -> KafkaError | None:
+        return self.error_
+
+
+class FakeBroker:
+    """Topics as in-memory logs, with a consumer's and a producer's view on them: assignment,
+    consume, commits and watermarks, produce with delivery callbacks and headers."""
+
+    def __init__(self, partitions: dict[str, int]) -> None:
+        self.logs: dict[str, list[list[FakeMessage]]] = {
+            topic: [[] for _ in range(count)] for topic, count in partitions.items()
+        }
+        self.positions: dict[int, int] = {}
+        self.assignments: list[dict[int, int]] = []
+        self.commits: list[dict[int, int]] = []
+        self.headers: list[Any] = []
+        self.refuse: KafkaError | None = None  # the next deliveries fail with it
+        self.undelivered = 0  # what flush reports as still queued
+        self.flushes = 0
+
+    # The producer's side.
+    def produce(
+        self,
+        topic: str,
+        value: bytes | None = None,
+        key: bytes | None = None,
+        on_delivery: Callable[[KafkaError | None, Any], None] | None = None,
+        headers: Any = None,
+    ) -> None:
+        log = self.logs[topic]
+        partition = 0 if key is None else sum(key) % len(log)
+        message = FakeMessage(topic, partition, len(log[partition]), key, value)
+        if self.refuse is None:
+            log[partition].append(message)
+            self.headers.append(headers)
+        if on_delivery is not None:
+            on_delivery(self.refuse, message)
+
+    def poll(self, timeout: float = -1) -> int:
+        return 0
+
+    def flush(self, timeout: float = -1) -> int:
+        self.flushes += 1
+        return self.undelivered
+
+    # The consumer's side.
+    def list_topics(self, topic: str | None = None, timeout: float = -1) -> Any:
+        return SimpleNamespace(
+            topics={
+                name: SimpleNamespace(error=None, partitions=dict.fromkeys(range(len(log))))
+                for name, log in self.logs.items()
+                if topic in (None, name)
+            }
+        )
+
+    def assign(self, partitions: list[TopicPartition]) -> None:
+        self.positions = {
+            tp.partition: 0 if tp.offset == OFFSET_BEGINNING else tp.offset for tp in partitions
+        }
+        self.assignments.append(dict(self.positions))
+
+    def consume(self, num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        [topic] = [name for name in self.logs if not name.endswith(".dlq.v1")]
+        found: list[FakeMessage] = []
+        for partition, position in self.positions.items():
+            available = self.logs[topic][partition][position : position + num_messages - len(found)]
+            found += available
+            self.positions[partition] = position + len(available)
+        return found
+
+    def commit(self, offsets: list[TopicPartition], asynchronous: bool = True) -> None:
+        self.commits.append({tp.partition: tp.offset for tp in offsets})
+
+    def get_watermark_offsets(
+        self, partition: TopicPartition, timeout: float = -1, cached: bool = False
+    ) -> tuple[int, int]:
+        return 0, len(self.logs[partition.topic][partition.partition])
+
+    def close(self) -> None:
+        pass
+
+    def messages(self, topic: str) -> list[FakeMessage]:
+        return [message for log in self.logs[topic] for message in log]

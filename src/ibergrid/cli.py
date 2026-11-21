@@ -1,13 +1,19 @@
 """The ``ibergrid`` command line: the entrypoint of the app image."""
 
-from datetime import datetime
+import signal
+import threading
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from importlib.metadata import version as package_version
+from pathlib import Path
 from typing import Annotated, NoReturn
 
 import duckdb
 import typer
+from confluent_kafka import Consumer, KafkaException, Producer
 from pydantic import ValidationError
-from pyiceberg.exceptions import RESTError
+from pyiceberg.exceptions import NoSuchTableError, RESTError
+from pyiceberg.table import Table
 
 from ibergrid.catalog_admin import (
     CatalogAdmin,
@@ -21,13 +27,25 @@ from ibergrid.lake.catalog import rest_catalog
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
 from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
-from ibergrid.settings import Settings, base_url, describe_validation_error
+from ibergrid.settings import (
+    BrokerSettings,
+    LogSettings,
+    RedataSettings,
+    Settings,
+    StreamSettings,
+    base_url,
+    describe_validation_error,
+)
 from ibergrid.sources.omie import ingest as omie_ingest
 from ibergrid.sources.omie.client import OmieError
 from ibergrid.sources.omie.marginalpdbc import PRICE_LIMITS
-from ibergrid.sources.redata.client import RedataError
+from ibergrid.sources.redata.client import RedataClient, RedataError
 from ibergrid.sources.redata.datasets import DATASETS
 from ibergrid.sources.redata.ingest import ChunkReport, ingest
+from ibergrid.stream import health
+from ibergrid.stream.consumer import ConsumerError, StreamConsumer, describe_status
+from ibergrid.stream.kafka import BrokerConfigError, consumer_config, producer_config
+from ibergrid.stream.producer import DeliveryFailed, StreamProducer, replay_chunk
 
 SHOWN_DAYS = 5  # incomplete days named per chunk line
 
@@ -45,14 +63,23 @@ lake_app = typer.Typer(help="Create and inspect the lake's Iceberg tables.", no_
 app.add_typer(lake_app, name="lake")
 ingest_app = typer.Typer(help="Pull source data into the Bronze tables.", no_args_is_help=True)
 app.add_typer(ingest_app, name="ingest")
+stream_app = typer.Typer(
+    help="The streaming lane: REData's real-time demand through Redpanda (ADR 0006).",
+    no_args_is_help=True,
+)
+app.add_typer(stream_app, name="stream")
 
 
-def _load_settings() -> Settings:
+def _load[T](factory: Callable[[], T]) -> T:
     try:
-        settings = Settings()
+        return factory()
     except ValidationError as exc:
         typer.echo(f"error: invalid configuration\n{describe_validation_error(exc)}", err=True)
         raise typer.Exit(2) from exc
+
+
+def _load_settings() -> Settings:
+    settings = _load(Settings)
     configure_logging(settings.log)
     return settings
 
@@ -243,6 +270,125 @@ def _print_omie_chunk(report: omie_ingest.ChunkReport) -> None:
     if report.not_published_from is not None:
         line += f"; not published yet from {report.not_published_from}"
     typer.echo(line)
+
+
+@stream_app.command("produce")
+def stream_produce(
+    once: Annotated[bool, typer.Option("--once", help="Poll REData once and exit.")] = False,
+    source_file: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Emit a recorded REData answer instead of polling the API, then exit.",
+        ),
+    ] = None,
+) -> None:
+    """Poll REData's national real-time demand every IBERGRID_STREAM_POLL_INTERVAL seconds and
+    emit each changed point to the topic. Needs no storage or catalog keys."""
+    broker, redata, stream, log_settings = _load(
+        lambda: (BrokerSettings(), RedataSettings(), StreamSettings(), LogSettings())
+    )
+    configure_logging(log_settings)
+    try:
+        sink = Producer(producer_config(broker, "ibergrid-stream-producer"))
+    except (BrokerConfigError, KafkaException) as exc:
+        _fail(exc)
+    producer = StreamProducer(
+        sink,
+        stream.topic,
+        RedataClient.from_settings(redata).fetch,
+        midnight_grace=timedelta(seconds=stream.midnight_grace),
+    )
+    try:
+        if source_file is not None:
+            payload = source_file.read_bytes()
+            report = producer.emit(payload, replay_chunk(payload))
+        elif once:
+            report = producer.poll_once()
+        else:
+            producer.run(_stop_on_signals(), stream.poll_interval, stream.heartbeat_path)
+            return
+    except (RedataError, DeliveryFailed) as exc:
+        _fail(exc)
+    typer.echo(
+        f"stream: {report.start}..{report.end}: {report.emitted} event(s) emitted, "
+        f"{report.suppressed} unchanged, {report.rejected} rejected"
+    )
+
+
+@stream_app.command("consume")
+def stream_consume() -> None:
+    """Write the topic into bronze.redata_demand_stream as WAP micro-batches whose publish
+    commits the Kafka offsets; resume from those offsets. Runs until SIGTERM, then flushes."""
+    settings = _load_settings()
+    table = _stream_table(settings)
+    try:
+        kafka = Consumer(
+            consumer_config(settings.broker, "ibergrid-stream-consumer", settings.stream.group_id)
+        )
+        dlq = Producer(producer_config(settings.broker, "ibergrid-stream-consumer-dlq"))
+    except (BrokerConfigError, KafkaException) as exc:
+        _fail(exc)
+    try:
+        StreamConsumer(table, kafka, dlq, settings.stream).run(_stop_on_signals())
+    except KafkaException as exc:
+        _fail(exc)
+    finally:
+        kafka.close()
+        dlq.flush(30)
+
+
+@stream_app.command("health")
+def stream_health(
+    max_age: Annotated[
+        float, typer.Option(min=1, help="Seconds a heartbeat stays fresh.")
+    ] = health.MAX_AGE,
+) -> None:
+    """Exit 0 while this container's stream service has beaten within --max-age seconds."""
+    ok, detail = health.check(_load(StreamSettings).heartbeat_path, max_age)
+    typer.echo(detail, err=not ok)
+    if not ok:
+        raise typer.Exit(1)
+
+
+@stream_app.command("status")
+def stream_status() -> None:
+    """The checkpoint in the table, the lag behind each partition and the dead letters."""
+    settings = _load_settings()
+    table = _stream_table(settings)
+    try:
+        kafka = Consumer(
+            consumer_config(settings.broker, "ibergrid-stream-status", settings.stream.group_id)
+        )
+    except (BrokerConfigError, KafkaException) as exc:
+        _fail(exc)
+    try:
+        for line in describe_status(table, kafka, settings.stream):
+            typer.echo(line)
+    except (ConsumerError, KafkaException) as exc:
+        _fail(exc)
+    finally:
+        kafka.close()
+
+
+def _stream_table(settings: Settings) -> Table:
+    try:
+        table: Table = rest_catalog(settings).load_table(registry.REDATA_DEMAND_STREAM.identifier)
+    except NoSuchTableError as exc:
+        _fail(RuntimeError(f"{exc}: run `ibergrid lake init` first"))
+    # OSError: requests' connection errors; RESTError: any HTTP error answer from the catalog.
+    except (OSError, RESTError) as exc:
+        _fail(exc)
+    return table
+
+
+def _stop_on_signals() -> threading.Event:
+    """Set on SIGTERM (docker stop) or SIGINT, so a loop can finish its batch first."""
+    stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: stop.set())
+    return stop
 
 
 def _outcome(result: EnsureResult) -> str:
