@@ -197,7 +197,10 @@ def ingest_omie(
         bool,
         typer.Option(
             "--require-published",
-            help="Exit 1, not 0, when a delivery day after today is not published yet.",
+            help=(
+                "Exit 1, not 0, when a delivery day after today is not published yet; "
+                "that day's month chunk then writes nothing."
+            ),
         ),
     ] = False,
 ) -> None:

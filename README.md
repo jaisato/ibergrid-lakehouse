@@ -207,8 +207,8 @@ omie: 2 chunk(s) published
 - **Not published yet.** OMIE answers 404 for a file it does not have (every version of a day
   not out yet: five requests). A delivery day after today (Madrid) ends the ingestion there with
   exit 0 (`not published yet from <day>`; the library reports `not_published_from`), after
-  writing the days before it, or exit 1 with `--require-published`; a missing day up to today is
-  always an error. Results normally appear the afternoon before, around 13:00-14:30 Madrid time.
+  writing the days before it, or exit 1 with `--require-published` (then that day's month chunk
+  writes nothing; earlier chunks stay published); a missing day up to today is always an error. Results normally appear the afternoon before, around 13:00-14:30 Madrid time.
 - **Original files.** Each lands byte for byte at
   `s3://<bucket>/landing/omie/marginalpdbc/<YYYY>/<MM>/marginalpdbc_<YYYYMMDD>-<sha256[:12]>.<N>`;
   every row carries that path and that hash.

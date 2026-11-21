@@ -254,8 +254,10 @@ own chunk writes nothing, and the run exits 1. A missing day up to today is alwa
 results for day D come out on D-1. The default does not depend on the hour, so a run that asks for
 tomorrow before its publication succeeds with nothing new; the scheduled run (PR 5) passes
 `require_published` once past a cut-off chosen from the publication times above (95 % of the
-15-minute era's files were final by 19:16), so a late file fails loudly instead of passing as
-"not yet".
+15-minute era's files last modified on D-1 were final by 19:16; 91 % of all that era's files), so
+a late file fails loudly instead of passing as "not yet". Because the flag also discards the
+validated days of its own month chunk, PR 5 asks for the trailing re-ingest window without the
+flag and for tomorrow alone with it, in two calls.
 
 Today is read once when `ingest` starts (`madrid_today()`, with an injectable clock for tests): a
 run that crosses Madrid's midnight keeps judging by the day it started on, which errs towards "not
