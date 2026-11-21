@@ -626,3 +626,75 @@ def test_missing_mapped_contract_file_fails_closed_and_discards_branch(
             )
     finally:
         con.close()
+
+
+def test_soda_session_error_without_results_fails_closed_and_quarantines(
+    catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> None:
+    """A Soda session error with results=[] must fail closed in every aggregation path."""
+    ensure_table(catalog, registry.OMIE_DAY_AHEAD_PRICES)
+    ensure_table(catalog, registry.QUARANTINE_REJECTED_RECORDS)
+    table = catalog.load_table(registry.OMIE_DAY_AHEAD_PRICES.identifier)
+    rows = _omie_rows([date(2025, 4, 28)])
+    seed = wap.start(table, "seed")
+    seed_snap = wap.publish(table, seed, wap.write(table, seed, rows))
+
+    class FakeSession:
+        results: tuple[Any, ...] = ()
+        has_errors = True
+        is_passed = False
+
+        def get_errors_str(self) -> str:
+            return "invalid contract YAML"
+
+    class FakeDuckDS:
+        @classmethod
+        def from_existing_cursor(cls, _con: Any, _name: str) -> object:
+            return object()
+
+    monkeypatch.setattr(
+        quality_gates,
+        "_load_soda",
+        lambda: (lambda **_kw: FakeSession(), FakeDuckDS),
+    )
+    con = _duck_con()
+    try:
+        contracts_dir = find_contracts_dir(Settings())
+        audit = wap.start(table, "session-err")
+        wap.write(table, audit, rows, overwrite_filter=AlwaysTrue())
+        with pytest.raises(QualityGateError, match=r"soda\.session_error: invalid contract YAML"):
+            audit_branch_and_quarantine(
+                catalog,
+                table,
+                audit,
+                table_name="bronze.omie_day_ahead_prices",
+                con=con,
+                table_ref=table.metadata_location,
+                contracts_dir=contracts_dir,
+                run_id="session-err",
+            )
+        table.refresh()
+        assert table.metadata.current_snapshot_id == seed_snap
+        assert wap.audit_branches(table) == []
+        q_rows = (
+            catalog.load_table(registry.QUARANTINE_REJECTED_RECORDS.identifier)
+            .scan()
+            .to_arrow()
+            .to_pylist()
+        )
+        assert any(r["rule_name"] == "soda.session_error" for r in q_rows)
+
+        # check_tables also preserves session-level failures.
+        monkeypatch.setattr(duck, "table_name", lambda _name: table.metadata_location)
+        reports = check_tables(
+            Settings(),
+            tables=("bronze.omie_day_ahead_prices",),
+            metadata_only=False,
+            con=con,
+            catalog=catalog,
+        )
+        assert not reports[0].passed
+        assert reports[0].checks_failed == 1
+        assert reports[0].violations[0].rule_name == "soda.session_error"
+    finally:
+        con.close()

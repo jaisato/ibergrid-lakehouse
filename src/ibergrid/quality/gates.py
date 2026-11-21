@@ -181,6 +181,17 @@ def run_soda_contract(
                 )
             )
 
+    if (session.has_errors or not session.is_passed) and not violations:
+        checks_failed += 1
+        violations.append(
+            QualityViolation(
+                table=table_name,
+                rule_name="soda.session_error",
+                severity="error",
+                reason=session.get_errors_str() or "Soda contract session failed",
+            )
+        )
+
     decoupled_verified: int | None = None
     if table_name == "silver.mibel_prices_hourly":
         decoupled_verified = _count_verified_decoupled_hours(con, view_name)
@@ -191,7 +202,7 @@ def run_soda_contract(
         contract_path=str(contract_path),
         snapshot_id=snapshot_id,
         audit_branch=audit_branch,
-        passed=checks_failed == 0 and not session.has_errors,
+        passed=checks_failed == 0 and not session.has_errors and bool(session.is_passed),
         checks_passed=checks_passed,
         checks_failed=checks_failed,
         violations=tuple(violations),
@@ -259,6 +270,7 @@ def audit_branch_and_quarantine(
             )
     decoupled_verified: int | None = None
 
+    soda_passed = True
     if contract_path is not None and snapshot_id is not None:
         view_name = contract_path.stem
         quoted_ref = _quote(table_ref)
@@ -278,9 +290,20 @@ def audit_branch_and_quarantine(
         checks_passed += soda_report.checks_passed
         checks_failed += soda_report.checks_failed
         all_violations.extend(soda_report.violations)
+        if not soda_report.passed and not soda_report.violations:
+            checks_failed += 1
+            all_violations.append(
+                QualityViolation(
+                    table=table_name,
+                    rule_name="soda.execution_error",
+                    severity="error",
+                    reason="Soda contract verification failed without check diagnostics",
+                )
+            )
+        soda_passed = soda_report.passed
         decoupled_verified = soda_report.decoupled_periods_verified
 
-    passed = checks_failed == 0
+    passed = checks_failed == 0 and soda_passed
     quarantine_snap: int | None = None
     if not passed:
         q_records = _violations_to_quarantine(
@@ -372,6 +395,7 @@ def check_tables(
             contract_path: Path | None = None
             decoupled_verified: int | None = None
 
+            soda_passed = True
             if (
                 not metadata_only
                 and contracts_dir is not None
@@ -401,6 +425,17 @@ def check_tables(
                 checks_passed += soda_report.checks_passed
                 checks_failed += soda_report.checks_failed
                 violations.extend(soda_report.violations)
+                if not soda_report.passed and not soda_report.violations:
+                    checks_failed += 1
+                    violations.append(
+                        QualityViolation(
+                            table=name,
+                            rule_name="soda.execution_error",
+                            severity="error",
+                            reason="Soda contract verification failed without check diagnostics",
+                        )
+                    )
+                soda_passed = soda_report.passed
                 decoupled_verified = soda_report.decoupled_periods_verified
 
             quarantine_snap: int | None = None
@@ -425,7 +460,7 @@ def check_tables(
                     contract_path=None if contract_path is None else str(contract_path),
                     snapshot_id=meta_result.summary.snapshot_id,
                     audit_branch="main",
-                    passed=checks_failed == 0,
+                    passed=checks_failed == 0 and soda_passed,
                     checks_passed=checks_passed,
                     checks_failed=checks_failed,
                     violations=tuple(violations),
