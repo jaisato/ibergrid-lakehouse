@@ -80,7 +80,7 @@ def _normalize_s3_prefix(prefix: str) -> str:
 def _to_csv_bytes(rows: list[dict[str, Any]]) -> bytes:
     buf = io.StringIO()
     if rows:
-        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     return buf.getvalue().encode("utf-8")
@@ -279,7 +279,7 @@ def export_portal_bundle(
             "batch_points": realtime_resp.batch_points,
             "stream_points": realtime_resp.stream_points,
             "updated_at_utc": realtime_resp.updated_at_utc,
-            "items": realtime_rows[-96:],
+            "items": realtime_rows,
         },
         "metadata_inventory": metadata_resp.model_dump(mode="json"),
         "quarantine_summary": quarantine,

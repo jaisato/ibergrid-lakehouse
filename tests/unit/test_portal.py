@@ -101,6 +101,8 @@ def test_export_portal_bundle_writes_local_and_s3_with_assets(
     assert summary["systems_overview"][1]["ts_utc_verified"] is False
     assert summary["quarantine_summary"]["total_rejected_records"] == 1
     assert summary["metadata_inventory"]["total_data_bytes_scanned"] == 0
+    rt_summary = summary["realtime_demand"]
+    assert len(rt_summary["items"]) == rt_summary["batch_points"] + rt_summary["stream_points"]
 
     with (out_dir / "daily_market.csv").open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
