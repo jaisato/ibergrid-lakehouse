@@ -19,6 +19,8 @@ The invariants, each pinned by a test:
 4. A conflict never loses data: ``PublishConflict`` leaves ``main`` and the branch as they were.
 5. Publishing twice is safe: once the audited snapshot is in ``main``'s history, publishing the
    same run again returns it, also after a commit whose response was lost.
+6. Checkpoints (``publish(..., set_properties=...)``) always move ``main``, so the guard on
+   ``main`` orders them: a stale checkpoint conflicts instead of overwriting a newer one.
 """
 
 import re
@@ -28,7 +30,11 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import pyarrow as pa
-from pyiceberg.exceptions import CommitFailedException, CommitStateUnknownException
+from pyiceberg.exceptions import (
+    CommitFailedException,
+    CommitStateUnknownException,
+    ValidationException,
+)
 from pyiceberg.expressions import BooleanExpression
 from pyiceberg.table import Table
 from pyiceberg.table.refs import MAIN_BRANCH, SnapshotRefType
@@ -96,13 +102,18 @@ def start(table: Table, run_id: str) -> AuditBranch:
                 snapshot_properties={RUN_ID_PROPERTY: run_id},
                 branch=None,
             )
-            [root] = [
+            staged = [
                 snapshot.snapshot_id
                 for snapshot in table.metadata.snapshots
                 if snapshot.snapshot_id not in before
                 and snapshot.summary is not None
                 and snapshot.summary[RUN_ID_PROPERTY] == run_id
             ]
+            if len(staged) != 1:
+                raise WapError(
+                    f"starting run {run_id!r}: another start of the same run id raced this one"
+                )
+            [root] = staged
         else:
             root = base
         table.manage_snapshots().create_branch(root, name).commit()
@@ -119,7 +130,7 @@ def write(
     """Append ``data`` to the branch, or replace the branch rows matching ``overwrite_filter``.
 
     Returns ``head(table, audit)`` afterwards. Each snapshot records the run id under
-    ``ibergrid.run-id``. An append of no rows commits nothing.
+    ``ibergrid.run-id``. An append of no rows commits nothing; an overwrite of no rows deletes.
     """
     _lineage_head(table, audit)
     if data.num_rows or overwrite_filter is not None:
@@ -127,6 +138,10 @@ def write(
         with _concurrently(f"writing run {audit.run_id!r}"):
             if overwrite_filter is None:
                 table.append(data, snapshot_properties=properties, branch=audit.name)
+            elif not data.num_rows:
+                # A delete, not an overwrite: an overwrite with no rows that removes every row
+                # leaves an append snapshot with an empty manifest list, unreadable for DuckDB.
+                table.delete(overwrite_filter, snapshot_properties=properties, branch=audit.name)
             else:
                 table.overwrite(
                     data,
@@ -171,19 +186,34 @@ def publish(
 ) -> int | None:
     """Move ``main`` to the audited snapshot and remove the branch, in one catalog commit.
 
-    ``expected_head`` is what the audit read (``head`` or ``read``). ``set_properties`` (for
-    example a stream's Kafka offsets) are set in the same commit, so they change together with
-    ``main`` or not at all. Returns the published snapshot (None: nothing was written).
+    ``expected_head`` is what the audit read (``head`` or ``read``). ``set_properties`` (a
+    stream's Kafka offsets, for example) are set in the same commit, so they change together with
+    ``main`` or not at all, and only if ``main`` is still at the run's base. A run that wrote
+    nothing still has to move ``main`` for that guard to order it against other publishes, so it
+    gets a checkpoint snapshot of its own: an empty append (no data change) on the branch, which
+    is then published. A table without any snapshot cannot take one (DuckDB cannot read an empty
+    first snapshot), so there a checkpoint needs data.
+
+    Returns the snapshot ``main`` moved to (None: nothing was written on an empty table).
+    Publishing again after success returns it too. An empty run without properties changes
+    nothing, so publishing it after a discard also succeeds: that carries no proof.
 
     Raises ``PublishConflict`` when ``main`` is no longer at the run's base or the branch is no
     longer at ``expected_head``; ``WapError`` when the run was discarded or its branch re-created.
     """
     table.refresh()
     _check_table(table, audit)
+    checkpoint = bool(set_properties) and expected_head == audit.base_snapshot_id
+    if checkpoint and expected_head is None:
+        raise WapError(
+            f"run {audit.run_id!r} wrote nothing on a table without snapshots: a checkpoint "
+            "needs data there"
+        )
     branch = _ref(table, audit.name)
     if branch is None:
-        if expected_head is None or _published(table, audit, expected_head):
-            return expected_head
+        found, published = _published(table, audit, expected_head, by_run_id=checkpoint)
+        if found:
+            return published
         raise WapError(f"branch {audit.name!r} does not exist: the run was discarded")
     main = _ref(table, MAIN_BRANCH)
     if main != audit.base_snapshot_id:
@@ -197,17 +227,29 @@ def publish(
             f"branch {audit.name!r} moved from {expected_head} to {audited} since its audit; "
             "audit it again"
         )
+    target = expected_head
+    if checkpoint:
+        with _concurrently(f"checkpointing run {audit.run_id!r}"):
+            table.append(
+                table.schema().as_arrow().empty_table(),
+                snapshot_properties={RUN_ID_PROPERTY: audit.run_id},
+                branch=audit.name,
+            )
+        target = branch = table.metadata.refs[audit.name].snapshot_id
+        snapshot = table.snapshot_by_id(target)
+        if snapshot is None or snapshot.parent_snapshot_id != expected_head:
+            raise PublishConflict(f"branch {audit.name!r} moved since its audit; audit it again")
     requirements = (
         AssertTableUUID(uuid=audit.table_uuid),
         AssertRefSnapshotId(ref=MAIN_BRANCH, snapshot_id=main),
         AssertRefSnapshotId(ref=audit.name, snapshot_id=branch),
     )
     updates: tuple[TableUpdate, ...] = (RemoveSnapshotRefUpdate(ref_name=audit.name),)
-    if expected_head is not None:
+    if target is not None:
         move = SetSnapshotRefUpdate(
             ref_name=MAIN_BRANCH,
             type=SnapshotRefType.BRANCH,
-            snapshot_id=expected_head,
+            snapshot_id=target,
             max_ref_age_ms=None,
             max_snapshot_age_ms=None,
             min_snapshots_to_keep=None,
@@ -225,16 +267,14 @@ def publish(
     except CommitStateUnknownException as exc:
         # The catalog may have applied the commit and lost the answer: look before reporting.
         table.refresh()
-        if _ref(table, audit.name) is None and (
-            expected_head is None or _published(table, audit, expected_head)
-        ):
-            return expected_head
+        if _ref(table, audit.name) is None and _published(table, audit, target)[0]:
+            return target
         raise WapError(
             f"the catalog did not confirm publishing run {audit.run_id!r} and it has not landed; "
             "publish again"
         ) from exc
     table.refresh()
-    return expected_head
+    return target
 
 
 def discard(table: Table, audit: AuditBranch) -> None:
@@ -262,14 +302,28 @@ def _lineage_head(table: Table, audit: AuditBranch) -> int:
     return branch
 
 
-def _published(table: Table, audit: AuditBranch, snapshot_id: int) -> bool:
-    """Whether ``snapshot_id`` is in ``main``'s history since the run's base."""
+def _published(
+    table: Table, audit: AuditBranch, expected_head: int | None, *, by_run_id: bool = False
+) -> tuple[bool, int | None]:
+    """Whether the run is in ``main``'s history since its base, and the snapshot that proves it.
+
+    A run that wrote data is found by its audited snapshot; an empty run that checkpointed, by
+    its checkpoint snapshot (``by_run_id``). An empty run without properties left no trace.
+    """
+    if expected_head == audit.base_snapshot_id and not by_run_id:
+        return True, expected_head
     for snapshot in ancestors_of(table.current_snapshot(), table.metadata):
-        if snapshot.snapshot_id == snapshot_id:
-            return True
+        if by_run_id:
+            found = (
+                snapshot.summary is not None and snapshot.summary[RUN_ID_PROPERTY] == audit.run_id
+            )
+        else:
+            found = snapshot.snapshot_id == expected_head
+        if found:
+            return True, snapshot.snapshot_id
         if snapshot.snapshot_id == audit.base_snapshot_id:
-            return False
-    return False
+            return False, None
+    return False, None
 
 
 def _ref(table: Table, ref: str) -> int | None:
@@ -286,5 +340,6 @@ def _check_table(table: Table, audit: AuditBranch) -> None:
 def _concurrently(what: str) -> Iterator[None]:
     try:
         yield
-    except CommitFailedException as exc:
+    except (CommitFailedException, ValidationException) as exc:
+        # ValidationException: an overwrite whose files a concurrent commit already removed.
         raise WapError(f"{what}: the table changed concurrently ({exc})") from exc

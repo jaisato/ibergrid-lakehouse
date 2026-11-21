@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import Any
 
+import duckdb
 import pyarrow as pa
 import pytest
 from pyiceberg.catalog.sql import SqlCatalog
@@ -180,17 +181,80 @@ def test_publish_sets_properties_in_the_same_commit(loaded: Table) -> None:
     assert len(loaded.metadata.metadata_log) == versions + 1  # one commit, one metadata file
 
 
-def test_a_direct_write_commits_data_and_properties_in_one_transaction(loaded: Table) -> None:
-    """The equivalent of ``publish(..., set_properties=...)`` for a write without WAP."""
-    versions = len(loaded.metadata.metadata_log)
+def test_a_direct_transaction_is_atomic_but_not_fenced(
+    loaded: Table, other: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why checkpoints go through publish only: two consumers that read the same offsets both
+    land their batch, because PyIceberg retries the losing transaction on fresh metadata."""
 
-    with loaded.transaction() as tx:
-        tx.set_properties({"stream.offsets": "p0:7"})
-        tx.append(rows(("2026-01-03", 3)))
+    def consume_offsets_10_to_20(table: Table) -> None:
+        table.refresh()
+        with table.transaction() as tx:
+            tx.set_properties({"stream.offsets": "p0:20"})
+            tx.append(rows(("batch-10-20", 1)))
 
-    assert loaded.properties["stream.offsets"] == "p0:7"
-    assert ("2026-01-03", 3) in main_rows(loaded)
-    assert len(loaded.metadata.metadata_log) == versions + 1
+    interleave(loaded, lambda: consume_offsets_10_to_20(other), monkeypatch)
+    consume_offsets_10_to_20(loaded)
+
+    assert [r for r in main_rows(loaded) if r[0] == "batch-10-20"] == [("batch-10-20", 1)] * 2
+
+
+def test_two_publishes_of_the_same_offsets_cannot_both_land(loaded: Table, other: Table) -> None:
+    """The same race through WAP: the second publish of a batch conflicts."""
+    first, second = wap.start(loaded, "consumer-a"), wap.start(other, "consumer-b")
+    wap.publish(
+        loaded,
+        first,
+        wap.write(loaded, first, rows(("batch-10-20", 1))),
+        set_properties={"stream.offsets": "p0:20"},
+    )
+
+    with pytest.raises(wap.PublishConflict, match="main moved"):
+        wap.publish(
+            other,
+            second,
+            wap.write(other, second, rows(("batch-10-20", 1))),
+            set_properties={"stream.offsets": "p0:20"},
+        )
+    assert [r for r in main_rows(loaded) if r[0] == "batch-10-20"] == [("batch-10-20", 1)]
+
+
+def test_a_stale_checkpoint_without_data_conflicts(loaded: Table, other: Table) -> None:
+    """Runs that wrote nothing still move main (a checkpoint snapshot), so they are ordered."""
+    late, early = wap.start(loaded, "late"), wap.start(other, "early")
+    checkpoint = wap.publish(
+        other, early, wap.head(other, early), set_properties={"stream.offsets": "p0:20"}
+    )
+
+    with pytest.raises(wap.PublishConflict, match="main moved"):
+        wap.publish(
+            loaded, late, wap.head(loaded, late), set_properties={"stream.offsets": "p0:12"}
+        )
+
+    assert checkpoint is not None
+    assert checkpoint != late.base_snapshot_id
+    assert loaded.metadata.current_snapshot_id == checkpoint
+    assert loaded.properties["stream.offsets"] == "p0:20"
+    assert main_rows(loaded) == [("2026-01-01", 1), ("2026-01-02", 2)]  # no data change
+    snapshot = loaded.snapshot_by_id(checkpoint)
+    assert snapshot is not None
+    assert snapshot.summary is not None
+    assert snapshot.summary[wap.RUN_ID_PROPERTY] == "early"
+
+
+def test_a_checkpoint_after_its_branch_moved_conflicts(
+    loaded: Table, other: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    # A write lands between the audit check and the checkpoint snapshot: the snapshot goes on top
+    # of it, so it is not the audited state any more.
+    interleave(loaded, lambda: wap.write(other, audit, rows(("2026-01-09", 9))), monkeypatch)
+
+    with pytest.raises(wap.PublishConflict, match="since its audit"):
+        wap.publish(loaded, audit, audited, set_properties={"stream.offsets": "p0:5"})
+    assert "stream.offsets" not in loaded.properties
+    assert main_rows(loaded) == [("2026-01-01", 1), ("2026-01-02", 2)]
 
 
 # --- a run that was published, discarded or re-created ------------------------------------------
@@ -251,6 +315,29 @@ def test_publishing_twice_returns_the_published_snapshot(loaded: Table, other: T
         ("2026-01-03", 3),
         ("2026-01-04", 4),
     ]
+
+
+def test_an_empty_checkpoint_run_can_be_published_twice(loaded: Table) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    offsets = {"stream.offsets": "p0:5"}
+
+    checkpoint = wap.publish(loaded, audit, audited, set_properties=offsets)
+
+    assert wap.publish(loaded, audit, audited, set_properties=offsets) == checkpoint
+    assert loaded.properties["stream.offsets"] == "p0:5"
+
+
+def test_a_discarded_empty_run_cannot_claim_its_checkpoint(loaded: Table) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    wap.discard(loaded, audit)
+
+    with pytest.raises(wap.WapError, match="was discarded"):
+        wap.publish(loaded, audit, audited, set_properties={"stream.offsets": "p0:5"})
+    assert "stream.offsets" not in loaded.properties
+    # Without properties an empty run changes nothing, published or discarded alike.
+    assert wap.publish(loaded, audit, audited) == audit.base_snapshot_id
 
 
 def test_an_empty_run_can_be_published_twice(loaded: Table) -> None:
@@ -356,6 +443,20 @@ def test_an_empty_run_on_an_empty_table_publishes_nothing(table: Table) -> None:
     assert table.metadata.current_snapshot_id is None
 
 
+@pytest.mark.parametrize("discarded", [False, True])
+def test_a_checkpoint_on_a_table_without_snapshots_needs_data(
+    table: Table, discarded: bool
+) -> None:
+    audit = wap.start(table, "idle")
+    if discarded:
+        wap.discard(table, audit)
+
+    with pytest.raises(wap.WapError, match="a checkpoint needs data"):
+        wap.publish(table, audit, None, set_properties={"stream.offsets": "p0:5"})
+    assert "stream.offsets" not in table.properties
+    assert table.metadata.current_snapshot_id is None
+
+
 def test_an_empty_table_that_got_data_meanwhile_conflicts(table: Table, other: Table) -> None:
     audit = wap.start(table, "first-load")
     audited = wap.write(table, audit, rows(("2026-01-01", 1)))
@@ -373,6 +474,24 @@ def test_a_discarded_run_on_an_empty_table_cannot_be_published(table: Table) -> 
 
     with pytest.raises(wap.WapError, match="was discarded"):
         wap.publish(table, audit, audited)
+
+
+def test_an_overwrite_of_no_rows_deletes_and_main_stays_readable(loaded: Table) -> None:
+    """Empty data and a filter matching every row: a delete, never an empty manifest list."""
+    audit = wap.start(loaded, "wipe")
+    audited = wap.write(loaded, audit, rows(), overwrite_filter="value >= 0")
+
+    assert audited is not None
+    snapshot = loaded.snapshot_by_id(audited)
+    assert snapshot is not None
+    assert snapshot.summary is not None
+    assert snapshot.summary.operation.value == "delete"
+    wap.publish(loaded, audit, audited)
+    con = duckdb.connect()
+    con.install_extension("iceberg")
+    con.load_extension("iceberg")
+    loaded.refresh()
+    assert con.execute("FROM iceberg_scan(?)", [loaded.metadata_location]).fetchall() == []
 
 
 def test_an_empty_append_commits_nothing(loaded: Table) -> None:
@@ -409,6 +528,28 @@ def test_two_starts_racing_for_one_run_id_fail_cleanly(
 
     with pytest.raises(wap.WapError, match="changed concurrently"):
         wap.start(loaded, "run-1")
+
+
+def test_two_starts_racing_on_a_table_without_snapshots_fail_cleanly(
+    table: Table, other: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    interleave(table, lambda: wap.start(other, "same"), monkeypatch)
+
+    with pytest.raises(wap.WapError, match="another start of the same run id raced"):
+        wap.start(table, "same")
+    assert set(table.metadata.refs) == {"audit-same"}
+
+
+def test_an_overwrite_racing_a_discard_fails_cleanly(
+    loaded: Table, other: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = wap.start(loaded, "run-1")
+    wap.write(loaded, audit, rows(("2026-01-03", 3)))
+    interleave(loaded, lambda: wap.discard(other, audit), monkeypatch)
+
+    with pytest.raises(wap.WapError, match="changed concurrently"):
+        wap.write(loaded, audit, rows(("2026-01-01", 100)), overwrite_filter="day == '2026-01-01'")
+    assert main_rows(loaded) == [("2026-01-01", 1), ("2026-01-02", 2)]
 
 
 def test_a_discard_racing_a_write_fails_cleanly(
