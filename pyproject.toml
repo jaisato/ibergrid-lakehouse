@@ -27,9 +27,17 @@ dependencies = [
 ibergrid = "ibergrid.cli:app"
 
 [dependency-groups]
-# Dagster (ADR 0005), only in the orchestration image: the app image (`ingest`, `doctor`) stays
-# without it. dagster-postgres follows Dagster's integration numbering (0.29.x for 1.13.x).
+# dbt Core + dbt-duckdb (ADR 0007): builds Silver and Gold in a staging DuckDB before PyIceberg
+# publishes them through Write-Audit-Publish. Included in orchestration (and dev), keeping the lean
+# app image without dbt or Dagster.
+transform = [
+  "dbt-core==1.12.7",
+  "dbt-duckdb==1.11.1",
+]
+# Dagster (ADR 0005), only in the orchestration image: the app image (`ingest`, `doctor`, `stream`)
+# stays without it. dagster-postgres follows Dagster's integration numbering (0.29.x for 1.13.x).
 orchestration = [
+  { include-group = "transform" },
   "dagster==1.13.31",
   "dagster-graphql==1.13.31",
   "dagster-postgres==0.29.31",
@@ -80,8 +88,8 @@ files = ["src", "tests"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-# pyarrow ships no type information.
-module = ["pyarrow", "pyarrow.*"]
+# pyarrow and dbt ship incomplete or missing type stubs.
+module = ["pyarrow", "pyarrow.*", "dbt", "dbt.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

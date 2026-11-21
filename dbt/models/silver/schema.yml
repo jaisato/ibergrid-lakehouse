@@ -1,0 +1,139 @@
+version: 2
+
+models:
+  - name: demand_national_5min
+    description: Reconciled 5-minute national demand (batch for closed Madrid days, deduplicated stream for open days).
+    columns:
+      - name: ts_utc
+        tests:
+          - not_null
+          - unique
+      - name: madrid_date
+        tests:
+          - not_null
+      - name: source_lane
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["batch", "stream"]
+
+  - name: demand_system_hourly
+    description: Hourly demand per electric system with strict peninsular vs non-peninsular scoping and Canarias timestamp flag.
+    columns:
+      - name: ts_utc
+        tests:
+          - not_null
+      - name: madrid_date
+        tests:
+          - not_null
+      - name: madrid_hour
+        tests:
+          - not_null
+      - name: electric_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["peninsular", "baleares", "canarias", "ceuta", "melilla"]
+      - name: system_scope
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["peninsular", "non_peninsular"]
+      - name: ts_utc_verified
+        tests:
+          - not_null
+      - name: demand_mw
+        tests:
+          - not_null
+
+  - name: mibel_prices_period
+    description: OMIE MIBEL day-ahead marginal prices at native resolution (v1 60 min, v2 15 min).
+    columns:
+      - name: delivery_date
+        tests:
+          - not_null
+      - name: period
+        tests:
+          - not_null
+      - name: resolution_minutes
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [15, 60]
+      - name: interval_start_utc
+        tests:
+          - not_null
+          - unique
+      - name: price_es_eur_mwh
+        tests:
+          - not_null
+      - name: price_pt_eur_mwh
+        tests:
+          - not_null
+      - name: contract_version
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2]
+
+  - name: mibel_prices_hourly
+    description: Standardized hourly MIBEL price series across v1 and v2 enriched with REData peninsular PVPC and spot price.
+    columns:
+      - name: hour_utc
+        tests:
+          - not_null
+          - unique
+      - name: delivery_date
+        tests:
+          - not_null
+      - name: periods_in_hour
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 4]
+      - name: price_es_eur_mwh
+        tests:
+          - not_null
+      - name: price_pt_eur_mwh
+        tests:
+          - not_null
+
+  - name: generation_daily
+    description: Daily net generation per electric system and technology, excluding Total generation from technology rows.
+    columns:
+      - name: generation_date
+        tests:
+          - not_null
+      - name: electric_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["national", "peninsular", "baleares", "canarias", "ceuta", "melilla"]
+      - name: system_scope
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["national", "peninsular", "non_peninsular"]
+      - name: series_id
+        tests:
+          - not_null
+      - name: energy_class
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["renewable", "non_renewable"]
+      - name: generation_mwh
+        tests:
+          - not_null
+      - name: reported_total_mwh
+        tests:
+          - not_null

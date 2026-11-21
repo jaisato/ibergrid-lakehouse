@@ -138,6 +138,18 @@ class StreamSettings(BaseSettings):
     watchdog_timeout: float = Field(default=900.0, gt=0)
 
 
+class TransformSettings(BaseSettings):
+    """dbt medallion transforms (ADR 0007): project location and DuckDB worker threads."""
+
+    model_config = _config("IBERGRID_TRANSFORM_")
+
+    # The orchestration image bakes dbt/ at /opt/ibergrid/dbt; unset, the runner locates dbt/
+    # beside pyproject.toml in a repository checkout.
+    dbt_project_dir: str | None = None
+    # One thread by default keeps DuckDB memory bounded inside the container limit.
+    threads: int = Field(default=1, ge=1, le=8)
+
+
 class OrchestrationSettings(BaseSettings):
     """Dagster's code server (ADR 0005). Not part of ``Settings``: loading the definitions must
     not need the storage keys."""
@@ -175,6 +187,7 @@ class Settings(BaseModel):
     redata: RedataSettings = Field(default_factory=RedataSettings)
     omie: OmieSettings = Field(default_factory=OmieSettings)
     stream: StreamSettings = Field(default_factory=StreamSettings)
+    transform: TransformSettings = Field(default_factory=TransformSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -193,6 +206,7 @@ def describe_validation_error(exc: ValidationError) -> str:
         RedataSettings,
         OmieSettings,
         StreamSettings,
+        TransformSettings,
         LogSettings,
     )
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}

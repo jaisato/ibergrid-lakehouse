@@ -15,7 +15,7 @@ import pytest
 from pyarrow import fs
 from pydantic import HttpUrl
 
-from ibergrid.lake import duck
+from ibergrid.lake import duck, registry
 from ibergrid.lake.catalog import LakeCatalog
 from ibergrid.lake.registry import REDATA_OBSERVATIONS
 from ibergrid.lake.tables import ensure_table
@@ -48,10 +48,9 @@ def initialised() -> None:
     assert first.returncode == 0, first.stdout + first.stderr
     assert "lake: bronze.redata_observations " in first.stdout
     assert "lake: bronze.omie_day_ahead_prices " in first.stdout
-    assert second.stdout == (
-        "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
-        "lake: bronze.redata_demand_stream unchanged\n"
-    ), second.stderr
+    assert second.stdout.splitlines() == [
+        f"lake: {spec.namespace}.{spec.name} unchanged" for spec in registry.TABLES
+    ], second.stderr
 
 
 @pytest.fixture

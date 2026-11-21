@@ -28,7 +28,7 @@ PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 
 .PHONY: help sync lock lint format typecheck test test-integration test-live contracts audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke \
-	stream-up stream-down stream-status chaos-stream
+	transform stream-up stream-down stream-status chaos-stream
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -119,6 +119,10 @@ logs: ## Follow the logs; SERVICE=<name> for one service
 
 smoke: ## ibergrid doctor from inside the compose network
 	$(COMPOSE) run --rm --no-deps doctor
+
+transform: ## Build, test and WAP-publish Silver and Gold medallion tables from inside the stack
+	$(COMPOSE) run --rm --no-deps doctor lake init
+	$(COMPOSE) run --rm --no-deps transform run
 
 # --- Streaming lane (ADR 0006) -------------------------------------------------------------------
 

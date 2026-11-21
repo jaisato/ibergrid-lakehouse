@@ -1,0 +1,28 @@
+version: 2
+
+seeds:
+  - name: generation_technologies
+    description: >
+      Canonical REData generation_daily technology taxonomy verified against the 2023-2026
+      backfill across national, peninsular, baleares, canarias, ceuta and melilla systems.
+    columns:
+      - name: series_id
+        tests:
+          - not_null
+          - unique
+      - name: technology_slug
+        tests:
+          - not_null
+          - unique
+      - name: technology_name
+        tests:
+          - not_null
+      - name: energy_class
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["renewable", "non_renewable", "total"]
+      - name: is_renewable
+        tests:
+          - not_null

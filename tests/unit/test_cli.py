@@ -181,7 +181,7 @@ def test_lake_init_with_an_empty_registry_creates_nothing(monkeypatch: pytest.Mo
     assert result.stdout == "lake: no tables registered\n"
 
 
-def test_lake_init_creates_the_bronze_tables(
+def test_lake_init_creates_the_medallion_tables(
     catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None
 ) -> None:
     monkeypatch.setattr(cli, "rest_catalog", lambda _settings: catalog)
@@ -189,14 +189,11 @@ def test_lake_init_creates_the_bronze_tables(
     first = runner.invoke(app, ["lake", "init"])
     second = runner.invoke(app, ["lake", "init"])
 
-    assert first.stdout == (
-        "lake: bronze.redata_observations created\nlake: bronze.omie_day_ahead_prices created\n"
-        "lake: bronze.redata_demand_stream created\n"
-    ), first.output
-    assert second.stdout == (
-        "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
-        "lake: bronze.redata_demand_stream unchanged\n"
+    expected_names = [f"{spec.namespace}.{spec.name}" for spec in registry.TABLES]
+    assert first.stdout.splitlines() == [f"lake: {name} created" for name in expected_names], (
+        first.output
     )
+    assert second.stdout.splitlines() == [f"lake: {name} unchanged" for name in expected_names]
     table = catalog.load_table(("bronze", "redata_observations"))
     assert [f.name for f in table.spec().fields] == ["dataset", "ts_utc_month"]
     assert [str(f.transform) for f in table.spec().fields] == ["identity", "month"]
@@ -204,6 +201,12 @@ def test_lake_init_creates_the_bronze_tables(
     assert [(f.name, str(f.transform)) for f in omie.spec().fields] == [
         ("delivery_date_month", "month")
     ]
+    silver_prices = catalog.load_table(("silver", "mibel_prices_hourly"))
+    assert [(f.name, str(f.transform)) for f in silver_prices.spec().fields] == [
+        ("hour_utc_month", "month")
+    ]
+    gold_summary = catalog.load_table(("gold", "mibel_daily_summary"))
+    assert list(gold_summary.spec().fields) == []
 
 
 def test_lake_init_creates_the_registry_tables_once(lake: SqlCatalog) -> None:

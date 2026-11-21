@@ -1,0 +1,110 @@
+version: 2
+
+models:
+  - name: mibel_hourly_market
+    description: Peninsular hourly market mart joining standardized MIBEL prices, peninsular-only demand and daily renewable shares.
+    columns:
+      - name: hour_utc
+        tests:
+          - not_null
+          - unique
+      - name: delivery_date
+        tests:
+          - not_null
+      - name: day_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["weekday", "weekend"]
+      - name: price_es_eur_mwh
+        tests:
+          - not_null
+      - name: price_pt_eur_mwh
+        tests:
+          - not_null
+      - name: intraday_price_rank
+        tests:
+          - not_null
+      - name: source_attribution
+        tests:
+          - not_null
+      - name: updated_at_utc
+        tests:
+          - not_null
+
+  - name: mibel_daily_summary
+    description: Daily MIBEL executive summary keeping peninsular and non-peninsular demand strictly separated.
+    columns:
+      - name: delivery_date
+        tests:
+          - not_null
+          - unique
+      - name: hours_in_day
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [23, 24, 25]
+      - name: price_es_mean_eur_mwh
+        tests:
+          - not_null
+      - name: price_pt_mean_eur_mwh
+        tests:
+          - not_null
+      - name: source_attribution
+        tests:
+          - not_null
+
+  - name: system_demand_daily
+    description: Daily demand and renewable generation per Spanish electric system with scope and Canarias timestamp flags.
+    columns:
+      - name: demand_date
+        tests:
+          - not_null
+      - name: electric_system
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["peninsular", "baleares", "canarias", "ceuta", "melilla"]
+      - name: system_scope
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["peninsular", "non_peninsular"]
+      - name: ts_utc_verified
+        tests:
+          - not_null
+      - name: demand_total_mwh
+        tests:
+          - not_null
+      - name: source_attribution
+        tests:
+          - not_null
+
+  - name: optimal_consumption_windows
+    description: Calendar-month x day-type x Madrid-hour profile for industrial and data-center load shifting.
+    columns:
+      - name: calendar_month
+        tests:
+          - not_null
+      - name: day_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["weekday", "weekend"]
+      - name: madrid_hour
+        tests:
+          - not_null
+      - name: window_rank
+        tests:
+          - not_null
+      - name: is_optimal_4h_window
+        tests:
+          - not_null
+      - name: source_attribution
+        tests:
+          - not_null

@@ -21,3 +21,8 @@ htmlcov/
 
 # Git worktrees
 .worktrees/
+
+# dbt local artifacts (runner writes to temp dirs; standalone dbt writes here)
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

@@ -27,6 +27,7 @@ services:
   orchestration-migrate: *build-orchestration
   dagster-code: *build-orchestration
   dagster-daemon: *build-orchestration
+  transform: *build-orchestration
   dagster-webserver:
     <<: *build-orchestration
     ports:

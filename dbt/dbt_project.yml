@@ -1,0 +1,37 @@
+name: ibergrid
+version: "0.1.0"
+config-version: 2
+
+profile: ibergrid
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  ibergrid:
+    staging:
+      +schema: staging
+      +materialized: view
+    silver:
+      +schema: silver
+      +materialized: table
+    gold:
+      +schema: gold
+      +materialized: table
+
+seeds:
+  ibergrid:
+    +schema: seeds
+    generation_technologies:
+      +column_types:
+        series_id: varchar
+        technology_slug: varchar
+        technology_name: varchar
+        energy_class: varchar
+        is_renewable: boolean

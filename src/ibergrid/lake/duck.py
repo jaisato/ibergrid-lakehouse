@@ -22,12 +22,21 @@ Metadata = Literal[
 ]
 
 
-def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
-    """An in-memory DuckDB with the extensions loaded, the S3 secret and the catalog attached."""
+def connection_config(settings: Settings) -> dict[str, str | bool | int | float | list[str]]:
+    """DuckDB startup config matching ``settings.duckdb`` (reused by the dbt-duckdb plugin)."""
     directory = settings.duckdb.extension_directory
     # With a baked directory nothing is ever downloaded: a missing extension fails loudly.
-    config = {} if directory is None else {"extension_directory": directory}
-    con = duckdb.connect(config={**config, "autoinstall_known_extensions": directory is None})
+    config: dict[str, str | bool | int | float | list[str]] = {
+        "autoinstall_known_extensions": directory is None
+    }
+    if directory is not None:
+        config["extension_directory"] = directory
+    return config
+
+
+def configure(con: duckdb.DuckDBPyConnection, settings: Settings) -> None:
+    """Load the lake extensions, register the temporary S3 secret and attach the REST catalog."""
+    directory = settings.duckdb.extension_directory
     for extension in EXTENSIONS:
         if directory is None:
             con.install_extension(extension)
@@ -38,8 +47,8 @@ def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
     # Values as prepared parameters: a DuckDB parser error quotes the statement, never these.
     # The trailing slash keeps the scope from matching sibling buckets (s3://<bucket>-other).
     con.execute(
-        "CREATE TEMPORARY SECRET lake_s3 (TYPE s3, URL_STYLE 'path', KEY_ID $key, SECRET $secret, "
-        "REGION $region, ENDPOINT $endpoint, USE_SSL $ssl, SCOPE $scope)",
+        "CREATE OR REPLACE TEMPORARY SECRET lake_s3 (TYPE s3, URL_STYLE 'path', KEY_ID $key, "
+        "SECRET $secret, REGION $region, ENDPOINT $endpoint, USE_SSL $ssl, SCOPE $scope)",
         {
             "key": storage.access_key.get_secret_value(),
             "secret": storage.secret_key.get_secret_value(),
@@ -50,10 +59,16 @@ def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
         },
     )
     con.execute(
-        f"ATTACH {_quote(settings.catalog.warehouse)} AS {CATALOG} (TYPE iceberg, "
+        f"ATTACH IF NOT EXISTS {_quote(settings.catalog.warehouse)} AS {CATALOG} (TYPE iceberg, "
         f"ENDPOINT {_quote(base_url(settings.catalog.url) + '/catalog')}, "
         "AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none')"
     )
+
+
+def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
+    """An in-memory DuckDB with the extensions loaded, the S3 secret and the catalog attached."""
+    con = duckdb.connect(config=connection_config(settings))
+    configure(con, settings)
     return con
 
 

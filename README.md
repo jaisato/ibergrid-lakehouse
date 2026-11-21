@@ -4,16 +4,18 @@ An open, multi-engine lakehouse for Iberian electricity data: Red Eléctrica's R
 day-ahead market files, stored as Apache Iceberg tables behind a REST catalog and readable from
 DuckDB, Polars and PyIceberg without a JVM.
 
-**Status: phase 2 (streaming lane) complete.** The stack runs end to end (object storage,
+**Status: phase 3 (dbt medallion) complete.** The stack runs end to end (object storage,
 Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes Iceberg
 tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
 Eléctrica's REData API (demand, daily generation mix, prices) into `bronze.redata_observations`
 and OMIE's day-ahead marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`;
 Dagster runs them as partitioned assets, with daily schedules, backfills from 2023-01-01 and a
-sweeper for the audit branches of dead runs; and a streaming lane carries REData's five-minute
+sweeper for the audit branches of dead runs; a streaming lane carries REData's five-minute
 national demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly
-once, with a contract, a dead-letter topic and a crash test. The dbt medallion is next (see
-[Roadmap](#roadmap)).
+once; and dbt Core + `dbt-duckdb` builds and tests 5 Silver and 4 Gold medallion Iceberg tables
+published through PyIceberg WAP (reconciling batch and stream demand, harmonizing 60-min/15-min
+MIBEL prices across DST, and isolating peninsular from non-peninsular systems). Quality gates,
+automated maintenance and OpenLineage are next (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -98,10 +100,9 @@ its data.
 Write-Audit-Publish protocol and the measured engine capabilities are in
 [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md).
 
-- **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` (today
-  `bronze.redata_observations` and `bronze.omie_day_ahead_prices`) and created by
-  `ensure_table`, which also adds new optional columns and refuses any other change. Every write
-  goes to a run's audit branch
+- **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` (3 Bronze,
+  5 Silver and 4 Gold tables) and created by `ensure_table`, which also adds new optional columns
+  and refuses any other change. Every write goes to a run's audit branch
   (`wap.start`, `wap.write`); the audit reads the snapshot `wap.head` (or `wap.read`) returns, and
   `wap.publish(table, run, expected_head)` moves `main` to exactly that snapshot in one guarded
   commit, optionally with table properties such as stream offsets, or raises `PublishConflict`
@@ -232,10 +233,11 @@ omie: 2 chunk(s) published
 Dagster runs the connectors as assets; [ADR 0005](docs/adr/0005-dagster-orchestration.md) has the
 choice against Airflow, the measurements behind the schedules and the decisions.
 
-| Asset (group `bronze`) | Partitions (Madrid days) | Pool | Schedule (Madrid time) |
+| Asset | Partitions (Madrid days) | Pool | Schedule (Madrid time) |
 |---|---|---|---|
 | `bronze/redata_observations/<dataset>`, one per REData dataset | 2023-01-01 to yesterday | `redata` | 09:00, yesterday; re-ingests the 3 days before |
 | `bronze/omie_day_ahead_prices` | 2023-01-01 to tomorrow | `omie` | 16:00, tomorrow if out; 21:30, tomorrow required; both re-ingest the last 7 delivery days |
+| `silver/*` (5 tables) and `gold/*` (4 tables) via `medallion_models` | Unpartitioned (full refresh) | `transform` | 09:30 and 16:30, after REData and OMIE runs |
 
 - **Backfills are one run per range.** A run hands its whole partition range to one connector
   call, which cuts it into its own chunks (months; years for daily generation), so a backfill of
@@ -320,8 +322,40 @@ dead letters: 0 retained in redata.demand.realtime.dlq.v1
 Two runs against the live API are measured in ADR 0006: 34 minutes with the first version (8
 polls, 3,071 events, 1,024 duplicates from a producer restart dropped, 1,020 revisions kept: REE
 reprograms the rest of the day every few minutes) and 17 minutes with the final code (4 polls,
-1,269 events, 645 duplicates of the first run's points dropped, 591 revisions kept, lag 0). The batch table stays authoritative for closed days; Silver (phase 3) reconciles the
-two.
+1,269 events, 645 duplicates of the first run's points dropped, 591 revisions kept, lag 0). The
+batch table stays authoritative for closed days; Silver reconciles the two.
+
+## Medallion transforms (dbt + DuckDB + WAP)
+
+`ibergrid transform run` (`make transform`) and Dagster's `medallion_models` multi-asset build 5
+Silver and 4 Gold Iceberg tables with dbt Core (`dbt-core 1.12`) and `dbt-duckdb 1.11`
+([ADR 0007](docs/adr/0007-dbt-medallion.md)):
+
+- **Staging DuckDB -> PyIceberg WAP.** A `dbt-duckdb` plugin (`ibergrid.transform.plugin`) reuses
+  `ibergrid.lake.duck.configure`, sets `GLOBAL TimeZone = 'UTC'` across all cursors, and exposes
+  every Bronze table pinned to its current `main` snapshot (or an empty typed table before the
+  first write). `dbt build` runs 12 models and 87 tests (uniqueness, not-null, accepted values,
+  DST 23/24/25-hour continuity, peninsular/non-peninsular isolation, Canarias `ts_utc_verified =
+  FALSE`, generation total reconciliation, OMIE/REData cross-source spot check and batch+stream
+  reconciliation). Any failing test aborts before any Iceberg branch is opened; passing tables are
+  aligned to their `TableSpec` schemas and published through `ibergrid.lake.wap`.
+- **Silver (`silver.*`):** `demand_national_5min` (batch for closed days + deduplicated stream for
+  open days), `demand_system_hourly` (`system_scope` + `ts_utc_verified`), `mibel_prices_period`
+  (native 60-min v1 / 15-min v2), `mibel_prices_hourly` (harmonized hourly MIBEL + REData PVPC and
+  spot reconciliation) and `generation_daily` (17 verified technologies, excluding `Total
+  generation` from technology rows so sums never double-count).
+- **Gold (`gold.*`):** `mibel_hourly_market` (peninsular-only market mart with 1-hour ramps,
+  intraday rank and renewable shares), `mibel_daily_summary` (peninsular and non-peninsular demand
+  kept in separate columns), `system_demand_daily` (all 5 Spanish electric systems) and
+  `optimal_consumption_windows` (`month x day_type x hour` load-shifting profile).
+- **Measured over 3.9 years (2023-01-01..2026-11-21):** 789,291 rows across 9 tables (14.73 MB
+  Parquet) built, tested (87/87) and WAP-published in 25.85 s (`dbt build` 7.84 s; peak RSS
+  703 MiB); OMIE Spain vs REData spot reconciles to `0.0 EUR/MWh` across all 34,080 matched hours.
+
+```bash
+make transform                                                   # full Silver + Gold rebuild
+docker compose run --rm --no-deps transform run --select gold    # build upstreams, publish Gold only
+```
 
 ## Services
 
@@ -339,6 +373,7 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `broker-init` | `redpandadata/redpanda:v26.2.2` (`rpk`) | One-shot: authentication, topics, users and ACLs, idempotently | |
 | `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
 | `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...`, `ingest omie ...` (384 MiB limit) | |
+| `transform` | orchestration image (`ibergrid transform`) | On demand: `make transform` (`dbt build` + WAP publish; 1.25 GiB limit) | |
 | `stream-producer` | app image (`ibergrid stream produce`) | REData's real-time demand into the topic (`stream` profile locally) | |
 | `stream-consumer` | app image (`ibergrid stream consume`) | The topic into `bronze.redata_demand_stream` (`stream` profile locally) | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs, schedules | |
@@ -411,7 +446,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | 0 | Foundation and risk spike: compose stack, `ibergrid` CLI, CI/CD, docs; the lake library and the measured engine capabilities ([ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) | Done |
 | 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md)) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md)) connectors, orchestrated with Dagster: assets, partitions, schedules, backfills ([ADR 0005](docs/adr/0005-dagster-orchestration.md)) | Done |
 | 2 | Streaming lane: REData's real-time demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once through offsets in the WAP publish, contract, dead-letter topic, deduplication, crash test ([ADR 0006](docs/adr/0006-streaming-lane.md)) | Done |
-| 3 | dbt medallion: Silver and Gold models | Planned |
+| 3 | dbt medallion: 5 Silver and 4 Gold Iceberg tables built with dbt Core + `dbt-duckdb`, 87 schema/singular tests, PyIceberg WAP publication, Dagster `@multi_asset` and full 2023-2026 materialization ([ADR 0007](docs/adr/0007-dbt-medallion.md)) | Done |
 | 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |
 | 5 | Benchmarks | Planned |
 | 6 | Serving (API and Evidence portal), production on a single server with R2 at `ibergrid-lakehouse.jasato.com`, final README | Planned |

@@ -38,6 +38,7 @@ x-app-env: &app-env
   IBERGRID_OMIE_BASE_URL: ${IBERGRID_OMIE_BASE_URL:-https://www.omie.es}
   IBERGRID_OMIE_TIMEOUT: ${IBERGRID_OMIE_TIMEOUT:-30}
   IBERGRID_OMIE_MAX_RPS: ${IBERGRID_OMIE_MAX_RPS:-1}
+  IBERGRID_TRANSFORM_THREADS: ${IBERGRID_TRANSFORM_THREADS:-1}
   IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
   IBERGRID_LOG_FORMAT: json
 
@@ -459,6 +460,18 @@ services:
     mem_limit: 384m
     entrypoint: ["ibergrid", "ingest"]
     command: ["--help"]
+    networks: [storage, catalog]
+
+  # Medallion transforms, on demand: `docker compose run --rm --no-deps transform run` (make
+  # transform). Runs from the orchestration image, which carries dbt-core, dbt-duckdb and dbt/.
+  transform:
+    <<: *orchestration
+    scale: 0
+    restart: "no"
+    mem_limit: 1280m
+    entrypoint: ["ibergrid", "transform"]
+    command: ["--help"]
+    environment: *app-env
     networks: [storage, catalog]
 
   # --- Streaming lane (ADR 0006) -----------------------------------------------------------------

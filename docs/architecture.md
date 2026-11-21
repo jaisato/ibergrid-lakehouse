@@ -5,13 +5,16 @@ lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, the phas
 (`ibergrid.sources.redata` and `ibergrid.sources.omie`) ingest REData and OMIE into Bronze
 through it, and Dagster (`ibergrid.orchestration`) runs the connectors as partitioned assets on
 schedules and backfills; the streaming lane (`ibergrid.stream`) carries REData's five-minute
-demand through Redpanda into Bronze, exactly once. The decisions behind the stack are in
-[ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
+demand through Redpanda into Bronze, exactly once; and the dbt medallion (`ibergrid.transform` +
+`dbt/`) builds and tests Silver and Gold tables in a staging DuckDB over snapshot-pinned Bronze
+views and publishes them back to Iceberg through Write-Audit-Publish. The decisions behind the
+stack are in [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
 Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
 ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
 [ADR 0004](adr/0004-omie-ingestion.md); how both are orchestrated, in
 [ADR 0005](adr/0005-dagster-orchestration.md); the streaming lane and the broker's security, in
-[ADR 0006](adr/0006-streaming-lane.md).
+[ADR 0006](adr/0006-streaming-lane.md); and the dbt Silver/Gold medallion, in
+[ADR 0007](adr/0007-dbt-medallion.md).
 
 ## System context (C4 level 1)
 
@@ -39,16 +42,17 @@ C4Context
 
 ```mermaid
 C4Container
-  title IberGrid Lakehouse - containers (C4 level 2, phase 2)
+  title IberGrid Lakehouse - containers (C4 level 2, phase 3)
 
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(webserver, "dagster-webserver", "Dagster 1.13, orchestration image", "UI and GraphQL API: partitions, runs, backfills, metadata")
+    Container(webserver, "dagster-webserver", "Dagster 1.13, orchestration image", "UI and GraphQL API: partitions, runs, backfills, medallion lineage")
     Container(daemon, "dagster-daemon", "Dagster 1.13, orchestration image", "Schedules, backfills, run queue with pools of 1, run monitoring")
-    Container(code, "dagster-code", "Dagster 1.13, orchestration image", "Code server with ibergrid.orchestration; runs execute here and call the connectors")
+    Container(code, "dagster-code", "Dagster 1.13, dbt Core, orchestration image", "Code server with ibergrid.orchestration; runs Bronze ingestion and Silver/Gold dbt+WAP transforms")
     ContainerDb(orchdb, "orchestration-db", "Postgres 17", "Runs, event logs (materializations and metadata), schedules")
     Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
+    Container(transform, "transform", "dbt Core 1.12, dbt-duckdb 1.11, orchestration image", "On-demand `ibergrid transform run`: builds and tests Silver/Gold in staging DuckDB and WAP-publishes to Iceberg")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(producer, "stream-producer", "Python 3.12, confluent-kafka, app image", "Polls the REData real-time demand every 5 min; emits changed points")
@@ -78,6 +82,8 @@ C4Container
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
   Rel(app, storage, "Table data and landed raw answers and files, with its own keys; HeadBucket", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
+  Rel(transform, catalog, "Reads Bronze snapshots; publishes Silver/Gold via WAP", "HTTP")
+  Rel(transform, storage, "Reads Bronze Parquet; writes Silver/Gold Parquet", "S3 API")
   Rel(producer, ree, "demanda-tiempo-real, every 5 min, at most 1 request/s", "HTTPS")
   Rel(producer, broker, "Produces events as ibergrid-producer", "Kafka, SASL/SCRAM")
   Rel(consumer, broker, "Consumes; dead letters; group offsets for lag", "Kafka, SASL/SCRAM")
@@ -103,6 +109,7 @@ C4Container
 | `broker-init` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | One-shot: SCRAM users, authentication, cluster policy, topics and ACLs (idempotent) | broker | |
 | `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
 | `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
+| `transform` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid transform run` (`make transform`), 1.25 GiB limit | storage, catalog | |
 | `stream-producer` | `ibergrid-app` (this repository) | `ibergrid stream produce` (`stream` profile locally); no lake keys; 256 MiB | broker | |
 | `stream-consumer` | `ibergrid-app` (this repository) | `ibergrid stream consume` (`stream` profile locally); 384 MiB | broker, catalog, storage | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs and schedules | orchestration-db (internal) | |
@@ -183,11 +190,22 @@ and the stream services wait for (the consumer also for `catalog-init`). `docker
   library only) because the full CLI costs 133 MiB per start inside the service's own memory
   limit, and a watchdog ends a process whose loop is stuck so that its restart policy recovers it.
 - **Two images, one Dockerfile.** `catalog-init`, `doctor`, `ingest` and the stream services run
-  the app image (confluent-kafka is a runtime dependency: 23 MB of 813); the
-  Dagster services run the orchestration image (`--target orchestration`: the same environment
-  plus Dagster, `dagster.yaml` and `workspace.yaml`). In production both are pulled from GHCR by
-  the digests the release job recorded: the images that job built, ran once (`ibergrid version`;
-  the Dagster definitions validated) and pushed. The server never builds anything.
+  the app image (813 MB: no Dagster, no dbt); the Dagster services and the on-demand `transform`
+  runner use the orchestration image (`--target orchestration`, 1.44 GB: the same environment plus
+  Dagster, dbt Core, `dbt-duckdb`, `/opt/ibergrid/dbt`, `dagster.yaml` and `workspace.yaml`). In
+  production both are pulled from GHCR by the digests the release job recorded: the images that job
+  built, ran once (`ibergrid version`; the Dagster definitions validated) and pushed. The server
+  never builds anything.
+- **Medallion transforms ([ADR 0007](adr/0007-dbt-medallion.md)).** Because DuckDB 2.0.1 cannot
+  write Iceberg branches or guard `main` (ADR 0002), `ibergrid.transform` runs `dbt build` in an
+  ephemeral staging DuckDB file wired via a `dbt-duckdb` plugin (`ibergrid.transform.plugin`) that
+  reuses `ibergrid.lake.duck.configure`, sets `GLOBAL TimeZone = 'UTC'` across all cursors, and
+  exposes every Bronze table pinned to its `main` snapshot (or an empty typed table when a table
+  has no snapshot yet). Any failing model or dbt test aborts before any Iceberg branch is opened;
+  only after all models and tests pass does PyIceberg publish each selected Silver and Gold table
+  through `ibergrid.lake.wap`, recording the Bronze snapshot provenance in every snapshot summary.
+  Dagster exposes all 9 Silver and Gold tables as a subsettable `@multi_asset` in the `transform`
+  pool (limit 1) with daily Madrid schedules at 09:30 and 16:30.
 - **Orchestration ([ADR 0005](adr/0005-dagster-orchestration.md)).** Runs execute as subprocesses
   of `dagster-code` (the default run launcher: no Docker socket anywhere), whose memory limit
   covers them. The daemon launches a queued run only when its pool (`redata`, `omie`, limit 1) is
