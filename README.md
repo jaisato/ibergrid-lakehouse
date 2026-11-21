@@ -403,17 +403,18 @@ machine-readable output to [benchmarks/results/latest.json](benchmarks/results/l
 [docs/benchmarks.md](docs/benchmarks.md). Architectural rationale and Spark crossover thresholds
 are documented in [ADR 0009](docs/adr/0009-duckdb-polars-vs-spark.md).
 
-- **Sub-second cold starts & low memory:** DuckDB 2.0.1 starts in **120.0 ms** (`<= 253.0 MiB`
-  isolated query RSS) and Polars 2.1.0 in **227.1 ms** (`<= 211.4 MiB` isolated query RSS),
+- **Sub-second cold starts & low memory:** DuckDB 2.0.1 starts in **96.8 ms** (`<= 252.9 MiB`
+  isolated query RSS) and Polars 2.1.0 in **124.7 ms** (`<= 214.0 MiB` isolated query RSS),
   matching 100 % row-for-row across all 24 `(query, layout, engine)` combinations.
 - **Partition pruning & compaction:** on selective monthly queries (`Q1` on 1.69M-row
-  `bronze.redata_observations` and `Q3` on 409k-row `silver.demand_national_5min`), Iceberg prunes
-  **96.5 %–98.7 % of Parquet bytes** (`1/192` files = `421.3 KiB` vs `16.95 MiB` unpartitioned
-  Parquet on `Q1`); compacting 971 fragmented Bronze files into 192 cuts DuckDB `Q1` p50 latency by
-  **2.02x** (`25.19 ms -> 12.45 ms`).
-- **Zero-scan metadata auditing:** `inspect_table_metadata` verifies counts, nulls and min/max
-  bounds across all 12 populated tables with **0 B Parquet data scanned** (100 % data-file I/O
-  avoided vs `47.98 MiB` full SQL scans).
+  `bronze.redata_observations` and `Q3` on 409k-row `silver.demand_national_5min`), Iceberg
+  manifest/partition planning reduces the planned Parquet file footprint by **96.5 %–98.7 %**
+  (`1/192` files = `421.3 KiB` vs `16.95 MiB` unpartitioned Parquet on `Q1`) before either engine
+  opens a Parquet footer; compacting 971 fragmented Bronze files into 192 cuts DuckDB `Q1` p50
+  latency by **2.63x** (`29.11 ms -> 11.07 ms`).
+- **Zero-scan metadata auditing:** `inspect_table_metadata` verifies row counts, null counts and
+  min/max bounds across **all audited columns** of all 12 populated tables with **0 B Parquet data
+  scanned** (100 % data-file I/O avoided vs `47.98 MiB` full SQL scans).
 - **Real European monthly cost:** `229.25 MiB` stays inside Cloudflare R2's 10 GB free tier
   (**€0.00/month** storage & **$0.00 egress**), pairing with Hetzner Cloud EU CAX11 (**€3.79/mo**)
   or CAX21 (**€6.49/mo**) vs **~€360+/mo** for a managed Spark EU stack (**~55x cheaper**).

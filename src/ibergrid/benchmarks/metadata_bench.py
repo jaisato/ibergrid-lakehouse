@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from typing import Any
 
 import duckdb
 
-from ibergrid.benchmarks.queries import results_match
 from ibergrid.benchmarks.stats import LatencySummary, time_callable
 from ibergrid.quality.metadata import (
     TABLE_METADATA_RULES,
+    ColumnStat,
     TableMetadataSummary,
     inspect_table_metadata,
 )
@@ -41,11 +43,96 @@ class MetadataVsScanRow:
     data_files: int
     total_data_bytes: int
     metadata_bytes_scanned: int
+    audited_columns: int
     metadata_timing: LatencySummary
     full_scan_timing: LatencySummary
     speedup_p50: float
     bytes_saved_pct: float
     counts_match: bool
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        # DuckDB iceberg_column_stats formats UTC timestamps like "2023-01-01 00:00:00+00".
+        if len(raw) >= 3 and raw[-3] in {"+", "-"} and raw[-2:].isdigit():
+            raw = raw + ":00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        return dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    return None
+
+
+def _column_stat_matches(
+    stat: ColumnStat | None,
+    *,
+    sql_nulls: int,
+    sql_min: Any,
+    sql_max: Any,
+    float_tol: float = 1e-4,
+) -> bool:
+    """Verify one column's Iceberg manifest stats against full SQL null count and min/max."""
+    if stat is None or stat.null_value_count != sql_nulls:
+        return False
+    if sql_min is None and sql_max is None:
+        return stat.lower_bound is None and stat.upper_bound is None
+
+    # Numeric columns (including INT/DOUBLE/BIGINT): compare parsed float bounds.
+    if isinstance(sql_min, (int, float)) and not isinstance(sql_min, bool):
+        if stat.min_numeric is None or stat.max_numeric is None:
+            return False
+        return (
+            abs(stat.min_numeric - float(sql_min)) <= float_tol
+            and abs(stat.max_numeric - float(sql_max)) <= float_tol
+        )
+
+    if isinstance(sql_min, bool):
+        if stat.lower_bound is None or stat.upper_bound is None:
+            return False
+        return (
+            stat.lower_bound.lower() == str(sql_min).lower()
+            and stat.upper_bound.lower() == str(sql_max).lower()
+        )
+
+    if isinstance(sql_min, datetime):
+        meta_min = _parse_utc_timestamp(stat.lower_bound)
+        meta_max = _parse_utc_timestamp(stat.upper_bound)
+        ref_min = _parse_utc_timestamp(sql_min)
+        ref_max = _parse_utc_timestamp(sql_max)
+        return (
+            meta_min is not None
+            and meta_max is not None
+            and meta_min == ref_min
+            and meta_max == ref_max
+        )
+
+    if isinstance(sql_min, date):
+        return stat.lower_bound == sql_min.isoformat() and stat.upper_bound == sql_max.isoformat()
+
+    # Strings: Iceberg truncates string bounds (default truncate(16)) such that
+    # lower_bound <= actual_min and upper_bound >= actual_max (exact when untruncated).
+    if isinstance(sql_min, str) and isinstance(sql_max, str):
+        if stat.lower_bound is None or stat.upper_bound is None:
+            return False
+        return stat.lower_bound <= sql_min and stat.upper_bound >= sql_max
+
+    return stat.lower_bound == str(sql_min) and stat.upper_bound == str(sql_max)
+
+
+def _audited_columns_for(logical_table: str, time_col: str, metric_col: str) -> tuple[str, ...]:
+    cols: list[str] = [metric_col, time_col]
+    rule = TABLE_METADATA_RULES.get(logical_table)
+    if rule is not None:
+        for col in (*rule.non_null_columns, *rule.numeric_bounds.keys()):
+            if col not in cols:
+                cols.append(col)
+    return tuple(cols)
 
 
 def benchmark_metadata_vs_full_scan(
@@ -60,59 +147,53 @@ def benchmark_metadata_vs_full_scan(
 ) -> MetadataVsScanRow | None:
     """Compare zero-scan Iceberg metadata audit against an equivalent full SQL scan.
 
-    Returns ``None`` when ``duck_table`` has no committed snapshot yet.
+    Verifies total row count plus null counts and min/max bounds for EVERY audited column
+    (primary metric, time column and every column in ``TABLE_METADATA_RULES``). Returns ``None``
+    when ``duck_table`` has no committed snapshot yet.
     """
     initial = inspect_table_metadata(con, duck_table)
     if initial.snapshot_id is None or initial.total_records == 0:
         return None
 
+    audited_cols = _audited_columns_for(logical_table, time_col, metric_col)
+
     def _run_metadata() -> TableMetadataSummary:
         return inspect_table_metadata(con, duck_table)
 
-    # Full SQL equivalent: computes row count, null counts and min/max across the primary metric
-    # and all columns audited by TABLE_METADATA_RULES for this table (apples-to-apples with
-    # inspect_table_metadata, which computes manifest statistics for every column).
+    # Full SQL equivalent: computes row count plus null count and min/max for every audited column.
     # Column identifiers come exclusively from static registry/rule definitions.
-    rule = TABLE_METADATA_RULES.get(logical_table)
-    extra_cols: list[str] = []
-    if rule is not None:
-        for col in (*rule.non_null_columns, *rule.numeric_bounds.keys()):
-            if col not in {metric_col, time_col} and col not in extra_cols:
-                extra_cols.append(col)
-
-    extra_selects = "".join(
-        f", CAST(count(*) FILTER (WHERE {col} IS NULL) AS BIGINT), min({col}), max({col})"
-        for col in extra_cols
+    col_selects = ", ".join(
+        f"CAST(count(*) FILTER (WHERE {col} IS NULL) AS BIGINT), min({col}), max({col})"
+        for col in audited_cols
     )
     full_sql = (
-        f"SELECT CAST(count(*) AS BIGINT), "  # noqa: S608 - static schema columns
-        f"CAST(count(*) FILTER (WHERE {metric_col} IS NULL) AS BIGINT), "
-        f"min({metric_col}), max({metric_col}), min({time_col}), max({time_col})"
-        f"{extra_selects} "
+        f"SELECT CAST(count(*) AS BIGINT), {col_selects} "  # noqa: S608 - static schema columns
         f"FROM iceberg_scan($table)"
     )
 
-    def _run_full_scan() -> tuple[int, int, float | None, float | None]:
+    def _run_full_scan() -> tuple[int, tuple[tuple[int, Any, Any], ...]]:
         row = con.execute(full_sql, {"table": duck_table}).fetchone()
         assert row is not None  # noqa: S101 - aggregate query always returns 1 row
-        return (
-            int(row[0]),
-            int(row[1]),
-            None if row[2] is None else float(row[2]),
-            None if row[3] is None else float(row[3]),
+        per_col = tuple(
+            (int(row[1 + 3 * idx]), row[2 + 3 * idx], row[3 + 3 * idx])
+            for idx in range(len(audited_cols))
         )
+        return int(row[0]), per_col
 
     meta_summary, meta_timing = time_callable(_run_metadata, warmup=warmup, iterations=iterations)
-    scan_stats, scan_timing = time_callable(_run_full_scan, warmup=warmup, iterations=iterations)
-
-    metric_stat = meta_summary.columns.get(metric_col)
-    meta_tuple = (
-        meta_summary.total_records,
-        metric_stat.null_value_count if metric_stat is not None else -1,
-        metric_stat.min_numeric if metric_stat is not None else None,
-        metric_stat.max_numeric if metric_stat is not None else None,
+    (sql_total_rows, sql_col_stats), scan_timing = time_callable(
+        _run_full_scan, warmup=warmup, iterations=iterations
     )
-    counts_match = results_match([meta_tuple], [scan_stats], float_tol=1e-4)
+
+    counts_match = meta_summary.total_records == sql_total_rows and all(
+        _column_stat_matches(
+            meta_summary.columns.get(col),
+            sql_nulls=nulls,
+            sql_min=min_val,
+            sql_max=max_val,
+        )
+        for col, (nulls, min_val, max_val) in zip(audited_cols, sql_col_stats, strict=True)
+    )
 
     speedup = round(scan_timing.p50_ms / meta_timing.p50_ms, 2) if meta_timing.p50_ms > 0.0 else 0.0
     bytes_saved_pct = 100.0 if meta_summary.total_data_bytes > 0 else 0.0
@@ -122,6 +203,7 @@ def benchmark_metadata_vs_full_scan(
         data_files=meta_summary.data_files,
         total_data_bytes=meta_summary.total_data_bytes,
         metadata_bytes_scanned=meta_summary.data_bytes_scanned,
+        audited_columns=len(audited_cols),
         metadata_timing=meta_timing,
         full_scan_timing=scan_timing,
         speedup_p50=speedup,

@@ -360,7 +360,9 @@ def test_polars_storage_options_and_results_match() -> None:
     assert not results_match([(1, 2)], [(1,)])
 
 
-def test_all_four_benchmark_queries_and_layouts_local_iceberg(tmp_path: Path) -> None:
+def test_all_four_benchmark_queries_and_layouts_local_iceberg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     catalog = _local_catalog(tmp_path)
     tables = {
         "bronze.redata_observations": _seed_redata_table(catalog),
@@ -452,6 +454,78 @@ def test_all_four_benchmark_queries_and_layouts_local_iceberg(tmp_path: Path) ->
         assert meta_row.bytes_saved_pct == 100.0
         assert meta_row.counts_match is True
         assert meta_row.total_records == 3
+        assert meta_row.audited_columns >= 5
+
+        # Also test that a disagreement on a secondary audited column (e.g. price_pt_eur_mwh)
+        # causes counts_match to fail closed rather than only checking the primary metric.
+        from dataclasses import replace as dc_replace
+
+        from ibergrid.benchmarks import metadata_bench as mb
+        from ibergrid.quality.metadata import ColumnStat, inspect_table_metadata
+
+        real_summary = inspect_table_metadata(
+            con, tables["gold.mibel_hourly_market"].metadata_location
+        )
+        corrupted_cols = dict(real_summary.columns)
+        pt_stat = corrupted_cols["price_pt_eur_mwh"]
+        corrupted_cols["price_pt_eur_mwh"] = dc_replace(pt_stat, max_numeric=9999.0)
+        corrupted_summary = dc_replace(real_summary, columns=corrupted_cols)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(mb, "inspect_table_metadata", lambda *_a, **_kw: corrupted_summary)
+            mismatch_row = benchmark_metadata_vs_full_scan(
+                con,
+                logical_table="gold.mibel_hourly_market",
+                duck_table=tables["gold.mibel_hourly_market"].metadata_location,
+                time_col="hour_utc",
+                metric_col="price_es_eur_mwh",
+                warmup=0,
+                iterations=1,
+            )
+            assert mismatch_row is not None
+            assert mismatch_row.counts_match is False
+
+        # Unit checks on _column_stat_matches edge cases (null-only, bool, timestamp, string).
+        assert mb._column_stat_matches(None, sql_nulls=0, sql_min=1, sql_max=1) is False
+        assert mb._column_stat_matches(
+            ColumnStat("c", "DOUBLE", 1, 1, 0, None, None),
+            sql_nulls=1,
+            sql_min=None,
+            sql_max=None,
+        )
+        assert not mb._column_stat_matches(
+            ColumnStat("c", "DOUBLE", 1, 0, 0, "1", "2", None, None),
+            sql_nulls=0,
+            sql_min=1.0,
+            sql_max=2.0,
+        )
+        assert mb._column_stat_matches(
+            ColumnStat("b", "BOOLEAN", 2, 0, 0, "false", "true"),
+            sql_nulls=0,
+            sql_min=False,
+            sql_max=True,
+        )
+        assert not mb._column_stat_matches(
+            ColumnStat("b", "BOOLEAN", 2, 0, 0, None, None),
+            sql_nulls=0,
+            sql_min=False,
+            sql_max=True,
+        )
+        assert mb._column_stat_matches(
+            ColumnStat("s", "VARCHAR", 2, 0, 0, "aaa", "zzz"),
+            sql_nulls=0,
+            sql_min="aaa1",
+            sql_max="zz",
+        )
+        assert not mb._column_stat_matches(
+            ColumnStat("s", "VARCHAR", 2, 0, 0, None, None),
+            sql_nulls=0,
+            sql_min="a",
+            sql_max="z",
+        )
+        assert mb._parse_utc_timestamp("2025-10-01T00:00:00Z") == datetime(2025, 10, 1, tzinfo=UTC)
+        assert mb._parse_utc_timestamp("not-a-timestamp") is None
+        assert mb._parse_utc_timestamp(123) is None
 
         # Inventory collection (skips missing tables cleanly).
         meta_by_name = {name: tbl.metadata_location for name, tbl in tables.items()}

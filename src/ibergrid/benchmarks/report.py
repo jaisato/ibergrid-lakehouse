@@ -44,16 +44,22 @@ class TableInventoryRow:
 
 @dataclass(frozen=True)
 class QueryBenchmarkRow:
-    """Measured latency, scan footprint and correctness check for one (query, layout, engine)."""
+    """Measured latency, planned file footprint and correctness check per (query, layout, engine).
+
+    ``files_planned`` and ``planned_file_bytes`` reflect catalog-level file planning (PyIceberg
+    partition and manifest pruning for Iceberg tables vs the single whole file for unpartitioned
+    Parquet), not engine-internal Parquet byte counters (both DuckDB and Polars additionally push
+    down column projections and Parquet row-group statistics inside each planned file).
+    """
 
     query_id: str
     title: str
     source_table: str
     layout: StorageLayout
     engine: EngineName
-    files_scanned: int
+    files_planned: int
     total_table_files: int
-    bytes_scanned: int
+    planned_file_bytes: int
     total_table_bytes: int
     row_count: int
     answer_verified: bool
@@ -256,11 +262,16 @@ def render_markdown_report(result: BenchmarkSuiteResult) -> str:
             "and partition spec compacted via DuckDB `iceberg_rewrite_data_files` (purged after "
             "measurement so backfilled volumes stay untouched).",
             "",
+            "- **Planned files / Planned file footprint** report catalog-level candidate Parquet "
+            "files and their summed file sizes (PyIceberg partition + manifest pruning for "
+            "Iceberg vs the single whole file for unpartitioned Parquet). Both DuckDB and Polars "
+            "additionally apply column projection and Parquet row-group skipping inside each "
+            "planned file, so actual engine-read bytes are strictly <= the planned file footprint.",
             "- **Isolated Peak RSS** is measured in a dedicated clean child process per "
             "`(query, layout, engine)` so setup allocations never contaminate query memory.",
             "",
-            "| Query | Layout | Engine | p50 (ms) | p95 (ms) | Files scanned | "
-            "Bytes scanned | Rows | Peak RSS (MiB) | Verified |",
+            "| Query | Layout | Engine | p50 (ms) | p95 (ms) | Planned files | "
+            "Planned file footprint | Rows | Peak RSS (MiB) | Verified |",
             "|---|---|---|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
@@ -269,8 +280,8 @@ def render_markdown_report(result: BenchmarkSuiteResult) -> str:
         lines.append(
             f"| **{q_row.query_id}** | `{q_row.layout}` | `{q_row.engine}` | "
             f"{q_row.timing.p50_ms:.2f} | {q_row.timing.p95_ms:.2f} | "
-            f"{q_row.files_scanned}/{q_row.total_table_files} | "
-            f"{format_bytes(q_row.bytes_scanned)} | {q_row.row_count:,} | "
+            f"{q_row.files_planned}/{q_row.total_table_files} | "
+            f"{format_bytes(q_row.planned_file_bytes)} | {q_row.row_count:,} | "
             f"{q_row.timing.peak_rss_mib:.1f} | {verified} |"
         )
 
@@ -283,20 +294,22 @@ def render_markdown_report(result: BenchmarkSuiteResult) -> str:
         [
             "",
             "**Key empirical observations (Benchmark 1):**",
-            "- **Partition pruning:** On selective monthly queries (`Q1` on "
-            "`bronze.redata_observations` and `Q3` on `silver.demand_national_5min`), "
-            "Iceberg prunes over **96 %-98 % of Parquet bytes** relative to full-table or "
-            "unpartitioned Parquet scans by reading only the matching monthly partition file(s).",
+            "- **Partition pruning (planned file footprint):** On selective monthly queries (`Q1` "
+            "on `bronze.redata_observations` and `Q3` on `silver.demand_national_5min`), Iceberg "
+            "manifest and partition pruning reduces the planned Parquet file footprint by "
+            "**96 %-98 %** relative to full-table or unpartitioned Parquet files before either "
+            "engine opens a single Parquet footer (`1/192` files on `Q1`, `1/48` files on `Q3`).",
             "- **Compaction impact:** Compacting fragmented tables (such as "
             "`bronze.redata_observations` from 971 files down to 192 files, 1 per "
             "`(dataset, month)` partition) shrinks Iceberg manifest metadata ~5x and cuts "
             "DuckDB `Q1` latency sharply.",
             "- **Localhost loopback vs WAN object storage:** On local loopback RustFS (<0.5 ms "
-            "RTT, multi-GB/s), reading a single 1-17 MiB unpartitioned Parquet file avoids the "
-            "~7-10 ms REST catalog `loadTable` + Avro manifest overhead. Over WAN object storage "
-            "(Cloudflare R2, 15-30 ms RTT) or multi-GB tables, Iceberg's >96 % byte reduction "
-            "dominates total latency and Class B read costs, while monthly partitioning on tiny "
-            "(<2 MiB) Gold tables (`Q2`) illustrates why small Gold marts (`mibel_daily_summary`, "
+            "RTT, multi-GB/s), reading a single 1-17 MiB unpartitioned Parquet file with column "
+            "projection avoids the ~7-10 ms REST catalog `loadTable` + Avro manifest overhead. "
+            "Over WAN object storage (Cloudflare R2, 15-30 ms RTT) or multi-GB tables, pruning "
+            "97-99 % of candidate files at the manifest layer eliminates remote footer reads and "
+            "bounds object-store I/O, while monthly partitioning on tiny (<2 MiB) Gold tables "
+            "(`Q2`) illustrates why small Gold marts (`mibel_daily_summary`, "
             "`system_demand_daily`, `optimal_consumption_windows`) are intentionally kept as "
             "1-file unpartitioned tables.",
             "- **Multi-engine equivalence & memory:** DuckDB and Polars match 100 % row-for-row "
@@ -308,19 +321,20 @@ def render_markdown_report(result: BenchmarkSuiteResult) -> str:
             "",
             "Compares `ibergrid.quality.metadata.inspect_table_metadata` (DuckDB "
             "`iceberg_snapshots` + `iceberg_files` + `iceberg_column_stats`, **0 Parquet data "
-            "bytes scanned**) against an equivalent full SQL scan (`count(*)`, null count, "
-            "`min`/`max` on metric and timestamp columns) across all populated tables.",
+            "bytes scanned**) against an equivalent full SQL scan (`count(*)`, null counts and "
+            "`min`/`max` across every audited column in `TABLE_METADATA_RULES` plus the primary "
+            "metric and time columns) across all populated tables.",
             "",
-            "| Table | Rows | Data files | Parquet size | Metadata p50 / p95 (ms) | "
+            "| Table | Rows | Audited cols | Data files | Parquet size | Metadata p50 / p95 (ms) | "
             "Full SQL p50 / p95 (ms) | Speedup (p50) | Data bytes scanned | Exact match |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for m_row in result.metadata_benchmarks:
         match_str = "Yes" if m_row.counts_match else "NO"
         lines.append(
-            f"| `{m_row.table}` | {m_row.total_records:,} | {m_row.data_files:,} | "
-            f"{format_bytes(m_row.total_data_bytes)} | "
+            f"| `{m_row.table}` | {m_row.total_records:,} | {m_row.audited_columns} | "
+            f"{m_row.data_files:,} | {format_bytes(m_row.total_data_bytes)} | "
             f"{m_row.metadata_timing.p50_ms:.2f} / {m_row.metadata_timing.p95_ms:.2f} | "
             f"{m_row.full_scan_timing.p50_ms:.2f} / {m_row.full_scan_timing.p95_ms:.2f} | "
             f"**{m_row.speedup_p50:.2f}x** | "

@@ -58,58 +58,67 @@ PyIceberg 0.12.0; 2 warm-ups + 10 timed iterations per cell; isolated child-proc
 
 | Metric | DuckDB 2.0.1 | Polars 2.1.0 | Apache Spark (reference) |
 |---|---:|---:|---|
-| Fresh-process cold start (median of 3 runs) | **120.0 ms** | **227.1 ms** | 15,000-90,000 ms (JVM + driver + executor bootstrap) |
-| Isolated query peak RSS (`VmHWM`, Q1-Q4) | **212.9-253.0 MiB** | **185.8-211.4 MiB** | >= 2,048-4,096 MiB minimum driver + executor JVM |
+| Fresh-process cold start (median of 3 runs) | **96.8 ms** | **124.7 ms** | 15,000-90,000 ms (JVM + driver + executor bootstrap) |
+| Isolated query peak RSS (`VmHWM`, Q1-Q4) | **213.3-252.9 MiB** | **185.9-214.0 MiB** | >= 2,048-4,096 MiB minimum driver + executor JVM |
 | Full 3.9-year dbt medallion build (12 models, 87 tests, 9 WAP publishes, ADR 0007) | **25.85 s** (`7.84 s` dbt build, **703.4 MiB** RSS) | N/A | Typically 60-180 s including cluster/session startup |
 | Idle stack footprint (Phase 0 measurement, ADR 0001, without RustFS) | **287-332 MiB** total (Lakekeeper + Postgres + Redpanda) | Same | Multiple GiB idle per JVM coordinator/executor |
 
 ### 2. Storage layout & multi-engine latency (Benchmark 1, same RustFS S3 bucket)
 
 All 24 `(query, layout, engine)` runs returned **100 % row-for-row identical answers** between
-DuckDB 2.0.1 and Polars 2.1.0 (`POLARS_ICEBERG_PLANNER=pyiceberg`):
+DuckDB 2.0.1 and Polars 2.1.0 (`POLARS_ICEBERG_PLANNER=pyiceberg`). `Planned files` and
+`Planned file footprint` report catalog-level candidate Parquet files and summed file sizes from
+PyIceberg's partition/manifest planner (vs the single whole file for unpartitioned Parquet); both
+engines additionally perform column projection and Parquet row-group skipping inside each planned
+file, so actual bytes read over the wire are strictly <= the planned file footprint:
 
-| Query | Table | Layout | DuckDB p50 / p95 (ms) | Polars p50 / p95 (ms) | Files scanned | Bytes scanned | DuckDB / Polars RSS (MiB) |
+| Query | Table | Layout | DuckDB p50 / p95 (ms) | Polars p50 / p95 (ms) | Planned files | Planned file footprint | DuckDB / Polars RSS (MiB) |
 |---|---|---|---:|---:|---:|---:|---:|
-| **Q1** (1-month point lookup `2025-10`) | `bronze.redata_observations` (1.69M rows) | `unpartitioned_parquet` | 6.24 / 8.14 | 18.15 / 24.91 | 1 / 1 | 16.95 MiB | 221.5 / 199.9 |
-| **Q1** | `bronze.redata_observations` | `partitioned_iceberg` | 25.19 / 30.26 | 20.92 / 24.46 | **2 / 971** | **428.9 KiB** (-97.5 %) | 228.9 / 207.0 |
-| **Q1** | `bronze.redata_observations` | `compacted_iceberg` | **12.45 / 13.51** | 18.26 / 22.27 | **1 / 192** | **421.3 KiB** (-97.5 %) | 222.2 / 203.2 |
-| **Q2** (full 3.9-year annual MIBEL agg) | `gold.mibel_hourly_market` (34k rows) | `unpartitioned_parquet` | 4.94 / 6.69 | 9.16 / 15.59 | 1 / 1 | 897.0 KiB | 212.9 / 185.8 |
-| **Q2** | `gold.mibel_hourly_market` | `partitioned_iceberg` | 18.24 / 20.44 | 17.26 / 21.13 | 48 / 48 | 1.60 MiB | 249.1 / 203.7 |
-| **Q2** | `gold.mibel_hourly_market` | `compacted_iceberg` | 17.87 / 25.10 | 19.26 / 23.89 | 48 / 48 | 1.60 MiB | 247.5 / 203.0 |
-| **Q3** (1-month 5-min rolling 1h peak) | `silver.demand_national_5min` (409k rows) | `unpartitioned_parquet` | 8.91 / 10.88 | 13.35 / 16.59 | 1 / 1 | 4.08 MiB | 217.6 / 193.2 |
-| **Q3** | `silver.demand_national_5min` | `partitioned_iceberg` | **15.45 / 19.12** | 18.69 / 23.61 | **1 / 48** | **143.9 KiB** (-96.5 %) | 224.2 / 200.3 |
-| **Q4** (Peninsular vs Canarias daily) | `silver.demand_system_hourly` (170k rows) | `unpartitioned_parquet` | 11.40 / 12.90 | 18.37 / 21.55 | 1 / 1 | 894.7 KiB | 219.8 / 196.6 |
-| **Q4** | `silver.demand_system_hourly` | `partitioned_iceberg` | 19.66 / 24.84 | 23.02 / 28.29 | 48 / 48 | 1.26 MiB | 251.7 / 211.4 |
+| **Q1** (1-month point lookup `2025-10`) | `bronze.redata_observations` (1.69M rows) | `unpartitioned_parquet` | 6.45 / 8.30 | 13.28 / 14.88 | 1 / 1 | 16.95 MiB | 224.7 / 202.0 |
+| **Q1** | `bronze.redata_observations` | `partitioned_iceberg` | 29.11 / 37.16 | 22.91 / 33.31 | **2 / 971** | **428.9 KiB** (-97.5 % footprint) | 229.1 / 209.1 |
+| **Q1** | `bronze.redata_observations` | `compacted_iceberg` | **11.07 / 11.70** | 18.56 / 19.57 | **1 / 192** | **421.3 KiB** (-97.5 % footprint) | 222.9 / 205.3 |
+| **Q2** (full 3.9-year annual MIBEL agg) | `gold.mibel_hourly_market` (34k rows) | `unpartitioned_parquet` | 3.60 / 3.86 | 7.94 / 9.18 | 1 / 1 | 897.0 KiB | 213.3 / 185.9 |
+| **Q2** | `gold.mibel_hourly_market` | `partitioned_iceberg` | 17.14 / 18.59 | 27.21 / 50.70 | 48 / 48 | 1.60 MiB | 244.9 / 205.6 |
+| **Q2** | `gold.mibel_hourly_market` | `compacted_iceberg` | 15.21 / 16.37 | 14.08 / 16.43 | 48 / 48 | 1.60 MiB | 248.5 / 205.5 |
+| **Q3** (1-month 5-min rolling 1h peak) | `silver.demand_national_5min` (409k rows) | `unpartitioned_parquet` | 7.05 / 8.06 | 10.93 / 11.55 | 1 / 1 | 4.08 MiB | 217.6 / 193.2 |
+| **Q3** | `silver.demand_national_5min` | `partitioned_iceberg` | **14.79 / 15.84** | 14.88 / 22.19 | **1 / 48** | **143.9 KiB** (-96.5 % footprint) | 226.6 / 202.9 |
+| **Q4** (Peninsular vs Canarias daily) | `silver.demand_system_hourly` (170k rows) | `unpartitioned_parquet` | 8.54 / 9.17 | 12.61 / 14.14 | 1 / 1 | 894.7 KiB | 220.9 / 196.2 |
+| **Q4** | `silver.demand_system_hourly` | `partitioned_iceberg` | 18.98 / 21.04 | 19.66 / 38.33 | 48 / 48 | 1.26 MiB | 252.7 / 214.0 |
 
 Three nuanced lessons directly backed by the measurements:
 
-1. **Iceberg partition pruning eliminates 96.5 %-98.7 % of scanned bytes** on selective time-window
-   queries (`Q1`: 421 KiB vs 16.95 MiB unpartitioned / 32.13 MiB full table; `Q3`: 144 KiB vs
+1. **Iceberg partition pruning eliminates 96.5 %-98.7 % of the planned Parquet file footprint** on
+   selective time-window queries before either engine opens a Parquet footer (`Q1`: 1/192 files =
+   421 KiB vs 16.95 MiB unpartitioned / 32.13 MiB full table; `Q3`: 1/48 files = 144 KiB vs
    4.08 MiB unpartitioned / 6.67 MiB full table).
-2. **Compaction halves fragmented-table latency.** Compacting `bronze.redata_observations` from
-   **971** small chunked files into **192** files (1 per `(dataset, month)` partition) shrinks
-   Avro manifest metadata ~5x and cuts DuckDB `Q1` p50 latency by **2.02x** (`25.19 ms -> 12.45 ms`).
+2. **Compaction more than halves fragmented-table latency.** Compacting `bronze.redata_observations`
+   from **971** small chunked files into **192** files (1 per `(dataset, month)` partition) shrinks
+   Avro manifest metadata ~5x and cuts DuckDB `Q1` p50 latency by **2.63x** (`29.11 ms -> 11.07 ms`).
 3. **Honest localhost loopback vs WAN storage analysis.** On local loopback RustFS (<0.5 ms RTT,
-   multi-GB/s throughput), reading a single 1-17 MiB unpartitioned Parquet file avoids ~7-10 ms of
-   Iceberg REST `loadTable` + Avro manifest parsing. Over WAN object storage (Cloudflare R2,
-   15-30 ms RTT, ~50-100 MB/s) or multi-GB tables, avoiding 97.5 % of object transfers dominates
-   latency and Class B operations. Conversely, `Q2` shows that monthly partitioning on tiny (<2 MiB)
-   Gold summary tables incurs 48 small-object reads on full scans — validating why `gold.mibel_daily_summary`,
+   multi-GB/s throughput), reading a single 1-17 MiB unpartitioned Parquet file with column
+   projection avoids ~7-10 ms of Iceberg REST `loadTable` + Avro manifest parsing. Over WAN object
+   storage (Cloudflare R2, 15-30 ms RTT, ~50-100 MB/s) or multi-GB tables, pruning 97-99 % of
+   candidate files at the manifest layer eliminates remote footer/row-group reads and bounds
+   object-store I/O. Conversely, `Q2` shows that monthly partitioning on tiny (<2 MiB) Gold summary
+   tables incurs 48 small-object reads on full scans — validating why `gold.mibel_daily_summary`,
    `gold.system_demand_daily` and `gold.optimal_consumption_windows` are intentionally stored as
    1-file unpartitioned Iceberg tables.
 
 ### 3. Zero-scan Iceberg metadata checks vs full SQL scans (Benchmark 2)
 
 Across all 12 populated Bronze, Silver and Gold tables (`2,546,472` rows, `47.98 MiB` Parquet),
-`ibergrid.quality.metadata.inspect_table_metadata` matched full SQL column scans 100 % while
-reading **0 B of Parquet data** (`100 %` data-file I/O eliminated):
+`ibergrid.quality.metadata.inspect_table_metadata` matched full SQL column scans 100 % across all
+audited columns (4-6 columns per table: row counts, null counts, numeric bounds, timestamps, dates,
+booleans and strings) while reading **0 B of Parquet data** (`100 %` data-file I/O eliminated):
 
-- On 1-48-file tables: `29.2-44.2 ms` p50 (`0 B` data scanned vs `28.4 KiB - 6.67 MiB`).
-- On uncompacted 971-file `bronze.redata_observations`: `253.3 ms` p50 (`0 B` data scanned vs
+- On 1-48-file tables: `26.3-48.4 ms` p50 (`0 B` data scanned vs `28.4 KiB - 6.67 MiB`); on
+  409k-row `silver.demand_national_5min`, metadata p95 (`36.6 ms`) already beats full SQL p95
+  (`70.4 ms`) by **1.92x**.
+- On uncompacted 971-file `bronze.redata_observations`: `215.4 ms` p50 (`0 B` data scanned vs
   `32.13 MiB`).
 - Again, on tiny localhost loopback tables, DuckDB's C++ full scan is fast in wall-clock ms
-  (`11-110 ms`) because loopback reads 1-32 MiB instantaneously while `inspect_table_metadata` issues
-  three separate metadata table-function calls (`iceberg_snapshots/refs`, `iceberg_files`,
+  (`9.5-122.6 ms`) because loopback reads 1-32 MiB instantaneously while `inspect_table_metadata`
+  issues three separate metadata table-function calls (`iceberg_snapshots/refs`, `iceberg_files`,
   `iceberg_column_stats`). Over WAN storage (Cloudflare R2) or at >= 100 MiB-1 TB scale, zero-scan
   metadata scales as `O(manifests)` with **0 data GETs** while full SQL scans scale linearly with
   data volume.
@@ -135,7 +144,7 @@ analytical readers.
 Chosen option: **DuckDB 2.0 + Polars 2.1 + PyIceberg 0.12 over Iceberg REST (Lakekeeper)**.
 
 For sub-terabyte analytical lakehouses (everything from tens of megabytes to hundreds of gigabytes),
-modern single-node vectorized C++/Rust engines deliver **sub-25 ms** analytical queries, **~120 ms**
+modern single-node vectorized C++/Rust engines deliver **sub-25 ms** analytical queries, **~100 ms**
 cold starts, **< 260 MiB** standalone query RAM, **100 % multi-engine interoperability** over open
 Apache Iceberg tables, and **~55x lower European cloud infrastructure cost** (`€6.49/mo` vs
 `~€360+/mo`) than a managed Apache Spark stack — with dramatically simpler local testing and zero
@@ -172,7 +181,7 @@ catalog** — with zero data migration — when any of the following concrete th
 
 ## Consequences
 
-- **Good:** sub-25 ms multi-engine queries, ~120 ms cold starts, < 260 MiB isolated RSS, and
+- **Good:** sub-25 ms multi-engine queries, ~100 ms cold starts, < 260 MiB isolated RSS, and
   €3.79-€6.49/month European production hosting with €0.00 Cloudflare R2 storage/egress.
 - **Good:** `ibergrid-app:local` and `ibergrid-orchestration:local` images gain 0 bytes (`polars`
   is confined to the `benchmarks` / `dev` dependency group).
