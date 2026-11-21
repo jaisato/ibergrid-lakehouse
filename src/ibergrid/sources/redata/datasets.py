@@ -37,9 +37,9 @@ class ValueRule:
 class Dataset:
     name: str
     widget: str
-    # The answer's data.type, which names the widget's scope ("Demanda nacional ..."): a different
-    # one means REData changed what the widget returns, and the chunk is refused.
-    answer_type: str
+    # The answer's data.id (language-neutral, the same on every date probed); a different one means
+    # REData changed what the widget returns, and the chunk is refused.
+    answer_id: str
     time_trunc: Literal["hour", "day"]
     # Nominal spacing; each series' own is measured per chunk (ADR 0003), this is only the fallback
     # for a series with fewer than two points.
@@ -70,7 +70,7 @@ DATASETS: dict[str, Dataset] = {
         Dataset(
             name="demand_realtime",
             widget="demanda/demanda-tiempo-real",
-            answer_type="Demanda nacional en tiempo real",
+            answer_id="dem15",  # data.type "Demanda nacional en tiempo real"
             time_trunc="hour",
             granularity="5min",
             chunk="month",
@@ -81,7 +81,7 @@ DATASETS: dict[str, Dataset] = {
         Dataset(
             name="demand_hourly",
             widget="demanda/evolucion",
-            answer_type="Evolución de la demanda",
+            answer_id="dem1",  # "Evolución de la demanda"
             time_trunc="hour",
             granularity="hour",
             chunk="month",
@@ -93,7 +93,7 @@ DATASETS: dict[str, Dataset] = {
         Dataset(
             name="generation_daily",
             widget="generacion/estructura-generacion",
-            answer_type="Generation structure by technology",
+            answer_id="gen1",  # "Generation structure by technology"
             time_trunc="day",
             granularity="day",
             chunk="year",
@@ -104,7 +104,7 @@ DATASETS: dict[str, Dataset] = {
         Dataset(
             name="market_prices",
             widget="mercados/precios-mercados-tiempo-real",
-            answer_type="Precios mercado peninsular en tiempo real",
+            answer_id="mer13",  # "Precios mercado peninsular en tiempo real"
             time_trunc="hour",
             granularity="hour",
             chunk="month",

@@ -8,7 +8,6 @@ on the run's base. A rerun of the same window therefore leaves the same rows; ch
 first failure, and the ones already published stay published.
 """
 
-import hashlib
 import json
 import re
 import secrets
@@ -31,6 +30,7 @@ from ibergrid.sources.redata.datasets import Chunk, dataset_named, plan
 from ibergrid.sources.redata.normalize import (
     Completeness,
     completeness,
+    content_sha256,
     granularities,
     parse,
     to_arrow,
@@ -118,7 +118,9 @@ def ingest_chunk(
     measured = completeness(points, grains, chunk)
     broken = violations(points, chunk)
     series = {point.series_id for point in points}
-    sha256 = hashlib.sha256(payload).hexdigest()
+    sha256 = content_sha256(
+        payload
+    )  # the raw body is landed whole; its cache metadata is not hashed
     landing_path = land(filesystem, bucket, chunk.landing_key(landing_prefix, sha256), payload)
     window = chunk.row_filter()
     attempt = 0
@@ -233,7 +235,11 @@ def _audit(table: Table, head: int | None, rows: int, chunk: Chunk, outside: int
 def _count(table: Table, snapshot_id: int | None, row_filter: str) -> int:
     if snapshot_id is None:
         return 0
-    return table.scan(snapshot_id=snapshot_id, row_filter=row_filter).count()
+    # One narrow column: the filter's columns are read anyway, the other 15 need not be.
+    scan = table.scan(
+        snapshot_id=snapshot_id, row_filter=row_filter, selected_fields=("series_id",)
+    )
+    return scan.count()
 
 
 def _series(table: Table, snapshot_id: int | None, row_filter: str) -> set[str]:

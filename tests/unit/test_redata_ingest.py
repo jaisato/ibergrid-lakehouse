@@ -1,7 +1,6 @@
 """Ingestion through Write-Audit-Publish on a real Iceberg catalog (sqlite + local files), with
 REData played back from the fixtures and the landing zone on a local directory."""
 
-import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -36,7 +35,7 @@ from ibergrid.sources.redata.ingest import (
     ingest,
     ingest_chunk,
 )
-from ibergrid.sources.redata.normalize import InvalidResponse
+from ibergrid.sources.redata.normalize import InvalidResponse, content_sha256
 from ibergrid.storage import s3_filesystem
 
 from .conftest import FakeRedata, LocalServer, Responder, fixture
@@ -127,7 +126,7 @@ def test_a_chunk_is_landed_written_audited_and_published(
         r"cli-1-demand_hourly-canarias-20261118-20261118-a1-[0-9a-f]{4}", report.run_id
     )
     payload = fixture(CANARIAS_FIXTURE)
-    sha256 = hashlib.sha256(payload).hexdigest()
+    sha256 = content_sha256(payload)
     key = f"landing/redata/demand_hourly/canarias/2026/11/2026-11-18_2026-11-18-{sha256[:12]}.json"
     assert report.landing_path == f"s3://{BUCKET}/{key}"
     with landing.open_input_stream(f"{BUCKET}/{key}") as stored:
@@ -165,6 +164,26 @@ def test_a_rerun_of_the_window_leaves_the_same_rows(
     assert second.landing_path == first.landing_path  # the same answer, the same object
     assert main_rows(table, *RUN_COLUMNS) == before
     assert {row["run_id"] for row in main_rows(table)} == {second.run_id}
+
+
+def test_a_rerun_that_differs_only_in_redatas_cache_metadata_changes_nothing(
+    table: Table, client: RedataClient, landing: fs.FileSystem, redata: FakeRedata
+) -> None:
+    """REData's body says whether its cache answered ("MISS", or "HIT" with an expiry)."""
+    first = run(table, client, landing, CANARIAS)
+    before = main_rows(table, *RUN_COLUMNS)
+
+    def from_the_cache(document: dict[str, Any]) -> None:
+        cache = {"cache": "HIT", "expireAt": "2026-12-21T04:44:58"}
+        document["data"]["meta"] = {"cache-control": cache}
+
+    edit(redata, CANARIAS_FIXTURE, from_the_cache)
+    second = run(table, client, landing, CANARIAS)
+
+    assert main_rows(table, *RUN_COLUMNS) == before  # payload_sha256 and landing_path included
+    assert second.landing_path == first.landing_path
+    with landing.open_input_stream(second.landing_path.removeprefix("s3://")) as stored:
+        assert b'"HIT"' in stored.read()  # the raw body is landed whole, the latest one
 
 
 def test_a_rerun_of_one_day_leaves_the_other_days_alone(

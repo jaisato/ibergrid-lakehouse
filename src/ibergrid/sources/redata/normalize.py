@@ -2,13 +2,14 @@
 
 The answer lists one ``included[]`` item per series (``id``, ``type``, ``attributes.title``,
 ``attributes.last-update`` and ``attributes.values[]`` of ``{value, percentage, datetime}``).
-Structural problems refuse the whole chunk: another widget scope (``data.type``), shape and
+Structural problems refuse the whole chunk: another widget answer (``data.id``), shape and
 types, a number that is not finite, a datetime without an offset, a point outside the window or a
 repeated key. Everything else is measured, not enforced, because Bronze keeps what the source
 gave (quality gates are phase 4): completeness per local day, and the points that break the
 dataset's value rule or have a percentage outside 0..1.
 """
 
+import hashlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -84,14 +85,13 @@ def parse(payload: bytes, chunk: Chunk) -> list[Point]:
     included = document.get("included") if isinstance(document, dict) else None
     if not isinstance(included, list):
         raise InvalidResponse(chunk, ["no included[] list of series"])
-    data = document.get("data")
-    answer_type = data.get("type") if isinstance(data, dict) else None
-    if answer_type != chunk.dataset.answer_type:
+    data = document.get("data") if isinstance(document.get("data"), dict) else {}
+    if data.get("id") != chunk.dataset.answer_id:
         raise InvalidResponse(
             chunk,
             [
-                f"the answer is {answer_type!r}, not {chunk.dataset.answer_type!r}: "
-                "REData changed what this widget returns"
+                f"the answer is {data.get('id')!r} ({data.get('type')!r}), not "
+                f"{chunk.dataset.answer_id!r}: REData changed what this widget returns"
             ],
         )
     problems: list[str] = []
@@ -102,6 +102,16 @@ def parse(payload: bytes, chunk: Chunk) -> list[Point]:
     if problems:
         raise InvalidResponse(chunk, problems)
     return points
+
+
+def content_sha256(payload: bytes) -> str:
+    """SHA-256 of what an answer says: its canonical JSON without ``data.meta``, where REData
+    reports its cache ("MISS", or "HIT" with an expiry) and which differs between answers that are
+    otherwise identical. Call it on a payload ``parse`` accepted."""
+    document = json.loads(payload)
+    document["data"].pop("meta", None)
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def violations(points: list[Point], chunk: Chunk) -> dict[str, int]:

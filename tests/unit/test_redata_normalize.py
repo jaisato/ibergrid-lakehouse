@@ -12,6 +12,7 @@ from ibergrid.sources.redata.datasets import DATASETS, Chunk
 from ibergrid.sources.redata.normalize import (
     InvalidResponse,
     completeness,
+    content_sha256,
     granularities,
     parse,
     to_arrow,
@@ -206,8 +207,9 @@ def with_point(c: Chunk, **changes: Any) -> dict[str, Any]:
     return doc
 
 
-def scoped(included: str, answer: str = "Evolución de la demanda") -> bytes:
-    return f'{{"data": {{"type": "{answer}"}}, "included": {included}}}'.encode()
+def scoped(included: str, answer: str = "dem1", title: str = "Evolución de la demanda") -> bytes:
+    data = json.dumps({"id": answer, "type": title}, ensure_ascii=False)
+    return f'{{"data": {data}, "included": {included}}}'.encode()
 
 
 @pytest.mark.parametrize(
@@ -218,13 +220,17 @@ def scoped(included: str, answer: str = "Evolución de la demanda") -> bytes:
         (b'{"data": {}}', "no included[] list of series"),
         (
             b'{"included": []}',
-            "the answer is None, not 'Evolución de la demanda': "
-            "REData changed what this widget returns",
+            "the answer is None (None), not 'dem1': REData changed what this widget returns",
         ),
         (
-            scoped("[]", answer="Demanda nacional en tiempo real"),
-            "the answer is 'Demanda nacional en tiempo real', not 'Evolución de la demanda': "
+            scoped("[]", answer="dem15", title="Demanda nacional en tiempo real"),
+            "the answer is 'dem15' ('Demanda nacional en tiempo real'), not 'dem1': "
             "REData changed what this widget returns",
+        ),
+        # The id decides, not the display string, which REData could translate.
+        (
+            scoped("[]", title="Demand evolution"),
+            "no observations: the window would be replaced with nothing",
         ),
         (scoped("[]"), "no observations: the window would be replaced with nothing"),
         (scoped("[1]"), "a series without attributes"),
@@ -349,3 +355,15 @@ def test_daily_points_are_days_apart_also_across_daylight_saving() -> None:
 
     assert set(granularities(points, c).values()) == {"day"}
     assert completeness(points, granularities(points, c), c).incomplete == []
+
+
+def test_the_content_hash_ignores_only_redatas_cache_metadata() -> None:
+    raw = recorded(HOURLY)
+    hit = document(HOURLY)
+    hit["data"]["meta"] = {"cache-control": {"cache": "HIT", "expireAt": "2026-12-21T04:44:58"}}
+    changed = document(HOURLY)
+    changed["included"][0]["attributes"]["values"][0]["value"] += 1
+
+    assert document(HOURLY)["data"]["meta"] == {"cache-control": {"cache": "MISS"}}
+    assert content_sha256(json.dumps(hit, indent=2).encode()) == content_sha256(raw)
+    assert content_sha256(json.dumps(changed).encode()) != content_sha256(raw)

@@ -28,7 +28,9 @@ REDATA_OBSERVATIONS = TableSpec(
         NestedField(13, "fetched_at", TimestamptzType(), required=True),
         NestedField(14, "run_id", StringType(), required=True),
         NestedField(15, "landing_path", StringType(), required=True, doc="raw response object"),
-        NestedField(16, "payload_sha256", StringType(), required=True),
+        NestedField(
+            16, "payload_sha256", StringType(), required=True, doc="the answer's, without data.meta"
+        ),
     ),
     partition_spec=PartitionSpec(
         PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="dataset"),
