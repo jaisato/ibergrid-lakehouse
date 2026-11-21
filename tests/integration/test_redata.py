@@ -66,7 +66,8 @@ def target(catalog: LakeCatalog, namespace: str, settings: Settings) -> Iterator
     """The Bronze table's spec in the test's own namespace, and a landing prefix of its own; the
     namespace fixture drops the table, this one deletes the landed objects."""
     ensure_table(catalog, replace(REDATA_OBSERVATIONS, namespace=namespace))
-    prefix = f"it-landing/{namespace}"
+    # Top level: deleting a nested prefix makes pyarrow leave a marker for its parent.
+    prefix = f"it-landing-{namespace}"
     yield Target(
         (namespace, REDATA_OBSERVATIONS.name),
         prefix,
