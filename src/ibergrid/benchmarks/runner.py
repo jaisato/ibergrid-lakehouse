@@ -607,7 +607,7 @@ def load_host_settings(
     catalog_url: str = "http://127.0.0.1:28181",
     s3_url: str = "http://127.0.0.1:29000",
 ) -> Settings:
-    """Load credentials from ``<repo_root>/.env`` with host-published compose endpoints."""
+    """Load storage/catalog config from ``<repo_root>/.env`` with host-published endpoints."""
     from pydantic import HttpUrl, SecretStr
 
     from ibergrid.settings import CatalogSettings, StorageSettings
@@ -620,11 +620,21 @@ def load_host_settings(
         for line in env_path.read_text(encoding="utf-8").splitlines()
         if "=" in line and not line.startswith("#")
     )
+    storage_kwargs: dict[str, Any] = {
+        "endpoint_url": HttpUrl(s3_url),
+        "access_key": SecretStr(env["IBERGRID_S3_ACCESS_KEY"]),
+        "secret_key": SecretStr(env["IBERGRID_S3_SECRET_KEY"]),
+    }
+    if bucket := env.get("IBERGRID_S3_BUCKET"):
+        storage_kwargs["bucket"] = bucket
+    if region := env.get("IBERGRID_S3_REGION"):
+        storage_kwargs["region"] = region
+
+    catalog_kwargs: dict[str, Any] = {"url": HttpUrl(catalog_url)}
+    if warehouse := env.get("IBERGRID_CATALOG_WAREHOUSE"):
+        catalog_kwargs["warehouse"] = warehouse
+
     return Settings(
-        storage=StorageSettings(
-            endpoint_url=HttpUrl(s3_url),
-            access_key=SecretStr(env["IBERGRID_S3_ACCESS_KEY"]),
-            secret_key=SecretStr(env["IBERGRID_S3_SECRET_KEY"]),
-        ),
-        catalog=CatalogSettings(url=HttpUrl(catalog_url)),
+        storage=StorageSettings(**storage_kwargs),
+        catalog=CatalogSettings(**catalog_kwargs),
     )

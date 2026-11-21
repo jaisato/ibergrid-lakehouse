@@ -596,12 +596,20 @@ def test_cold_starts_and_host_settings(tmp_path: Path) -> None:
         load_host_settings(tmp_path)
 
     (tmp_path / ".env").write_text(
-        "# comment\nIBERGRID_S3_ACCESS_KEY=my-ak\nIBERGRID_S3_SECRET_KEY=my-sk\n",
+        "# comment\n"
+        "IBERGRID_S3_ACCESS_KEY=my-ak\n"
+        "IBERGRID_S3_SECRET_KEY=my-sk\n"
+        "IBERGRID_S3_BUCKET=custom-bucket\n"
+        "IBERGRID_S3_REGION=eu-west-1\n"
+        "IBERGRID_CATALOG_WAREHOUSE=custom-wh\n",
         encoding="utf-8",
     )
     loaded = load_host_settings(tmp_path)
     assert loaded.storage.access_key.get_secret_value() == "my-ak"
     assert loaded.storage.secret_key.get_secret_value() == "my-sk"
+    assert loaded.storage.bucket == "custom-bucket"
+    assert loaded.storage.region == "eu-west-1"
+    assert loaded.catalog.warehouse == "custom-wh"
     assert str(loaded.catalog.url).startswith("http://127.0.0.1:28181")
 
 
