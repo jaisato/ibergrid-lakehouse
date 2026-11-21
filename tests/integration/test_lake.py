@@ -1,12 +1,14 @@
 """The lake library on the real stack: PyIceberg writes and publishes, DuckDB reads."""
 
 import json
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import duckdb
 import pyarrow as pa
 import pytest
+from pydantic import HttpUrl, SecretStr
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
@@ -14,10 +16,11 @@ from pyiceberg.transforms import MonthTransform
 from pyiceberg.types import DateType, LongType, NestedField
 
 from ibergrid.lake import duck, maintenance, wap
-from ibergrid.lake.catalog import LakeCatalog
+from ibergrid.lake.catalog import LakeCatalog, rest_catalog
 from ibergrid.lake.tables import TableSpec, ensure_table
+from ibergrid.settings import Settings
 
-from .conftest import compose_run
+from .conftest import CatalogProxy, compose_run
 
 pytestmark = pytest.mark.integration
 
@@ -26,6 +29,7 @@ SCHEMA = Schema(
     NestedField(2, "value", LongType(), required=False),
 )
 MONTHLY = PartitionSpec(PartitionField(1, 1000, MonthTransform(), "day_month"))
+JAN, FEB = date(2026, 1, 15), date(2026, 2, 15)
 
 
 def rows(*pairs: tuple[date, int]) -> pa.Table:
@@ -40,11 +44,20 @@ def make_table(catalog: LakeCatalog, namespace: str, name: str = "readings") -> 
     return table
 
 
-def values(con: duckdb.DuckDBPyConnection, relation: duckdb.DuckDBPyRelation) -> list[int]:
+def values(relation: duckdb.DuckDBPyRelation) -> list[int]:
     return sorted(row[1] for row in relation.fetchall())
 
 
-JAN, FEB = date(2026, 1, 15), date(2026, 2, 15)
+def interleave(table: Table, writer: Callable[[], object], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run ``writer`` (another process) just before the next PyIceberg commit leaves."""
+    commit = table.catalog.commit_table
+
+    def other_writer_first(*args: Any) -> Any:
+        monkeypatch.setattr(table.catalog, "commit_table", commit)
+        writer()
+        return commit(*args)
+
+    monkeypatch.setattr(table.catalog, "commit_table", other_writer_first)
 
 
 def test_duckdb_sees_a_run_on_main_only_after_publish(
@@ -54,25 +67,23 @@ def test_duckdb_sees_a_run_on_main_only_after_publish(
     name = f"{duck.CATALOG}.{namespace}.readings"
 
     first = wap.start(table, "first-load")
-    wap.write(table, first, rows((JAN, 1), (FEB, 2)))
-    assert values(con, duck.scan(con, name)) == []
-    assert values(con, duck.scan_ref(con, name, first.name)) == [1, 2]
-    wap.publish(table, first)
-    assert values(con, duck.scan(con, name)) == [1, 2]
+    audited = wap.write(table, first, rows((JAN, 1), (FEB, 2)))
+    assert values(duck.scan(con, name)) == []
+    assert values(duck.scan(con, name, snapshot_id=audited)) == [1, 2]  # the audit's read
+    wap.publish(table, first, audited)
+    assert values(duck.scan(con, name)) == [1, 2]
 
     second = wap.start(table, "correction")
     wap.write(table, second, rows((FEB, 20)), overwrite_filter="day >= '2026-02-01'")
-    assert values(con, duck.scan(con, name)) == [1, 2]
-    assert values(con, duck.scan_ref(con, name, second.name)) == [1, 20]
-    head = wap.publish(table, second)
+    audited = wap.head(table, second)
+    assert values(duck.scan(con, name)) == [1, 2]
+    assert values(duck.scan(con, name, snapshot_id=audited)) == [1, 20]
+    published = wap.publish(table, second, audited, set_properties={"ibergrid.checkpoint": "c2"})
 
-    assert values(con, duck.scan(con, name)) == [1, 20]
-    assert duck.describe(con, name).refs == [("main", "BRANCH", head)]
-    assert head is not None
-    snapshot = table.snapshot_by_id(head)
-    assert snapshot is not None
-    assert snapshot.summary is not None
-    assert snapshot.summary[wap.RUN_ID_PROPERTY] == "correction"
+    assert values(duck.scan(con, name)) == [1, 20]
+    assert duck.describe(con, name).refs == [("main", "BRANCH", published)]
+    table.refresh()
+    assert table.properties["ibergrid.checkpoint"] == "c2"
 
 
 def test_a_publish_after_main_moved_conflicts_and_loses_nothing(
@@ -80,20 +91,17 @@ def test_a_publish_after_main_moved_conflicts_and_loses_nothing(
 ) -> None:
     table = make_table(catalog, namespace)
     name = f"{duck.CATALOG}.{namespace}.readings"
-    seed = wap.start(table, "seed")
-    wap.write(table, seed, rows((JAN, 1)))
-    wap.publish(table, seed)
+    table.append(rows((JAN, 1)))
     early, late = wap.start(table, "early"), wap.start(table, "late")
-    wap.write(table, early, rows((JAN, 2)))
-    wap.write(table, late, rows((JAN, 3)))
-    main = wap.publish(table, early)
+    main = wap.publish(table, early, wap.write(table, early, rows((JAN, 2))))
+    late_head = wap.write(table, late, rows((JAN, 3)))
 
     with pytest.raises(wap.PublishConflict, match="main moved"):
-        wap.publish(table, late)
+        wap.publish(table, late, late_head)
 
     assert duck.ref_head(con, name, "main") == main
-    assert values(con, duck.scan(con, name)) == [1, 2]
-    assert values(con, duck.scan_ref(con, name, late.name)) == [1, 3]
+    assert values(duck.scan(con, name)) == [1, 2]
+    assert values(duck.scan_ref(con, name, late.name)) == [1, 3]
     wap.discard(table, late)
     assert [ref for ref, _, _ in duck.describe(con, name).refs] == ["main"]
 
@@ -102,27 +110,68 @@ def test_lakekeeper_rejects_a_publish_racing_a_write_to_main(
     catalog: LakeCatalog, namespace: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     table = make_table(catalog, namespace)
+    table.append(rows((JAN, 1)))
     audit = wap.start(table, "racing")
-    head = wap.write(table, audit, rows((JAN, 1)))
-    commit = table.catalog.commit_table
-
-    def other_writer_first(*args: Any) -> Any:
-        # Another process appends to main after publish's checks, before its commit arrives.
-        monkeypatch.setattr(table.catalog, "commit_table", commit)
-        catalog.load_table((namespace, "readings")).append(rows((FEB, 2)))
-        return commit(*args)
-
-    monkeypatch.setattr(table.catalog, "commit_table", other_writer_first)
+    audited = wap.write(table, audit, rows((JAN, 2)))
+    elsewhere = catalog.load_table((namespace, "readings"))
+    interleave(table, lambda: elsewhere.append(rows((FEB, 3))), monkeypatch)
 
     with pytest.raises(wap.PublishConflict, match="nothing was published"):
-        wap.publish(table, audit)
+        wap.publish(table, audit, audited, set_properties={"ibergrid.checkpoint": "lost"})
 
     table.refresh()
-    assert [r["value"] for r in table.scan().to_arrow().to_pylist()] == [2]
-    assert table.metadata.refs[audit.name].snapshot_id == head
+    assert sorted(r["value"] for r in table.scan().to_arrow().to_pylist()) == [1, 3]
+    assert table.metadata.refs[audit.name].snapshot_id == audited
+    assert "ibergrid.checkpoint" not in table.properties
 
 
-def test_expiry_keeps_main_and_open_branches_readable(
+def test_lakekeeper_rejects_publishing_a_branch_written_after_its_audit(
+    catalog: LakeCatalog, namespace: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = make_table(catalog, namespace)
+    table.append(rows((JAN, 1)))
+    audit = wap.start(table, "audited")
+    audited = wap.write(table, audit, rows((JAN, 2)))
+    elsewhere = catalog.load_table((namespace, "readings"))
+
+    # After the audit and before publish: refused before any commit.
+    wap.write(elsewhere, audit, rows((FEB, 8)))
+    with pytest.raises(wap.PublishConflict, match="since its audit"):
+        wap.publish(table, audit, audited)
+
+    # During publish's commit: Lakekeeper refuses it (branch no longer at the audited head).
+    audited = wap.head(table, audit)
+    interleave(table, lambda: wap.write(elsewhere, audit, rows((FEB, 9))), monkeypatch)
+    with pytest.raises(wap.PublishConflict, match="nothing was published"):
+        wap.publish(table, audit, audited)
+
+    table.refresh()
+    assert [r["value"] for r in table.scan().to_arrow().to_pylist()] == [1]
+    assert 9 in wap.read(table, audit).rows["value"].to_pylist()
+
+
+def test_a_discard_racing_a_write_cannot_publish_a_partial_run(
+    catalog: LakeCatalog, namespace: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's repro: PyIceberg's retry re-created the branch without the run's base."""
+    table = make_table(catalog, namespace)
+    table.append(rows((JAN, 1)))
+    audit = wap.start(table, "discarded")
+    wap.write(table, audit, rows((JAN, 2)))
+    elsewhere = catalog.load_table((namespace, "readings"))
+    interleave(table, lambda: wap.discard(elsewhere, audit), monkeypatch)
+
+    with pytest.raises(wap.WapError, match="no longer descends from snapshot"):
+        wap.write(table, audit, rows((FEB, 3)))
+
+    recreated = table.metadata.refs[audit.name].snapshot_id
+    with pytest.raises(wap.WapError, match="no longer descends from snapshot"):
+        wap.publish(table, audit, recreated)
+    table.refresh()
+    assert [r["value"] for r in table.scan().to_arrow().to_pylist()] == [1]
+
+
+def test_expiry_keeps_main_and_open_runs_readable(
     catalog: LakeCatalog, namespace: str, con: duckdb.DuckDBPyConnection
 ) -> None:
     table = make_table(catalog, namespace)
@@ -131,17 +180,19 @@ def test_expiry_keeps_main_and_open_branches_readable(
         table.append(rows((JAN, value)))
     audit = wap.start(table, "open-run")
     wap.write(table, audit, rows((FEB, 9)))
+    audited = wap.write(table, audit, rows((FEB, 10)))
 
     expired = maintenance.expire_snapshots(
         table, older_than=datetime.now(UTC) + timedelta(days=1), retain_last=1
     )
 
-    assert len(expired) == 3
-    assert values(con, duck.scan(con, name)) == [0, 1, 2, 3]
-    assert values(con, duck.scan_ref(con, name, audit.name)) == [0, 1, 2, 3, 9]
+    assert len(expired) == 3  # main's older snapshots; the run's two and the fork stay
+    assert values(duck.scan(con, name)) == [0, 1, 2, 3]
+    assert values(duck.scan(con, name, snapshot_id=audited)) == [0, 1, 2, 3, 9, 10]
+    assert wap.publish(table, audit, audited) == audited
 
 
-def test_duckdb_compacts_a_partitioned_table_with_an_open_branch(
+def test_compaction_commits_to_main_so_an_open_run_must_restart(
     catalog: LakeCatalog, namespace: str, con: duckdb.DuckDBPyConnection
 ) -> None:
     table = make_table(catalog, namespace)
@@ -149,7 +200,7 @@ def test_duckdb_compacts_a_partitioned_table_with_an_open_branch(
     for value in range(6):
         table.append(rows((JAN, value), (FEB, value + 100)))
     audit = wap.start(table, "open-run")
-    wap.write(table, audit, rows((FEB, 999)))
+    audited = wap.write(table, audit, rows((FEB, 999)))
 
     result = maintenance.rewrite_data_files(con, name)
 
@@ -157,10 +208,64 @@ def test_duckdb_compacts_a_partitioned_table_with_an_open_branch(
         rewritten_files=12, added_files=2, rewritten_bytes=result.rewritten_bytes, failed_files=0
     )
     assert duck.describe(con, name).data_files == 2  # one file per month
-    assert values(con, duck.scan(con, name)) == [*range(6), *range(100, 106)]
-    assert 999 in values(con, duck.scan_ref(con, name, audit.name))
+    assert values(duck.scan(con, name)) == [*range(6), *range(100, 106)]
     table.refresh()
     assert table.current_snapshot().summary.operation.value == "replace"  # type: ignore[union-attr]
+    with pytest.raises(wap.PublishConflict, match="main moved"):
+        wap.publish(table, audit, audited)
+    assert 999 in values(duck.scan(con, name, snapshot_id=audited))  # the run's data is intact
+
+
+def test_a_write_during_compaction_wins_and_the_compaction_says_so(
+    catalog: LakeCatalog, namespace: str, settings: Settings, proxy: CatalogProxy
+) -> None:
+    table = make_table(catalog, namespace)
+    for value in range(6):
+        table.append(rows((JAN, value)))
+    via_proxy = settings.catalog.model_copy(update={"url": HttpUrl(proxy.url)})
+    con = duck.connect(settings.model_copy(update={"catalog": via_proxy}))
+    name = f"{duck.CATALOG}.{namespace}.readings"
+    elsewhere = catalog.load_table((namespace, "readings"))
+    proxy.before_next_commit = lambda: elsewhere.append(rows((FEB, 777)))
+
+    with pytest.raises(maintenance.MaintenanceConflict, match="changed during the compaction"):
+        maintenance.rewrite_data_files(con, name)
+
+    [commit] = proxy.commits
+    assert commit["status"] == 409
+    [change] = commit["body"]["table-changes"]
+    assert sorted(r["type"] for r in change["requirements"]) == [
+        "assert-current-schema-id",
+        "assert-ref-snapshot-id",
+        "assert-table-uuid",
+    ]
+    [ref] = [r for r in change["requirements"] if r["type"] == "assert-ref-snapshot-id"]
+    assert ref["ref"] == "main"
+    table.refresh()
+    assert 777 in [r["value"] for r in table.scan().to_arrow().to_pylist()]
+    assert table.current_snapshot().summary.operation.value == "append"  # type: ignore[union-attr]
+
+
+def test_wrong_storage_keys_fail_without_leaking_or_committing(
+    catalog: LakeCatalog, namespace: str, settings: Settings
+) -> None:
+    table = make_table(catalog, namespace)
+    table.append(rows((JAN, 1)))
+    wrong_secret = "wrong-" + "0" * 20
+    storage = settings.storage.model_copy(update={"secret_key": SecretStr(wrong_secret)})
+    wrong = settings.model_copy(update={"storage": storage})
+    keys = (settings.storage.access_key.get_secret_value(), wrong_secret)
+
+    bad = rest_catalog(wrong).load_table((namespace, "readings"))
+    with pytest.raises(OSError, match="SIGNATURE_DOES_NOT_MATCH") as pyiceberg_error:
+        bad.append(rows((FEB, 2)))
+    with pytest.raises(duckdb.HTTPException, match="403") as duckdb_error:
+        duck.scan(duck.connect(wrong), f"{duck.CATALOG}.{namespace}.readings").fetchall()
+
+    for message in (str(pyiceberg_error.value), str(duckdb_error.value)):
+        assert not any(key in message for key in keys)
+    table.refresh()
+    assert len(table.metadata.snapshots) == 1
 
 
 # The same library inside the compose network: the app image, its baked DuckDB extensions and the
@@ -169,39 +274,49 @@ IN_NETWORK_RUN = """
 import json, sys
 from datetime import UTC, datetime
 import pyarrow as pa
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, StringType, TimestamptzType
 from ibergrid.lake import duck, wap
 from ibergrid.lake.catalog import rest_catalog
-from ibergrid.lake.registry import SMOKE
+from ibergrid.lake.tables import TableSpec, ensure_table
 from ibergrid.settings import Settings
 
+namespace, run_id = sys.argv[1:]
 settings = Settings()
-table = rest_catalog(settings).load_table(SMOKE.identifier)
-audit = wap.start(table, sys.argv[1])
+catalog = rest_catalog(settings)
+schema = Schema(NestedField(1, "run_id", StringType()), NestedField(2, "at", TimestamptzType()))
+created = ensure_table(catalog, TableSpec(namespace, "smoke", schema)).created
+table = catalog.load_table((namespace, "smoke"))
+audit = wap.start(table, run_id)
 now = pa.array([datetime.now(UTC)], pa.timestamp("us", "UTC"))
-wap.write(table, audit, pa.table({"run_id": [audit.run_id], "written_at": now}))
+audited = wap.write(table, audit, pa.table({"run_id": [run_id], "at": now}))
 con = duck.connect(settings)
-name = duck.table_name("ops.smoke")
-mine = f"run_id = '{audit.run_id}'"
-before = duck.scan(con, name).filter(mine).fetchall()
-branch = duck.scan_ref(con, name, audit.name).filter(mine).fetchall()
-wap.publish(table, audit)
-after = duck.scan(con, name).filter(mine).fetchall()
-print(json.dumps({"before": len(before), "branch": len(branch), "after": len(after)}))
+name = duck.table_name(f"{namespace}.smoke")
+before = duck.scan(con, name).fetchall()
+branch = duck.scan(con, name, snapshot_id=audited).fetchall()
+wap.publish(table, audit, audited)
+after = duck.scan(con, name).fetchall()
+counts = {"before": len(before), "branch": len(branch), "after": len(after)}
+print(json.dumps({"created": created, **counts}))
 """
 
 
-def test_the_app_image_runs_init_wap_and_describe_in_the_network() -> None:
-    for expected in ("created|unchanged", "unchanged"):
-        result = compose_run("doctor", "lake", "init")
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert result.stdout.strip().rpartition(" ")[2] in expected.split("|")
+def test_the_app_image_runs_init_wap_and_describe_in_the_network(namespace: str) -> None:
+    result = compose_run("doctor", "lake", "init")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "lake: no tables registered\n"
 
     run_id = f"it-{datetime.now(UTC):%Y%m%d%H%M%S%f}"
-    result = compose_run("doctor", "-c", IN_NETWORK_RUN, run_id, entrypoint="python")
+    result = compose_run("doctor", "-c", IN_NETWORK_RUN, namespace, run_id, entrypoint="python")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout.splitlines()[-1]) == {"before": 0, "branch": 1, "after": 1}
+    assert json.loads(result.stdout.splitlines()[-1]) == {
+        "created": True,
+        "before": 0,
+        "branch": 1,
+        "after": 1,
+    }
 
-    result = compose_run("doctor", "lake", "describe", "ops.smoke")
+    result = compose_run("doctor", "lake", "describe", f"{namespace}.smoke")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "refs:       main -> " in result.stdout
     assert "audit-" not in result.stdout

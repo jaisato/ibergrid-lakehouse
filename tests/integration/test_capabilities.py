@@ -5,6 +5,7 @@ upgrade that changes one of them fails here and sends the reader back to the ADR
 """
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import duckdb
 import pyarrow as pa
@@ -13,10 +14,11 @@ from pyarrow import fs
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
+from pyiceberg.table.snapshots import ancestors_of
 from pyiceberg.types import LongType, NestedField
 
 from ibergrid import _http
-from ibergrid.lake import duck
+from ibergrid.lake import duck, maintenance
 from ibergrid.lake.catalog import LakeCatalog, s3_properties
 from ibergrid.settings import Settings, base_url
 
@@ -70,10 +72,11 @@ def test_lakekeeper_pushes_the_in_network_endpoint_and_no_credentials(
     prefix = catalog.properties["prefix"]
     url = f"{CATALOG_URL}/catalog/v1/{prefix}/namespaces/{namespace}/tables/probe"
 
-    for delegation in ("vended-credentials", "remote-signing"):
-        status, body = _http.send(
-            "GET", url, timeout=10, headers={"X-Iceberg-Access-Delegation": delegation}
+    for delegation in (None, "", "vended-credentials", "remote-signing"):
+        headers: dict[str, str] = (
+            {} if delegation is None else {"X-Iceberg-Access-Delegation": delegation}
         )
+        status, body = _http.send("GET", url, timeout=10, headers=headers)
         response = json.loads(body)
         assert status == 200
         assert response["config"]["s3.endpoint"] == "http://storage:9000/"
@@ -97,6 +100,18 @@ def test_pyiceberg_without_the_client_override_cannot_write_from_the_host(
 
     with pytest.raises(OSError, match="storage"):
         plain.load_table((namespace, "probe")).append(numbers(3))
+
+
+def test_pyiceberg_overwrites_in_one_commit_of_two_snapshots(table: Table) -> None:
+    versions = len(table.metadata.metadata_log)
+
+    table.overwrite(numbers(20), overwrite_filter="x == 2")
+
+    assert len(table.metadata.metadata_log) == versions + 1  # one commit
+    newest = ancestors_of(table.current_snapshot(), table.metadata)
+    operations = [s.summary.operation.value for s in newest if s.summary is not None]
+    assert operations == ["append", "overwrite", "append"]  # the fixture's append is the third
+    assert sorted(table.scan().to_arrow()["x"].to_pylist()) == [1, 20]
 
 
 def test_pyiceberg_cannot_write_a_branch_of_a_table_without_snapshots(
@@ -179,22 +194,34 @@ def test_duckdb_creates_tables_but_not_create_or_replace(
 ) -> None:
     created = f"{duck.CATALOG}.{namespace}.by_duckdb"
     con.execute(f"CREATE TABLE {created} AS SELECT range AS x FROM range(3)")
+    con.execute(f"CREATE SCHEMA {duck.CATALOG}.{namespace}_duck")
 
     with pytest.raises(duckdb.NotImplementedException, match="CREATE OR REPLACE"):
         con.execute(f"CREATE OR REPLACE TABLE {created} AS SELECT 1 AS x")
     by_duckdb = catalog.load_table((namespace, "by_duckdb"))
     assert by_duckdb.format_version == 2
     assert by_duckdb.scan().to_arrow().num_rows == 3
+    assert catalog.namespace_exists(f"{namespace}_duck")
+    catalog.drop_namespace(f"{namespace}_duck")
 
 
 @pytest.mark.parametrize(
-    "kind",
-    ["snapshots", "refs", "files", "manifests", "column_stats", "partition_stats", "history"],
+    ("kind", "count"),
+    [
+        ("snapshots", 1),
+        ("refs", 1),
+        ("files", 1),
+        ("manifests", 1),
+        ("column_stats", 1),  # one column in one file
+        ("partition_stats", 0),  # unpartitioned
+        ("history", 1),
+    ],
 )
 def test_duckdb_metadata_tables_work_through_the_catalog(
-    table: Table, name: str, con: duckdb.DuckDBPyConnection, kind: duck.Metadata
+    table: Table, name: str, con: duckdb.DuckDBPyConnection, kind: duck.Metadata, count: int
 ) -> None:
-    duck.metadata(con, name, kind).fetchall()
+    """One append of two rows, as DuckDB's metadata functions see it through the catalog."""
+    assert len(duck.metadata(con, name, kind).fetchall()) == count
 
 
 def test_duckdb_expiry_refuses_tables_with_a_branch(
@@ -232,10 +259,14 @@ def test_neither_expiry_nor_compaction_deletes_files(
     for value in range(4):
         table.append(numbers(value))
     con.execute("FROM iceberg_rewrite_data_files($table)", {"table": name}).fetchall()
+    assert data_files() == 6  # 5 appends and 1 compacted file
+    assert maintenance.expire_snapshots(table, datetime.now(UTC) + timedelta(days=1))
+    assert data_files() == 6  # PyIceberg's expiry deleted nothing
+    table.append(numbers(9))
     con.execute(
         "FROM iceberg_expire_snapshots($table, older_than => now()::TIMESTAMP, retain_last => 1)",
         {"table": name},
     ).fetchall()
 
-    assert duck.describe(con, name).data_files == 1
-    assert data_files() == 6  # 5 appends and 1 compacted file: nothing was deleted
+    assert data_files() == 7  # nor did DuckDB's
+    assert duck.describe(con, name).data_files == 2

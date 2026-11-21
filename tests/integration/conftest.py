@@ -4,11 +4,17 @@ Host clients take the keys from `.env` and use the published endpoints; the ware
 names the in-network endpoint, which ADR 0002's client configuration overrides.
 """
 
+import json
 import os
 import subprocess
+import threading
+import urllib.error
+import urllib.request
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -74,3 +80,59 @@ def con(settings: Settings) -> Iterator[duckdb.DuckDBPyConnection]:
     connection = duck.connect(settings)
     yield connection
     connection.close()
+
+
+class CatalogProxy:
+    """Lakekeeper behind a local proxy: records commit requests and can run a hook (another
+    process's commit) just before the next one reaches the catalog."""
+
+    def __init__(self) -> None:
+        self.commits: list[dict[str, Any]] = []
+        self.before_next_commit: Callable[[], object] | None = None
+        proxy = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def handle_any(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                is_commit = self.command == "POST" and "/transactions/commit" in self.path
+                if is_commit and proxy.before_next_commit is not None:
+                    hook, proxy.before_next_commit = proxy.before_next_commit, None
+                    hook()
+                # The Host header goes along: Lakekeeper advertises the URI the client used, so
+                # the client keeps talking to the proxy.
+                headers = {k: v for k, v in self.headers.items() if k.lower() != "content-length"}
+                request = urllib.request.Request(  # noqa: S310 (fixed http URL)
+                    CATALOG_URL + self.path, data=body or None, method=self.command, headers=headers
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+                        status, answer = response.status, response.read()
+                except urllib.error.HTTPError as exc:
+                    status, answer = exc.code, exc.read()
+                if is_commit:
+                    proxy.commits.append({"body": json.loads(body), "status": status})
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(answer)))
+                self.end_headers()
+                self.wfile.write(answer)
+
+            do_GET = do_POST = do_DELETE = do_HEAD = handle_any
+
+            def log_message(self, format: str, *args: Any) -> None:
+                """Keep test output quiet."""
+
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._httpd.server_port}"
+        threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True).start()
+
+    def close(self) -> None:
+        self._httpd.shutdown()
+        self._httpd.server_close()
+
+
+@pytest.fixture
+def proxy() -> Iterator[CatalogProxy]:
+    catalog_proxy = CatalogProxy()
+    yield catalog_proxy
+    catalog_proxy.close()
