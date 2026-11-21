@@ -131,3 +131,6 @@ stream-down: ## Stop the stream producer and consumer (the consumer flushes firs
 
 stream-status: ## The stream table's checkpoint, the lag per partition and the dead letters
 	$(COMPOSE) run --rm --no-deps stream-consumer stream status
+
+chaos-stream: build ## SIGKILL the consumer mid-flush in a throwaway compose project, then prove exactly once
+	$(UV) run python -u scripts/chaos_stream.py
