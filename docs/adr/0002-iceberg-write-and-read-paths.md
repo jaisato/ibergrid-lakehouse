@@ -76,17 +76,22 @@ Also measured during the spike and not pinned, because pinning it would send tes
 third party: DuckDB attached with delegation off but without an S3 secret sends its requests to
 AWS's public endpoint (`NoSuchBucket`).
 
-Three interoperability traps, pinned by tests:
+Four interoperability traps, pinned by tests:
 
-- An append of zero rows to a table without snapshots makes PyIceberg write a snapshot with an
-  empty manifest list, and DuckDB cannot read that snapshot ("Invalid Avro file block count or
-  size").
+- A snapshot with an empty manifest list cannot be read by DuckDB ("Invalid Avro file block count
+  or size"), and PyIceberg writes one in two cases: an append of zero rows to a table without
+  snapshots, and an overwrite of zero rows whose filter matches every row (its `append` snapshot
+  carries no manifest; published, it left `main` unreadable for DuckDB scans and `describe`). A
+  `delete` with the same filter keeps one manifest, and DuckDB reads it as empty.
 - PyIceberg refuses branch writes on a table without snapshots, and an Iceberg ref needs a
   snapshot to point at.
 - PyIceberg retries a data commit that lost a race (four retries by default), on fresh metadata.
   If the run's branch was removed in between, the retry re-creates it on a snapshot without a
   parent: the branch then holds only the latest write, and a naive publish would replace `main`
   with it (reproduced on Lakekeeper and on the SQL catalog).
+- A PyIceberg transaction that sets properties and appends is atomic but not fenced: when two
+  consumers commit the same offsets, the losing one is retried on fresh metadata and lands too,
+  so the batch is written twice (pinned on the SQL catalog).
 
 Cost: the app image is 789 MB (the virtual environment is 378 MB, of which pyarrow 170, DuckDB 66
 and pyiceberg-core 38; the DuckDB extensions add 86.5). A WAP cycle with DuckDB reads in the app
@@ -103,7 +108,8 @@ step is supported: DuckDB cannot write branches or move refs, and PyIceberg cann
 | Job | Engine | Module |
 |---|---|---|
 | Table creation and additive schema evolution | PyIceberg | `ibergrid.lake.tables` (`TableSpec`, `ensure_table`), `ibergrid.lake.registry` |
-| Every data write (append, overwrite with a filter) | PyIceberg, on audit branches only | `ibergrid.lake.wap` |
+| Every data write (append, overwrite or delete with a filter) | PyIceberg, on audit branches only | `ibergrid.lake.wap` |
+| Every checkpoint (stream offsets and the like) | PyIceberg, only through `wap.publish(..., set_properties=...)` | `ibergrid.lake.wap` |
 | Publish and discard | PyIceberg (`commit_table` with explicit requirements) | `ibergrid.lake.wap` |
 | Analytical reads (main, a snapshot such as an audited head) | DuckDB | `ibergrid.lake.duck` |
 | Metadata queries (snapshots, refs, files, stats) | DuckDB | `ibergrid.lake.duck` |
@@ -114,8 +120,10 @@ DuckDB can write `main`, and the probes keep that measured, but no data write go
 write outside an audit branch skips the audit. Its one commit in this project is compaction,
 which replaces files without changing rows and commits a `replace` snapshot to `main`. The catalog
 serialises it against everything else: a write that lands first makes the compaction fail
-(`MaintenanceConflict`, nothing changed), and a run open across a compaction can no longer publish
-(`PublishConflict`, its branch intact). Compaction therefore runs when no run is open, or the open
+(the catalog answers 409: `MaintenanceConflict`, nothing changed), and a run open across a
+compaction can no longer publish (`PublishConflict`, its branch intact). Any other failure at
+the compaction's commit, such as a 5xx, propagates as DuckDB's own `TransactionException`: the
+outcome is unknown, so the table is looked at before a retry. Compaction therefore runs when no run is open, or the open
 runs restart afterwards.
 
 ### Storage access: each client brings its own
@@ -125,7 +133,9 @@ runs restart afterwards.
   (ADR 0001), so a signing endpoint would let anyone who reaches the catalog read and write the
   bucket's table data. A warehouse created earlier keeps remote signing until
   `ibergrid catalog update-credential` rewrites its profile (or, locally, until
-  `make down-volumes`).
+  `make down-volumes`). That command overlays only the profile fields this code owns (flavor,
+  endpoint, region, path-style addressing, remote signing) on the current profile, keeps every
+  other field as it is, and logs the owned fields that changed.
 - PyIceberg: `ibergrid.lake.catalog.LakeCatalog` drops any vended credential from the table
   config and applies the client's FileIO properties (`PyArrowFileIO`, `IBERGRID_S3_ENDPOINT_URL`,
   the keys, the region, path-style addressing and remote signing off) on top. That overrides a
@@ -148,7 +158,7 @@ sequenceDiagram
   participant Cat as Lakekeeper
   participant Audit as Audit (DuckDB or PyIceberg)
   Run->>Cat: start: create branch audit-<run> at main's head (the base)
-  Run->>Cat: write: append / overwrite on audit-<run>, snapshot property ibergrid.run-id
+  Run->>Cat: write: append / overwrite / delete on audit-<run>, snapshot property ibergrid.run-id
   Run->>Audit: head: snapshot S, checked to descend from the base
   Audit->>Cat: read snapshot S, run the checks (phase 4)
   Run->>Cat: publish(expected_head=S): one commit requiring table UUID, main == base,<br/>branch == S; sets main to S, removes the branch, sets checkpoint properties
@@ -157,11 +167,16 @@ sequenceDiagram
 
 1. `wap.start(table, run_id)` records `main`'s head as the base and creates `audit-<run_id>`
    there (the commit requires that the branch does not exist). On a table without snapshots the
-   base is `None` and the branch starts at an empty snapshot staged for it, which no ref but the
-   branch points at and which is never published.
+   base is `None` and the branch starts at an empty snapshot staged for it, which only the branch
+   points at. It is never `main`'s head, but it becomes the parent of `main`'s first snapshot:
+   DuckDB cannot time-travel to it (empty manifest list), while scans of later snapshots, compaction
+   and both expiries work (†: the last three measured in review).
 2. `wap.write(table, run, data, overwrite_filter=None)` appends, or replaces the rows matching
-   the filter, on the branch only. An append of zero rows commits nothing. A write to a branch
-   that no longer exists (published or discarded) raises instead of starting a new one.
+   the filter, on the branch only. An append of zero rows commits nothing, and an overwrite of
+   zero rows is a delete (the trap above). A write to a branch that no longer exists (published
+   or discarded) raises instead of starting a new one. Concurrent changes that make a write or a
+   start fail (a lost commit race, an overwrite whose files were removed, two starts of one run
+   id) raise `WapError`; nothing is published in any of them.
 3. The audit reads exactly one snapshot: `wap.head(table, run)` returns it (or `wap.read`, with
    the rows), and DuckDB reads it with `duck.scan(con, table, snapshot_id=...)`. Both refuse a
    branch that no longer descends from the snapshot the run started from (the re-created branch
@@ -172,11 +187,19 @@ sequenceDiagram
    base and the branch at `expected_head`, and the updates "set `main` to `expected_head`",
    "remove the branch" and, if given, "set these table properties". PyIceberg's
    `manage_snapshots()` is not used for this: its transaction keeps a single requirement per type,
-   so chaining both ref updates would drop the branch guard.
+   so chaining both ref updates would drop the branch guard. A run that wrote nothing but sets
+   properties would not move `main`, and a commit that leaves `main` where it was is not ordered
+   by "`main` at the base": a stale checkpoint would win. Such a run first gets a checkpoint
+   snapshot, an empty append on its branch (no data change, the run id in its summary), and
+   publishes that, so `main` moves and the next publish from the same base conflicts. On a table
+   without snapshots there is nothing to append to that DuckDB could read, so a checkpoint needs
+   data there (`WapError`).
 5. Publishing again is safe: when the branch is gone and `expected_head` is in `main`'s history
-   since the base, `publish` returns it. The same check runs after a commit whose answer was lost
-   (`CommitStateUnknownException`, a 5xx): a landed commit is reported as published, one that did
-   not land raises `WapError` so the caller publishes again.
+   since the base (for a checkpoint run, a snapshot with its run id), `publish` returns it; a
+   discarded run raises `WapError`. An empty run without properties changes nothing, so publishing
+   it after a discard also succeeds: that result carries no proof. The same check runs after a
+   commit whose answer was lost (`CommitStateUnknownException`, a 5xx): a landed commit is
+   reported as published, one that did not land raises `WapError` so the caller publishes again.
 6. `wap.discard(table, run)` removes the branch; snapshot expiry later drops its snapshots and
    keeps the whole lineage of every open branch back to its fork from `main`.
 
@@ -197,11 +220,13 @@ races again on Lakekeeper (`tests/integration/test_lake.py`):
 ### Checkpoints travel with the data
 
 Run and stream checkpoints, such as Kafka offsets per partition, are table properties committed
-in the same catalog commit as the data they describe: `publish(..., set_properties=...)` for a
-WAP run, and one PyIceberg transaction (`tx.set_properties(...)` and `tx.append(...)`) for a
-direct write; both are one metadata version, pinned by unit tests. Snapshot summaries are not a
-durable place for them: compaction makes `main`'s head a `replace` snapshot without the run's
-properties, and expiry drops the snapshots that had them.
+only through `wap.publish(..., set_properties=...)`: in the same catalog commit as the data they
+describe, and fenced by "`main` at the run's base", so two consumers that read the same offsets
+cannot both land (pinned: the second publish conflicts, also for runs that wrote nothing). A
+direct PyIceberg transaction (`tx.set_properties(...)` and `tx.append(...)`) is not an
+alternative: it is atomic but not fenced, and the trap above lands the batch twice. Snapshot
+summaries are not a durable place for checkpoints either: compaction makes `main`'s head a
+`replace` snapshot without the run's properties, and expiry drops the snapshots that had them.
 
 ## Consequences
 
@@ -219,18 +244,25 @@ properties, and expiry drops the snapshots that had them.
 - Bad: the app image grows to 789 MB, and the DuckDB extensions come from DuckDB's repository at
   build time (signed, built for the locked version, not pinned by digest).
 - Neutral: unit tests and host clients download the DuckDB extensions once (about 83 MB on disk).
+- Neutral: PyIceberg 0.12's REST catalog has no request timeout setting, so a catalog that stops
+  answering mid-request blocks the client until the connection fails.
 
 ### For the next phases
 
 - **Phase 1, batch ingestion (REData and OMIE connectors, Dagster).** Each connector run is one
   WAP run: `ensure_table` from the registry (the Bronze specs land in `ibergrid.lake.registry`),
   `start`, `write`, `head`, checks, `publish(expected_head)`. The run id is the Dagster run id
-  plus the partition key, so a branch names its run, and `AuditBranch` is plain data that ops
-  can pass along. On `PublishConflict` the run is redone from the new `main`, never forced; a
-  partition without rows commits nothing. `lake init` runs before the first materialization.
-- **Phase 2, streaming lane.** Each micro-batch is a WAP run (or a direct transaction) whose
-  publish sets the consumer offsets as table properties in the same commit; a restarted consumer
-  resumes from the offsets on `main`: the basis for exactly-once writes into Bronze.
+  plus the partition key and the attempt (`<partition>-<attempt>`): `start` refuses a run id
+  whose branch exists, but after a discard a retry with the same id would share the first
+  attempt's branch name, and a straggler from that attempt could write to it. `AuditBranch` is
+  plain data that ops can pass along. On `PublishConflict` the run is redone from the new `main`,
+  never forced. A partition without rows writes no data snapshot, but its run still commits the
+  branch creation and removal, and on a table without snapshots a staged empty root that stays
+  as an orphan until expiry. `lake init` runs before the first materialization.
+- **Phase 2, streaming lane.** Each micro-batch is a WAP run whose publish sets the consumer
+  offsets as table properties in the same, fenced commit (a batch that wrote nothing publishes a
+  checkpoint snapshot); a restarted consumer resumes from the offsets on `main`: the basis for
+  exactly-once writes into Bronze. The first checkpoint of a table needs at least one row.
   Concurrent runs on one table conflict instead of interleaving, so one writer owns a stream's
   table and retries a conflict from the new `main`.
 - **Phase 3, dbt medallion.** Open question: dbt-duckdb writing Iceberg through DuckDB's attached

@@ -100,7 +100,8 @@ docker compose run --rm --no-deps doctor lake describe <ns>.<table> # snapshot, 
 Clients use their own S3 endpoint and keys (`IBERGRID_S3_*`), so the same code runs from the host
 against the published ports, as the integration tests do. Warehouses are created with remote
 signing off; one created by an earlier version keeps it on until `make down-volumes && make up`
-(local) or `catalog update-credential` (server, see `.env.example`) rewrites its storage profile.
+(local) or `catalog update-credential` (server, see `.env.example`) rewrites the storage-profile
+fields this code owns.
 
 ## Services
 
