@@ -1,11 +1,15 @@
-# App image: the `ibergrid` CLI (catalog-init and doctor in compose, later the pipelines).
-# Three stages: `uv` pins the uv binary by digest, `builder` installs the locked dependencies into a
-# virtual environment and downloads DuckDB's extensions, and the final stage copies only those two
-# directories: no uv, no compilers, no cache, and no extension download at runtime.
+# Two images from one file, both on the same locked environment:
+#   app (the default, last stage): the `ibergrid` CLI (catalog-init, doctor, ingest in compose);
+#   orchestration (--target orchestration): the same plus Dagster's `orchestration` dependency
+#   group and its instance configuration, for the dagster-code, -webserver and -daemon services.
+# `uv` pins the uv binary by digest; `deps` installs the locked runtime dependencies into a
+# virtual environment and downloads DuckDB's extensions; each builder adds the project (and, for
+# orchestration, Dagster); the final stages copy only the environment and the extensions: no uv,
+# no compilers, no cache, and no extension download at runtime.
 
 FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
-FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS deps
 
 COPY --from=uv /uv /bin/uv
 
@@ -23,20 +27,28 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --no-editable \
  && .venv/bin/python -c "import duckdb; c = duckdb.connect(config={'extension_directory': '/app/duckdb-extensions'}); [c.install_extension(e) for e in ('httpfs', 'avro', 'iceberg')]"
 
-# Then the project itself, installed into the environment (not editable, so src/ is not needed).
+
+# The project itself, installed into the environment (not editable, so src/ is not needed).
+FROM deps AS builder
 COPY README.md LICENSE ./
 COPY src ./src
 RUN uv sync --locked --no-dev --no-editable
 
 
-FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+# The same with Dagster, its dependencies in a layer of their own.
+FROM deps AS builder-orchestration
+RUN uv sync --locked --no-dev --group orchestration --no-install-project --no-editable
+COPY README.md LICENSE ./
+COPY src ./src
+RUN uv sync --locked --no-dev --group orchestration --no-editable
+
+
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
 
 LABEL org.opencontainers.image.source="https://github.com/jaisato/ibergrid-lakehouse" \
-      org.opencontainers.image.title="ibergrid-lakehouse" \
-      org.opencontainers.image.description="IberGrid Lakehouse CLI: catalog bootstrap, lake tables and readiness checks" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT"
@@ -45,13 +57,40 @@ LABEL org.opencontainers.image.source="https://github.com/jaisato/ibergrid-lakeh
 RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin ibergrid
 
 WORKDIR /app
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/duckdb-extensions /app/duckdb-extensions
+COPY --from=deps /app/duckdb-extensions /app/duckdb-extensions
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     IBERGRID_LOG_FORMAT=json \
     IBERGRID_DUCKDB_EXTENSION_DIRECTORY=/app/duckdb-extensions
+
+
+FROM runtime AS orchestration
+
+LABEL org.opencontainers.image.title="ibergrid-lakehouse-orchestration" \
+      org.opencontainers.image.description="IberGrid Lakehouse orchestration: Dagster code server, webserver and daemon"
+
+COPY --from=builder-orchestration /app/.venv /app/.venv
+# dagster.yaml and workspace.yaml (ADR 0005). The home is writable for Dagster's own files; the
+# compute-log directory is a volume mount point, owned by the user so a new volume inherits it.
+COPY config/dagster/ /opt/dagster/home/
+RUN mkdir -p /opt/dagster/compute-logs \
+ && chown 10001:10001 /opt/dagster/home /opt/dagster/compute-logs
+
+ENV DAGSTER_HOME=/opt/dagster/home
+
+USER 10001
+
+WORKDIR /opt/dagster/home
+CMD ["dagster", "--version"]
+
+
+FROM runtime AS app
+
+LABEL org.opencontainers.image.title="ibergrid-lakehouse" \
+      org.opencontainers.image.description="IberGrid Lakehouse CLI: catalog bootstrap, lake tables, ingestion and readiness checks"
+
+COPY --from=builder /app/.venv /app/.venv
 
 USER 10001
 

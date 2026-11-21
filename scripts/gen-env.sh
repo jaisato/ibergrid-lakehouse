@@ -23,6 +23,7 @@ IBERGRID_S3_ACCESS_KEY=ibergrid-$(random_hex 8)
 IBERGRID_S3_SECRET_KEY=$(random_hex 24)
 LAKEKEEPER_DB_PASSWORD=$(random_hex 24)
 LAKEKEEPER_ENCRYPTION_KEY=$(random_hex 32)
+DAGSTER_DB_PASSWORD=$(random_hex 24)
 ENV
 
 echo "created $target with random local secrets"

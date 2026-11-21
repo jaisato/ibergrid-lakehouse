@@ -1,0 +1,51 @@
+# Dagster instance (ADR 0005), baked into the orchestration image as $DAGSTER_HOME/dagster.yaml and
+# shared by dagster-code (which runs the runs), dagster-webserver and dagster-daemon.
+
+# Runs, event logs (materializations and their metadata), schedules and their ticks: Postgres,
+# the orchestration-db service. The orchestration-migrate one-shot (`dagster instance migrate`)
+# creates or upgrades the schema before the services start, so they never race to create it.
+storage:
+  postgres:
+    postgres_db:
+      hostname: orchestration-db
+      port: 5432
+      db_name: dagster
+      username: dagster
+      password:
+        env: DAGSTER_PG_PASSWORD
+
+# The daemon dequeues runs. Every pool (REData, OMIE) has a limit of 1, checked per run, before it
+# is launched: one writer per table and one request a second per source (ADR 0003, ADR 0004).
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+concurrency:
+  pools:
+    default_limit: 1
+    granularity: run
+  runs:
+    max_concurrent_runs: 3
+
+# Runs execute as subprocesses of the code server that holds the code (dagster-code): no Docker
+# socket anywhere. The run worker shares that container's memory limit.
+run_launcher:
+  module: dagster._core.launcher
+  class: DefaultRunLauncher
+
+# The default launcher cannot report a dead run worker, so a run whose code server restarted stays
+# "started" until the runtime limit cancels it; the sweeper then frees its audit branches.
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 180
+  cancel_timeout_seconds: 180
+  max_runtime_seconds: 43200
+
+# Written by the run workers in dagster-code, read by the webserver: one shared volume.
+compute_logs:
+  module: dagster._core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: /opt/dagster/compute-logs
+
+telemetry:
+  enabled: false
