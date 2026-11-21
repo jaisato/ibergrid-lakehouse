@@ -24,7 +24,7 @@ The invariants, each pinned by a test:
 """
 
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import UUID
@@ -42,6 +42,7 @@ from pyiceberg.table.snapshots import ancestors_of
 from pyiceberg.table.update import (
     AssertRefSnapshotId,
     AssertTableUUID,
+    RemovePropertiesUpdate,
     RemoveSnapshotRefUpdate,
     SetPropertiesUpdate,
     SetSnapshotRefUpdate,
@@ -187,12 +188,14 @@ def publish(
     expected_head: int | None,
     *,
     set_properties: Mapping[str, str] | None = None,
+    remove_properties: Collection[str] = (),
 ) -> int | None:
     """Move ``main`` to the audited snapshot and remove the branch, in one catalog commit.
 
     ``expected_head`` is what the audit read (``head`` or ``read``). ``set_properties`` (a
     stream's Kafka offsets, for example) are set in the same commit, so they change together with
-    ``main`` or not at all, and only if ``main`` is still at the run's base. A run that wrote
+    ``main`` or not at all, and only if ``main`` is still at the run's base; so are
+    ``remove_properties`` removed. A run that wrote
     nothing still has to move ``main`` for that guard to order it against other publishes, so it
     gets a checkpoint snapshot of its own: an empty append (no data change) on the branch, which
     is then published. When ``main`` holds no live data file (no snapshot yet, or everything
@@ -209,7 +212,9 @@ def publish(
     """
     table.refresh()
     _check_table(table, audit)
-    checkpoint = bool(set_properties) and expected_head == audit.base_snapshot_id
+    # Removing a property (a checkpoint nobody writes any more) is fenced like setting one.
+    changes_properties = bool(set_properties) or bool(remove_properties)
+    checkpoint = changes_properties and expected_head == audit.base_snapshot_id
     if checkpoint and (expected_head is None or not _has_data(table, expected_head)):
         raise WapError(
             f"run {audit.run_id!r} wrote nothing and main holds no data file: a checkpoint "
@@ -265,6 +270,8 @@ def publish(
         updates = (move, *updates)
     if set_properties:
         updates = (*updates, SetPropertiesUpdate(updates=dict(set_properties)))
+    if remove_properties:
+        updates = (*updates, RemovePropertiesUpdate(removals=list(remove_properties)))
     try:
         table.catalog.commit_table(table, requirements, updates)
     except CommitFailedException as exc:
