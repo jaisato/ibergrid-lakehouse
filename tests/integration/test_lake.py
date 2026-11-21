@@ -399,7 +399,8 @@ def test_the_app_image_runs_init_wap_and_describe_in_the_network(namespace: str)
     # The registry's Bronze tables: created by the first init on this stack, unchanged afterwards.
     assert re.fullmatch(
         r"lake: bronze\.redata_observations (created|unchanged)\n"
-        r"lake: bronze\.omie_day_ahead_prices (created|unchanged)\n",
+        r"lake: bronze\.omie_day_ahead_prices (created|unchanged)\n"
+        r"lake: bronze\.redata_demand_stream (created|unchanged)\n",
         result.stdout,
     )
 

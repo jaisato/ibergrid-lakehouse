@@ -50,6 +50,7 @@ def initialised() -> None:
     assert "lake: bronze.omie_day_ahead_prices " in first.stdout
     assert second.stdout == (
         "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
+        "lake: bronze.redata_demand_stream unchanged\n"
     ), second.stderr
 
 

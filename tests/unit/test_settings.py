@@ -115,3 +115,21 @@ def test_source_limits_are_enforced(
         Settings()
 
     assert describe_validation_error(caught.value).startswith(f"  IBERGRID_{source}_{name}: ")
+
+
+@pytest.mark.usefixtures("credentials")
+def test_the_stream_reads_its_own_prefix_and_the_broker_its_scram_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IBERGRID_BROKER_USERNAME", "ibergrid-consumer")
+    monkeypatch.setenv("IBERGRID_BROKER_PASSWORD", "scram-password-do-not-log")
+    monkeypatch.setenv("IBERGRID_STREAM_FLUSH_AGE", "30")
+
+    settings = Settings()
+
+    assert settings.broker.username == "ibergrid-consumer"
+    assert "scram-password-do-not-log" not in repr(settings)
+    assert settings.stream.topic == "redata.demand.realtime.v1"
+    assert settings.stream.group_id == "ibergrid.stream.bronze"
+    assert (settings.stream.flush_age, settings.stream.flush_records) == (30.0, 10_000)
+    assert settings.stream.hold_at is None

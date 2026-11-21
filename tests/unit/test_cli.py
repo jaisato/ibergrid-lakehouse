@@ -191,9 +191,11 @@ def test_lake_init_creates_the_bronze_tables(
 
     assert first.stdout == (
         "lake: bronze.redata_observations created\nlake: bronze.omie_day_ahead_prices created\n"
+        "lake: bronze.redata_demand_stream created\n"
     ), first.output
     assert second.stdout == (
         "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
+        "lake: bronze.redata_demand_stream unchanged\n"
     )
     table = catalog.load_table(("bronze", "redata_observations"))
     assert [f.name for f in table.spec().fields] == ["dataset", "ts_utc_month"]
