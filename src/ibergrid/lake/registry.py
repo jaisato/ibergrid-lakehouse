@@ -81,8 +81,9 @@ OMIE_DAY_AHEAD_PRICES = TableSpec(
 
 # One row per event the streaming lane accepted (ADR 0006), append-only: an event's key is
 # (series_id, ts_utc), and a revision is a new row with another content_sha256; Silver (phase 3)
-# keeps the latest. Kafka coordinates make each row traceable to its message, and the consumer's
-# offsets live in this table's properties (the checkpoint). Partitioned like the batch table, by
+# keeps the latest: the highest kafka_offset within the latest topic incarnation (kafka_topic_id).
+# Kafka coordinates make each row traceable to its message, and the consumer's checkpoint lives in
+# this table's properties. Partitioned like the batch table, by
 # month: 1,150 points a day plus their revisions (REE reprograms the rest of the day every few
 # minutes: tens of thousands of rows a day, ADR 0006) still make a day partition a file of a few
 # megabytes after compaction (phase 4), and a month is what reads prune by. Manifest merging
@@ -108,6 +109,8 @@ REDATA_DEMAND_STREAM = TableSpec(
         NestedField(15, "kafka_timestamp", TimestamptzType(), required=False),
         NestedField(16, "ingested_at", TimestamptzType(), required=True, doc="the flush's"),
         NestedField(17, "run_id", StringType(), required=True, doc="the flush's WAP run"),
+        # Optional only so that ensure_table adds it to a table created before it existed.
+        NestedField(18, "kafka_topic_id", StringType(), required=False, doc="topic incarnation"),
     ),
     partition_spec=PartitionSpec(
         PartitionField(source_id=4, field_id=1000, transform=MonthTransform(), name="ts_utc_month"),

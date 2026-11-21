@@ -5,7 +5,9 @@ import os
 import socket
 import threading
 import urllib.parse
+import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +17,13 @@ from typing import Any
 
 import pytest
 import structlog
-from confluent_kafka import OFFSET_BEGINNING, KafkaError, TopicPartition
+from confluent_kafka import (
+    OFFSET_BEGINNING,
+    KafkaError,
+    KafkaException,
+    TopicCollection,
+    TopicPartition,
+)
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.exceptions import NoSuchTableError
 
@@ -345,13 +353,16 @@ class FakeMessage:
 
 
 class FakeBroker:
-    """Topics as in-memory logs, with a consumer's and a producer's view on them: assignment,
-    consume, commits and watermarks, produce with delivery callbacks and headers."""
+    """Topics as in-memory logs, with a consumer's, a producer's and an admin's view on them:
+    assignment, consume, commits and watermarks; produce with delivery callbacks and headers;
+    topic ids. ``recreate``, ``truncate`` and ``retain_from`` change a topic under a consumer."""
 
     def __init__(self, partitions: dict[str, int]) -> None:
         self.logs: dict[str, list[list[FakeMessage]]] = {
             topic: [[] for _ in range(count)] for topic, count in partitions.items()
         }
+        self.topic_ids = {topic: uuid.uuid4().hex for topic in partitions}
+        self.low: dict[tuple[str, int], int] = {}  # log start offsets, after retention
         self.positions: dict[int, int] = {}
         self.assignments: list[dict[int, int]] = []
         self.commits: list[dict[int, int]] = []
@@ -416,7 +427,36 @@ class FakeBroker:
     def get_watermark_offsets(
         self, partition: TopicPartition, timeout: float = -1, cached: bool = False
     ) -> tuple[int, int]:
-        return 0, len(self.logs[partition.topic][partition.partition])
+        key = (partition.topic, partition.partition)
+        return self.low.get(key, 0), len(self.logs[partition.topic][partition.partition])
+
+    # The admin's side.
+    def describe_topics(self, topics: TopicCollection, **_kwargs: Any) -> dict[str, Future[Any]]:
+        found: dict[str, Future[Any]] = {}
+        for name in topics.topic_names:
+            found[name] = Future()
+            if name in self.topic_ids:
+                found[name].set_result(SimpleNamespace(topic_id=self.topic_ids[name]))
+            else:
+                found[name].set_exception(
+                    KafkaException(KafkaError(KafkaError.UNKNOWN_TOPIC_OR_PART))
+                )
+        return found
+
+    # What happens to a topic under a consumer.
+    def recreate(self, topic: str) -> None:
+        """Deleted and created again: another id, empty logs, offsets from 0."""
+        self.topic_ids[topic] = uuid.uuid4().hex
+        self.logs[topic] = [[] for _ in self.logs[topic]]
+        self.low = {key: low for key, low in self.low.items() if key[0] != topic}
+
+    def truncate(self, topic: str, partition: int, length: int) -> None:
+        """The broker lost the tail of the log (fsync bypassed): later offsets are reused."""
+        del self.logs[topic][partition][length:]
+
+    def retain_from(self, topic: str, partition: int, low: int) -> None:
+        """Retention deleted the messages before ``low``."""
+        self.low[(topic, partition)] = low
 
     def close(self) -> None:
         pass

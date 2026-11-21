@@ -4,6 +4,7 @@ import signal
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from enum import StrEnum
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -11,6 +12,7 @@ from typing import Annotated, NoReturn
 import duckdb
 import typer
 from confluent_kafka import Consumer, KafkaException, Producer
+from confluent_kafka.admin import AdminClient
 from pydantic import ValidationError
 from pyiceberg.exceptions import NoSuchTableError, RESTError
 from pyiceberg.table import Table
@@ -43,11 +45,28 @@ from ibergrid.sources.redata.client import RedataClient, RedataError
 from ibergrid.sources.redata.datasets import DATASETS
 from ibergrid.sources.redata.ingest import ChunkReport, ingest
 from ibergrid.stream import health
-from ibergrid.stream.consumer import ConsumerError, StreamConsumer, describe_status
-from ibergrid.stream.kafka import BrokerConfigError, consumer_config, producer_config
+from ibergrid.stream.consumer import (
+    ConsumerError,
+    StreamConsumer,
+    describe_status,
+    read_checkpoint,
+    reset_checkpoint,
+)
+from ibergrid.stream.kafka import (
+    BrokerConfigError,
+    client_config,
+    consumer_config,
+    producer_config,
+)
 from ibergrid.stream.producer import DeliveryFailed, StreamProducer, replay_chunk
 
 SHOWN_DAYS = 5  # incomplete days named per chunk line
+
+
+class Position(StrEnum):
+    earliest = "earliest"
+    latest = "latest"
+
 
 app = typer.Typer(
     help="IberGrid Lakehouse operations.",
@@ -307,7 +326,9 @@ def stream_produce(
         elif once:
             report = producer.poll_once()
         else:
-            producer.run(_stop_on_signals(), stream.poll_interval, stream.heartbeat_path)
+            watchdog = health.Watchdog(stream.watchdog_timeout)
+            watchdog.start()
+            producer.run(_stop_on_signals(), stream.poll_interval, stream.heartbeat_path, watchdog)
             return
     except (RedataError, DeliveryFailed) as exc:
         _fail(exc)
@@ -318,20 +339,36 @@ def stream_produce(
 
 
 @stream_app.command("consume")
-def stream_consume() -> None:
+def stream_consume(
+    allow_other_checkpoints: Annotated[
+        bool,
+        typer.Option(
+            "--allow-other-checkpoints",
+            help="Start although the table holds another consumer group's checkpoint "
+            "(a deliberate migration).",
+        ),
+    ] = False,
+) -> None:
     """Write the topic into bronze.redata_demand_stream as WAP micro-batches whose publish
-    commits the Kafka offsets; resume from those offsets. Runs until SIGTERM, then flushes."""
+    commits the checkpoint; resume from it. Runs until SIGTERM, then flushes."""
     settings = _load_settings()
     table = _stream_table(settings)
+    kafka, admin = _stream_clients(settings, "ibergrid-stream-consumer")
     try:
-        kafka = Consumer(
-            consumer_config(settings.broker, "ibergrid-stream-consumer", settings.stream.group_id)
-        )
         dlq = Producer(producer_config(settings.broker, "ibergrid-stream-consumer-dlq"))
-    except (BrokerConfigError, KafkaException) as exc:
+    except KafkaException as exc:
         _fail(exc)
+    watchdog = health.Watchdog(settings.stream.watchdog_timeout)
+    watchdog.start()
     try:
-        StreamConsumer(table, kafka, dlq, settings.stream).run(_stop_on_signals())
+        StreamConsumer(
+            table,
+            kafka,
+            dlq,
+            admin,
+            settings.stream,
+            allow_other_checkpoints=allow_other_checkpoints,
+        ).run(_stop_on_signals(), watchdog)
     except KafkaException as exc:
         _fail(exc)
     finally:
@@ -344,9 +381,13 @@ def stream_health(
     max_age: Annotated[
         float, typer.Option(min=1, help="Seconds a heartbeat stays fresh.")
     ] = health.MAX_AGE,
+    max_failing: Annotated[
+        float, typer.Option(min=1, help="Seconds the loop may keep failing.")
+    ] = health.MAX_FAILING,
 ) -> None:
-    """Exit 0 while this container's stream service has beaten within --max-age seconds."""
-    ok, detail = health.check(_load(StreamSettings).heartbeat_path, max_age)
+    """Exit 0 while this container's stream service has beaten within --max-age seconds and has
+    not been failing for longer than --max-failing."""
+    ok, detail = health.check(_load(StreamSettings).heartbeat_path, max_age, max_failing)
     typer.echo(detail, err=not ok)
     if not ok:
         raise typer.Exit(1)
@@ -357,19 +398,45 @@ def stream_status() -> None:
     """The checkpoint in the table, the lag behind each partition and the dead letters."""
     settings = _load_settings()
     table = _stream_table(settings)
+    kafka, admin = _stream_clients(settings, "ibergrid-stream-status")
     try:
-        kafka = Consumer(
-            consumer_config(settings.broker, "ibergrid-stream-status", settings.stream.group_id)
-        )
-    except (BrokerConfigError, KafkaException) as exc:
-        _fail(exc)
-    try:
-        for line in describe_status(table, kafka, settings.stream):
+        for line in describe_status(table, kafka, admin, settings.stream):
             typer.echo(line)
     except (ConsumerError, KafkaException) as exc:
         _fail(exc)
     finally:
         kafka.close()
+
+
+@stream_app.command("reset")
+def stream_reset(
+    to: Annotated[
+        Position,
+        typer.Option(help="earliest: write what the topic retains again; latest: skip it."),
+    ],
+) -> None:
+    """Point the consumer's checkpoint at the topic as it is now, after the topic was recreated
+    or lost its tail (the consumer refuses to start then). Stop the consumer first."""
+    settings = _load_settings()
+    table = _stream_table(settings)
+    kafka, admin = _stream_clients(settings, "ibergrid-stream-reset")
+    try:
+        before = read_checkpoint(table, settings.stream.group_id)
+        after = reset_checkpoint(table, kafka, admin, settings.stream, to.value)
+    except (ConsumerError, KafkaException, WapError) as exc:
+        _fail(exc)
+    finally:
+        kafka.close()
+    typer.echo(f"stream: checkpoint was {None if before is None else before.to_json()}")
+    typer.echo(f"stream: checkpoint is  {after.to_json()}")
+
+
+def _stream_clients(settings: Settings, client_id: str) -> tuple[Consumer, AdminClient]:
+    try:
+        config = consumer_config(settings.broker, client_id, settings.stream.group_id)
+        return Consumer(config), AdminClient(client_config(settings.broker, client_id))
+    except (BrokerConfigError, KafkaException) as exc:
+        _fail(exc)
 
 
 def _stream_table(settings: Settings) -> Table:

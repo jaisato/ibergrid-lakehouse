@@ -4,6 +4,7 @@ catalog: the settings each command needs, what it prints and how it fails."""
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +35,19 @@ def broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
     fake = FakeBroker({TOPIC: 3, DLQ: 1})
     monkeypatch.setattr(cli, "Producer", lambda _config: fake)
     monkeypatch.setattr(cli, "Consumer", lambda _config: fake)
+    monkeypatch.setattr(cli, "AdminClient", lambda _config: fake)
     monkeypatch.setenv("IBERGRID_BROKER_USERNAME", "ibergrid-test")
     monkeypatch.setenv("IBERGRID_BROKER_PASSWORD", "not-a-secret")
     return fake
+
+
+@pytest.fixture(autouse=True)
+def no_watchdog_thread(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The commands' watchdogs, recorded instead of started: a started one would end the test
+    process once nothing touches it any more."""
+    started: list[float] = []
+    monkeypatch.setattr(health.Watchdog, "start", lambda self: started.append(self.timeout))
+    return started
 
 
 @pytest.fixture
@@ -78,14 +89,17 @@ def test_produce_once_polls_redata_and_reports_its_failures(
 def test_produce_runs_its_loop_with_the_configured_cadence(
     broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[float, str]] = []
+    calls: list[tuple[float, str, float]] = []
     monkeypatch.setattr(
-        StreamProducer, "run", lambda _self, _stop, interval, beat: calls.append((interval, beat))
+        StreamProducer,
+        "run",
+        lambda _self, _stop, interval, beat, dog: calls.append((interval, beat, dog.timeout)),
     )
     monkeypatch.setenv("IBERGRID_STREAM_POLL_INTERVAL", "60")
+    monkeypatch.setenv("IBERGRID_STREAM_WATCHDOG_TIMEOUT", "600")
 
     assert runner.invoke(app, ["stream", "produce"]).exit_code == 0
-    assert calls == [(60.0, health.HEARTBEAT_PATH)]
+    assert calls == [(60.0, health.HEARTBEAT_PATH, 600.0)]
 
 
 def test_the_stream_commands_refuse_a_broker_without_credentials(
@@ -157,6 +171,42 @@ def test_health_reads_this_containers_heartbeat(
     result = runner.invoke(app, ["stream", "health", "--max-age", "60"])
     assert result.exit_code == 0
     assert '"role": "producer"' in result.stdout
+
+    health.beat(tmp_path / "heartbeat", role="producer", failing_since=time.time() - 120)
+    assert runner.invoke(app, ["stream", "health", "--max-failing", "300"]).exit_code == 0
+    result = runner.invoke(app, ["stream", "health", "--max-failing", "60"])
+    assert result.exit_code == 1
+    assert "failing for 120 s" in result.stderr
+
+
+def test_reset_points_the_checkpoint_at_the_recreated_topic(
+    broker: FakeBroker, stream_table: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner.invoke(app, ["stream", "produce", "--source-file", str(REDATA_FIXTURES / FIXTURE)])
+    stop = threading.Event()
+    consume = broker.consume
+
+    def consume_then_stop(num_messages: int = 1, timeout: float = -1) -> Any:
+        found = consume(num_messages, timeout)
+        if not found:
+            stop.set()
+        return found
+
+    monkeypatch.setattr(broker, "consume", consume_then_stop)
+    monkeypatch.setattr(cli, "_stop_on_signals", lambda: stop)
+    monkeypatch.setenv("IBERGRID_STREAM_HEARTBEAT_PATH", str(tmp_path / "heartbeat"))
+    assert runner.invoke(app, ["stream", "consume"]).exit_code == 0
+    old = broker.topic_ids[TOPIC]
+    broker.recreate(TOPIC)
+
+    refused = runner.invoke(app, ["stream", "status"])
+    result = runner.invoke(app, ["stream", "reset", "--to", "latest"])
+
+    assert "NOT the checkpoint's" in refused.stdout
+    assert result.exit_code == 0, result.output
+    assert old in result.stdout.splitlines()[0]
+    assert broker.topic_ids[TOPIC] in result.stdout.splitlines()[1]
+    assert runner.invoke(app, ["stream", "reset", "--to", "sideways"]).exit_code == 2
 
 
 def test_sigterm_asks_the_loops_to_stop() -> None:

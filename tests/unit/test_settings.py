@@ -130,6 +130,6 @@ def test_the_stream_reads_its_own_prefix_and_the_broker_its_scram_user(
     assert settings.broker.username == "ibergrid-consumer"
     assert "scram-password-do-not-log" not in repr(settings)
     assert settings.stream.topic == "redata.demand.realtime.v1"
-    assert settings.stream.group_id == "ibergrid.stream.bronze"
+    assert settings.stream.group_id == "redata-demand-to-bronze"
     assert (settings.stream.flush_age, settings.stream.flush_records) == (30.0, 10_000)
-    assert settings.stream.hold_at is None
+    assert settings.stream.watchdog_timeout == 900.0

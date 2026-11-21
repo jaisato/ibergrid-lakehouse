@@ -37,6 +37,30 @@ def test_a_stale_missing_or_garbled_heartbeat_is_unhealthy(tmp_path: Path) -> No
     assert not health.check(path, max_age=10)[0]
 
 
+def test_a_loop_failing_for_too_long_is_unhealthy(tmp_path: Path) -> None:
+    path = tmp_path / "heartbeat"
+    health.beat(path, failing_since=time.time() - 120)
+
+    assert health.check(path, max_age=10, max_failing=300)[0]
+    ok, detail = health.check(path, max_age=10, max_failing=60)
+    assert not ok
+    assert detail.startswith("failing for 120 s (limit 60 s)")
+    assert health.main(["--path", str(path), "--max-failing", "60"]) == 1
+
+
+def test_the_watchdog_ends_a_process_whose_loop_stopped_touching_it() -> None:
+    exits: list[int] = []
+    touched = health.Watchdog(0.2, exit=exits.append, every=0.05)
+    thread = touched.start()
+    for _ in range(6):
+        time.sleep(0.05)
+        touched.touch()
+    assert exits == []
+
+    thread.join(timeout=2)  # nobody touches it any more
+    assert exits == [health.WATCHDOG_EXIT]
+
+
 def test_the_module_entry_point_exits_by_freshness(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

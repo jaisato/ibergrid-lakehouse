@@ -27,10 +27,6 @@ from pydantic import (
     model_validator,
 )
 
-TOPIC = "redata.demand.realtime.v1"
-DLQ_TOPIC = "redata.demand.realtime.dlq.v1"
-STEP = timedelta(minutes=5)
-
 
 class ProducerInfo(BaseModel):
     """Who emitted the event, and when."""

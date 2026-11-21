@@ -113,9 +113,9 @@ class StreamSettings(BaseSettings):
 
     topic: str = "redata.demand.realtime.v1"
     dlq_topic: str = "redata.demand.realtime.dlq.v1"
-    # Names the checkpoint property and receives the offsets for lag visibility only: the
-    # table's property, not the group, is where the consumer resumes from.
-    group_id: str = Field(default="ibergrid.stream.bronze", pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    # Names the checkpoint property (ibergrid.stream.checkpoint.<group>) and receives the offsets
+    # for lag visibility only: the table's property, not the group, is where the consumer resumes.
+    group_id: str = Field(default="redata-demand-to-bronze", pattern=r"^[A-Za-z0-9._-]{1,100}$")
     # Producer: seconds between REData polls, and how long after local midnight it still asks
     # for yesterday, whose last points arrive after midnight.
     poll_interval: float = Field(default=300.0, gt=0)
@@ -127,11 +127,15 @@ class StreamSettings(BaseSettings):
     checkpoint_interval: float = Field(default=900.0, gt=0)
     # Days of the stream table read at startup to recognise exact duplicates.
     dedup_days: int = Field(default=3, gt=0)
-    # A run branch older than this (seconds, from the start time in its name) is a dead run's.
+    # A run branch older than this (seconds, from the start time in its name) is a dead run's;
+    # the consumer also sweeps them this often.
     stale_branch_age: float = Field(default=900.0, gt=0)
+    # Once a day the consumer expires its table's snapshots older than this many days.
+    snapshot_retention_days: int = Field(default=3, gt=0)
     heartbeat_path: str = HEARTBEAT_PATH
-    # Tests only (make chaos-stream): stop for good at this point of a flush, for a SIGKILL there.
-    hold_at: Literal["after-write", "after-publish"] | None = None
+    # A loop that has not gone round for this long (a request that never returns) ends the
+    # process, so that its container's restart policy recovers it.
+    watchdog_timeout: float = Field(default=900.0, gt=0)
 
 
 class OrchestrationSettings(BaseSettings):

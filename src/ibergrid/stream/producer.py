@@ -5,9 +5,8 @@ yesterday's until ``midnight_grace`` after local midnight, through the batch lan
 one request a second, bounded retries; a window without data is REData's 502, ADR 0003) and
 parser, and emits each point whose content changed since it last emitted that key. That memory is
 the process's own: after a restart the whole window goes out again and the consumer drops the
-exact repeats. A failed poll is logged and retried at the next tick. A failed delivery stops the
-process (its container restarts it), because events the broker did not acknowledge must not count
-as emitted.
+exact repeats. A failed poll is logged and retried at the next tick, a failed delivery too:
+events the broker did not acknowledge never count as emitted, so the next poll sends them again.
 """
 
 import json
@@ -27,7 +26,7 @@ from ibergrid.sources.redata.client import RedataError
 from ibergrid.sources.redata.datasets import DATASETS, MADRID, Chunk
 from ibergrid.sources.redata.normalize import parse
 from ibergrid.stream.contract import DemandEvent, ProducerInfo, content_sha256, describe
-from ibergrid.stream.health import beat
+from ibergrid.stream.health import Watchdog, beat
 
 log = structlog.get_logger(__name__)
 
@@ -143,18 +142,35 @@ class StreamProducer:
         self.seen = {key: seen for key, seen in self.seen.items() if seen[0] >= first}
         return PollReport(chunk.start, chunk.end, len(points), len(pending), suppressed, rejected)
 
-    def run(self, stop: threading.Event, interval: float, heartbeat: str) -> None:
-        """Poll every ``interval`` seconds until ``stop`` is set, beating while it waits."""
-        beat(heartbeat, role="producer", **self.totals)
+    def run(
+        self,
+        stop: threading.Event,
+        interval: float,
+        heartbeat: str,
+        watchdog: Watchdog | None = None,
+    ) -> None:
+        """Poll every ``interval`` seconds until ``stop`` is set, beating while it waits. A poll
+        that fails (REData, or a broker that did not acknowledge every event) is retried at the
+        next tick: nothing of it counts as emitted, so the next poll sends it again."""
+        failing_since: float | None = None
+
+        def alive() -> None:
+            if watchdog is not None:
+                watchdog.touch()
+            beat(heartbeat, role="producer", failing_since=failing_since, **self.totals)
+
+        alive()
         next_poll = time.monotonic()
         while not stop.is_set():
             started = time.monotonic()
             try:
                 report = self.poll_once()
-            except RedataError as exc:  # no answer, a refusal or an answer the parser refuses
+            except (RedataError, DeliveryFailed) as exc:
                 self.totals["failed_polls"] += 1
+                failing_since = failing_since or time.time()
                 log.warning("stream.producer.poll_failed", error=str(exc))
             else:
+                failing_since = None
                 self.totals["polls"] += 1
                 self.totals["emitted"] += report.emitted
                 self.totals["suppressed"] += report.suppressed
@@ -167,12 +183,12 @@ class StreamProducer:
                     rejected=report.rejected,
                     seconds=round(time.monotonic() - started, 2),
                 )
-            beat(heartbeat, role="producer", **self.totals)
+            alive()
             next_poll = max(next_poll + interval, time.monotonic())
             while (wait := next_poll - time.monotonic()) > 0 and not stop.wait(
                 min(wait, BEAT_EVERY)
             ):
-                beat(heartbeat, role="producer", **self.totals)
+                alive()
 
 
 def replay_chunk(payload: bytes) -> Chunk:

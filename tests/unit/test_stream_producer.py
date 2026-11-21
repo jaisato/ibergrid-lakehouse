@@ -14,6 +14,7 @@ from confluent_kafka import KafkaError, Producer
 from ibergrid.sources.redata.client import RedataError
 from ibergrid.sources.redata.datasets import Chunk
 from ibergrid.sources.redata.normalize import InvalidResponse
+from ibergrid.stream import health
 from ibergrid.stream.contract import DemandEvent
 from ibergrid.stream.producer import DeliveryFailed, StreamProducer, replay_chunk
 
@@ -176,34 +177,45 @@ def test_the_memory_of_emitted_points_keeps_only_the_window(broker: FakeBroker) 
     )
 
 
-def test_the_loop_polls_on_schedule_survives_a_failed_poll_and_beats(
+def test_the_loop_survives_failed_polls_and_failed_deliveries_and_beats(
     broker: FakeBroker, tmp_path: Path
 ) -> None:
+    """REData's 502, then a broker that does not acknowledge, then a good poll: the process stays
+    up, the unacknowledged events go out again, and the heartbeat says how long it failed."""
     stop = threading.Event()
     answers = Answers()
     calls = 0
+    heartbeat = tmp_path / "heartbeat"
+    seen: list[dict[str, object]] = []
 
     def flaky(chunk: Chunk) -> bytes:
         nonlocal calls
         calls += 1
+        seen.append(json.loads(heartbeat.read_text()))
+        broker.refuse = KafkaError(KafkaError._MSG_TIMED_OUT) if calls == 2 else None
         if calls == 1:
             raise RedataError("REData demanda/demanda-tiempo-real: HTTP 502 after 4 attempts")
-        stop.set()
+        if calls == 3:
+            stop.set()
         return answers(chunk)
 
     stream = StreamProducer(
         cast(Producer, broker), TOPIC, flaky, clock=clock("2026-11-18T12:00+01:00")
     )
-    heartbeat = tmp_path / "heartbeat"
+    dog = health.Watchdog(60)
 
-    stream.run(stop, interval=0.01, heartbeat=str(heartbeat))
+    stream.run(stop, interval=0.01, heartbeat=str(heartbeat), watchdog=dog)
 
-    assert calls == 2
+    assert calls == 3
+    assert [beat["failing_since"] is None for beat in seen] == [True, False, False]
+    assert seen[1]["failing_since"] == seen[2]["failing_since"]  # one streak of two failures
+    assert len(broker.messages(TOPIC)) == POINTS  # refused once, sent again in full
     assert json.loads(heartbeat.read_text()) | {"at": 0} == {
         "at": 0,
         "role": "producer",
+        "failing_since": None,
         "polls": 1,
-        "failed_polls": 1,
+        "failed_polls": 2,
         "emitted": POINTS,
         "suppressed": 0,
     }
