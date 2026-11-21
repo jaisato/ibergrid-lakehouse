@@ -144,6 +144,20 @@ def test_update_credential_also_turns_remote_signing_off(serve: Serve) -> None:
     assert set(call.body) == {"storage-profile", "storage-credential"}
 
 
+def test_update_credential_refuses_another_bucket(serve: Serve) -> None:
+    lakekeeper = FakeLakekeeper()
+    server = serve(lakekeeper)
+    bootstrap_catalog(admin_for(server), CATALOG, STORAGE)
+    moved = STORAGE.model_copy(update={"bucket": "ibergrid-other"})
+
+    with pytest.raises(
+        CatalogError, match="lives in s3://ibergrid/lakehouse, not s3://ibergrid-other"
+    ):
+        update_credential(admin_for(server), CATALOG, moved)
+
+    assert not [r for r in server.requests if r.path.endswith("/storage")]
+
+
 def test_update_credential_keeps_the_profile_fields_it_does_not_own(serve: Serve) -> None:
     lakekeeper = FakeLakekeeper()
     server = serve(lakekeeper)

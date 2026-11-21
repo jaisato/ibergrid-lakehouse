@@ -147,6 +147,14 @@ def update_credential(
     path = f"/management/v1/warehouse/{warehouse_id}"
     current = admin.expect("GET", path, ok=200).get("storage-profile", {})
     ours = warehouse_request(catalog, storage)["storage-profile"]
+    # Lakekeeper cannot move a warehouse, and the overlay below would keep the old location.
+    stored = (current.get("bucket"), current.get("key-prefix"))
+    if stored != (ours["bucket"], ours["key-prefix"]):
+        raise CatalogError(
+            f"warehouse {catalog.warehouse!r} lives in s3://{stored[0]}/{stored[1]}, not "
+            f"s3://{ours['bucket']}/{ours['key-prefix']}: a warehouse cannot move buckets "
+            "(check IBERGRID_S3_BUCKET)"
+        )
     profile = current | {field: ours[field] for field in OWNED_PROFILE_FIELDS}
     changed = [f for f in OWNED_PROFILE_FIELDS if _normal(current.get(f)) != _normal(ours[f])]
     body = {"storage-profile": profile, "storage-credential": storage_credential(storage)}
