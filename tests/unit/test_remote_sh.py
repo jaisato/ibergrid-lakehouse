@@ -24,16 +24,29 @@ def server(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "docker"
-    stub.write_text(f'#!/bin/sh\necho "$*" >> "{tmp_path / "docker.log"}"\n')
+    # Like `docker compose run`, the stub reads its stdin on `run`: a run left on the script's
+    # stdin would swallow the rest of the script.
+    stub.write_text(
+        f'#!/bin/sh\necho "$*" >> "{tmp_path / "docker.log"}"\n'
+        'case " $* " in *" run "*) cat > /dev/null ;; esac\n'
+    )
     stub.chmod(0o755)
     return deploy_dir
 
 
 def run(server: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """As the deploy job runs it: `ssh <host> bash -s -- <args> < deploy/remote.sh`, the script
+    on bash's stdin."""
     env = {**os.environ, "PATH": f"{server.parent / 'bin'}:{os.environ['PATH']}"}
-    return subprocess.run(
-        ["bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, check=False
-    )
+    with SCRIPT.open() as script:
+        return subprocess.run(
+            ["bash", "-s", "--", *args],
+            stdin=script,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 def docker_calls(server: Path) -> list[str]:

@@ -43,7 +43,9 @@ mv "$tmp" release.env
 
 compose=(docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml)
 "${compose[@]}" pull --quiet
+# Every `run` reads stdin, which is this script when sent as `bash -s < remote.sh`: without
+# </dev/null it would swallow the lines after it, and the deploy would stop there with exit 0.
 # The tables exist before Dagster's schedules start; `run` first starts the catalog and catalog-init.
-"${compose[@]}" run --rm doctor lake init
+"${compose[@]}" run --rm doctor lake init </dev/null
 "${compose[@]}" up -d --wait --remove-orphans
-"${compose[@]}" run --rm --no-deps doctor
+"${compose[@]}" run --rm --no-deps doctor </dev/null
