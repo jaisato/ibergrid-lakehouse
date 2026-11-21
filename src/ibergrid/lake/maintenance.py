@@ -67,7 +67,9 @@ def rewrite_data_files(con: duckdb.DuckDBPyConnection, table: str) -> Compaction
     The rewrite commits a ``replace`` snapshot to ``main``, guarded by the catalog (DuckDB asserts
     the table UUID, the schema and ``main``'s head). So it conflicts both ways with Write-Audit-
     Publish: a write to ``main`` between its plan and its commit raises ``MaintenanceConflict``
-    (nothing changed), and a run open across it can no longer publish (``PublishConflict``).
+    (the catalog answered 409: nothing changed), and a run open across it can no longer publish
+    (``PublishConflict``). Any other ``duckdb.TransactionException`` at commit (for example a 5xx)
+    propagates unchanged: the compaction may or may not have landed, so look before retrying.
     """
     try:
         [row] = con.execute(
@@ -76,5 +78,9 @@ def rewrite_data_files(con: duckdb.DuckDBPyConnection, table: str) -> Compaction
             {"table": table},
         ).fetchall()
     except duckdb.TransactionException as exc:
+        # Only the catalog's 409 means "nothing changed"; any other failure at commit (a 5xx,
+        # a lost connection) leaves the outcome unknown and propagates as DuckDB raised it.
+        if "Conflict_409" not in str(exc):
+            raise
         raise MaintenanceConflict(f"{table} changed during the compaction: {exc}") from exc
     return Compaction(*(int(value) for value in row))
