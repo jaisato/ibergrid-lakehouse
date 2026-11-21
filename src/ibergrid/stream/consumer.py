@@ -29,7 +29,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
@@ -69,6 +69,8 @@ BATCH = 500  # messages per consume call
 MAX_BACKOFF = 60.0
 BEAT_EVERY = 5.0  # seconds between heartbeats
 EXPIRE_EVERY = 86_400.0  # seconds between snapshot expiries
+PROBE_EVERY = 60.0  # seconds between checks that the broker answers and the topic is the same
+VERIFY_TIMEOUT = 30.0  # seconds to read back the message before each checkpointed offset
 RETAIN_SNAPSHOTS = 50  # main's latest snapshots that expiry always keeps
 HOLD_POINTS = ("after-write", "after-publish")
 _BATCH_COUNTS = ("duplicates", "revisions", "dead_letters")
@@ -91,6 +93,11 @@ class ConsumerError(RuntimeError):
     """The topic or the table is not in the state the consumer needs."""
 
 
+class Refused(ConsumerError):
+    """The table's checkpoint does not fit the topic: starting would duplicate or skip messages.
+    Only an operator's ``ibergrid stream reset`` (or ``stream drop-property``) moves on."""
+
+
 class AuditFailed(ConsumerError):
     """The audit branch does not hold exactly the batch: nothing was published."""
 
@@ -108,15 +115,27 @@ class _Rejected(Exception):
 
 @dataclass(frozen=True)
 class Checkpoint:
-    """What a publish records: the topic incarnation it read and the next offset per partition."""
+    """What a publish records: the topic incarnation it read, the reset epoch (each ``stream
+    reset`` adds one, so rows order by (epoch, offset) even when a reset reuses offsets), the next
+    offset per partition and the timestamp of the message before it, which the next start reads
+    back to prove the log was not rewritten under the same topic id."""
 
     topic: str
     topic_id: str
     offsets: dict[int, int]
+    epoch: int = 0
+    timestamps: dict[int, int] = field(default_factory=dict)
 
     def to_json(self) -> str:
-        offsets = {str(p): o for p, o in sorted(self.offsets.items())}
-        return json.dumps({"topic": self.topic, "topic_id": self.topic_id, "offsets": offsets})
+        return json.dumps(
+            {
+                "topic": self.topic,
+                "topic_id": self.topic_id,
+                "epoch": self.epoch,
+                "offsets": {str(p): o for p, o in sorted(self.offsets.items())},
+                "timestamps": {str(p): t for p, t in sorted(self.timestamps.items())},
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -153,7 +172,14 @@ def read_checkpoint(table: Table, group_id: str) -> Checkpoint | None:
     try:
         value = json.loads(raw)
         offsets = {int(p): int(o) for p, o in value["offsets"].items()}
-        checkpoint = Checkpoint(str(value["topic"]), str(value["topic_id"]), offsets)
+        timestamps = {int(p): int(t) for p, t in value.get("timestamps", {}).items()}
+        checkpoint = Checkpoint(
+            str(value["topic"]),
+            str(value["topic_id"]),
+            offsets,
+            int(value.get("epoch", 0)),
+            timestamps,
+        )
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise ConsumerError(
             f"table property {name} is not a checkpoint {{topic, topic_id, offsets}}: {exc}"
@@ -192,32 +218,75 @@ def reset_checkpoint(
     admin: AdminClient,
     settings: StreamSettings,
     position: Literal["earliest", "latest"],
+    *,
+    force: bool = False,
 ) -> Checkpoint:
     """Point the checkpoint at the topic as it is now (``ibergrid stream reset``), deliberately:
     after the topic was recreated or lost its tail, when the consumer refuses to start. From the
-    earliest message left (what the topic retains is written again; the duplicate check starts
-    empty for the new incarnation) or from the end (what is in the topic is skipped). Published
-    like any checkpoint, so a running consumer conflicts instead of interleaving: stop it first.
+    earliest message left (what the topic retains is written again) or from the end (what is in
+    the topic is skipped). The epoch goes up by one, so the rows written afterwards order after
+    every earlier one, also where offsets repeat. Published like any checkpoint, so a running
+    consumer conflicts instead of interleaving: stop it first. A checkpoint that still fits the
+    topic (same id, offsets inside the log) is refused unless ``force``.
     """
     topic = settings.topic
-    offsets = {}
+    before = read_checkpoint(table, settings.group_id)
+    topic_id = topic_identity(admin, topic)
+    offsets, fits = {}, before is not None and (before.topic, before.topic_id) == (topic, topic_id)
     for partition in topic_partitions(kafka, topic):
         low, high = kafka.get_watermark_offsets(TopicPartition(topic, partition), timeout=10)
         offsets[partition] = low if position == "earliest" else high
-    checkpoint = Checkpoint(topic, topic_identity(admin, topic), offsets)
+        if before is not None and not low <= before.offsets.get(partition, low) <= high:
+            fits = False
+    if fits and not force:
+        raise ConsumerError(
+            f"the checkpoint {cast(Checkpoint, before).to_json()} fits {topic} as it is: "
+            "nothing to reset (--force to reset anyway)"
+        )
+    epoch = (0 if before is None else before.epoch) + 1
+    checkpoint = Checkpoint(topic, topic_id, offsets, epoch)
+    _publish_properties(
+        table, set_properties={checkpoint_property(settings.group_id): checkpoint.to_json()}
+    )
+    log.warning("stream.consumer.checkpoint_reset", position=position, checkpoint=checkpoint)
+    return checkpoint
+
+
+def drop_property(
+    table: Table, settings: StreamSettings, name: str, *, force: bool = False
+) -> None:
+    """Remove a stream property from the table (``ibergrid stream drop-property``) through the
+    fenced publish: another group's checkpoint after a deliberate migration, or a property an
+    earlier version left. This consumer's own checkpoint only with ``force``."""
+    if not name.startswith("ibergrid.stream."):
+        raise ConsumerError(f"{name} is not a stream property (ibergrid.stream.*)")
+    if name == checkpoint_property(settings.group_id) and not force:
+        raise ConsumerError(f"{name} is this consumer's checkpoint (--force to drop it anyway)")
+    table.refresh()
+    if name not in table.properties:
+        raise ConsumerError(f"{'.'.join(table.name())} has no property {name}")
+    _publish_properties(table, remove_properties=[name])
+    log.warning("stream.consumer.property_dropped", property=name)
+
+
+def _publish_properties(
+    table: Table,
+    *,
+    set_properties: dict[str, str] | None = None,
+    remove_properties: tuple[str, ...] | list[str] = (),
+) -> None:
     audit = wap.start(table, new_run_id(datetime.now(UTC)))
     try:
         wap.publish(
             table,
             audit,
             audit.base_snapshot_id,
-            set_properties={checkpoint_property(settings.group_id): checkpoint.to_json()},
+            set_properties=set_properties,
+            remove_properties=remove_properties,
         )
     except BaseException:
         wap.discard(table, audit)
         raise
-    log.warning("stream.consumer.checkpoint_reset", position=position, checkpoint=checkpoint)
-    return checkpoint
 
 
 def describe_status(
@@ -293,7 +362,9 @@ class StreamConsumer:
         self.hold_at = hold_at
         self.property = checkpoint_property(settings.group_id)
         self.topic_id: str | None = None
+        self.epoch = 0
         self.checkpointed: Checkpoint | None = None
+        self.next_timestamps: dict[int, int] = {}  # of the message before each next offset
         self.buffer: list[Buffered] = []
         self.latest: dict[tuple[str, datetime], str] = {}  # key -> latest accepted hash
         self.next_offsets: dict[int, int] = {}
@@ -306,13 +377,15 @@ class StreamConsumer:
         self.failures = 0  # consecutive failed iterations
         self.failing_since: float | None = None  # epoch seconds of the first of them
         self.last_flush_at: float | None = None
+        self.refused: str | None = None  # why the last start refused, until one succeeds
+        self.last_probe = time.monotonic()
         self.dlq_failures: list[KafkaError] = []
 
     # --- Start ---------------------------------------------------------------------------------
 
     def start(self) -> None:
         """Remove dead runs' branches, check and read the checkpoint, rebuild the duplicate check,
-        seek."""
+        seek. ``Refused`` when the checkpoint does not fit the topic."""
         self.sweep_stale_branches()
         self.table.refresh()
         topic = self.settings.topic
@@ -322,30 +395,38 @@ class StreamConsumer:
             if key.startswith(CHECKPOINT_PREFIX) and key != self.property
         )
         if others and not self.allow_other_checkpoints:
-            raise ConsumerError(
+            raise Refused(
                 f"{'.'.join(self.table.name())} also holds {', '.join(others)}: another consumer "
                 "group writes this table, and one table has one writer (for a deliberate "
-                "migration: ibergrid stream consume --allow-other-checkpoints)"
+                "migration: ibergrid stream consume --allow-other-checkpoints, then "
+                "ibergrid stream drop-property)"
             )
         checkpoint = read_checkpoint(self.table, self.settings.group_id)
         topic_id = topic_identity(self.admin, topic)
-        if checkpoint is not None and (checkpoint.topic, checkpoint.topic_id) != (topic, topic_id):
-            raise ConsumerError(
-                f"the checkpoint was taken on {checkpoint.topic} {checkpoint.topic_id}, the topic "
-                f"is now {topic} {topic_id}: it was deleted and recreated, so the offsets name "
-                "other messages. Reset deliberately: ibergrid stream reset --to earliest|latest"
+        if checkpoint is not None and checkpoint.topic != topic:
+            raise Refused(
+                f"the checkpoint is for topic {checkpoint.topic}, and this consumer is configured "
+                f"for {topic} (IBERGRID_STREAM_TOPIC). Reset deliberately: ibergrid stream reset"
+            )
+        if checkpoint is not None and checkpoint.topic_id != topic_id:
+            raise Refused(
+                f"the checkpoint was taken on {topic} {checkpoint.topic_id}, the topic is now "
+                f"{topic_id}: it was deleted and recreated, so the offsets name other messages. "
+                "Reset deliberately: ibergrid stream reset --to earliest|latest"
             )
         offsets = {} if checkpoint is None else checkpoint.offsets
-        start = {}
+        timestamps = {} if checkpoint is None else dict(checkpoint.timestamps)
+        start, lows = {}, {}
         for partition in topic_partitions(self.kafka, topic):
             low, high = self.kafka.get_watermark_offsets(
                 TopicPartition(topic, partition), timeout=10
             )
+            lows[partition] = low
             position = offsets.get(partition)
             if position is None:
                 start[partition] = low
             elif position > high:
-                raise ConsumerError(
+                raise Refused(
                     f"the checkpoint of {topic} partition {partition} is at {position}, past its "
                     f"end ({high}): messages it covers are gone (a broker that lost the tail of "
                     "its log). Reset deliberately: ibergrid stream reset --to earliest|latest"
@@ -359,24 +440,63 @@ class StreamConsumer:
                     lost=low - position,
                 )
                 start[partition] = low
+                timestamps.pop(partition, None)
             else:
                 start[partition] = position
+        self._verify_positions(offsets, timestamps, lows)
         self.checkpointed, self.topic_id = checkpoint, topic_id
+        self.epoch = 0 if checkpoint is None else checkpoint.epoch
         # Past a retention gap the next checkpoint records the jump.
         self.next_offsets = {p: start[p] for p in offsets if p in start}
+        self.next_timestamps = {p: t for p, t in timestamps.items() if p in self.next_offsets}
         self.latest = self._recent_hashes()
         self.buffer.clear()
         self.batch.clear()
         self.first_buffered = None
         self.kafka.assign([TopicPartition(topic, p, offset) for p, offset in start.items()])
+        self.refused = None
+        self.last_probe = time.monotonic()
         log.info(
             "stream.consumer.started",
             topic=topic,
             topic_id=topic_id,
+            epoch=self.epoch,
             checkpoint=offsets,
             start=start,
             known_keys=len(self.latest),
         )
+
+    def _verify_positions(
+        self, offsets: dict[int, int], timestamps: dict[int, int], lows: dict[int, int]
+    ) -> None:
+        """Read back the message before each checkpointed offset: its timestamp must be the one
+        the checkpoint recorded. Otherwise the log was rewritten under the same topic id (a lost
+        tail that grew back past the checkpoint), and the offsets name other messages."""
+        expected = {
+            p: t for p, t in timestamps.items() if p in offsets and offsets[p] - 1 >= lows.get(p, 0)
+        }
+        if not expected:
+            return
+        topic = self.settings.topic
+        self.kafka.assign([TopicPartition(topic, p, offsets[p] - 1) for p in expected])
+        found: dict[int, int] = {}
+        deadline = time.monotonic() + VERIFY_TIMEOUT
+        while len(found) < len(expected) and time.monotonic() < deadline:
+            for message in self.kafka.consume(len(expected), 1.0):
+                partition = message.partition()
+                if message.error() is None and partition in expected and partition not in found:
+                    found[partition] = message.timestamp()[1]
+        missing = sorted(set(expected) - set(found))
+        if missing:
+            raise ConsumerError(f"could not read back the checkpoint of partitions {missing}")
+        for partition, recorded in expected.items():
+            if found[partition] != recorded:
+                raise Refused(
+                    f"{topic} partition {partition}: the message before the checkpoint (offset "
+                    f"{offsets[partition] - 1}) has timestamp {found[partition]}, the checkpoint "
+                    f"recorded {recorded}: the log was rewritten under the same topic id. Reset "
+                    "deliberately: ibergrid stream reset --to earliest|latest"
+                )
 
     def sweep_stale_branches(self) -> list[str]:
         """Discard this lane's run branches that started longer ago than ``stale_branch_age``:
@@ -401,33 +521,58 @@ class StreamConsumer:
         return removed
 
     def _recent_hashes(self) -> dict[tuple[str, datetime], str]:
-        """The latest accepted hash of every key of the last ``dedup_days`` days of this topic
-        incarnation: the highest offset per key (all versions of a key share a partition). Read
-        batch by batch and reduced to one row per key in Arrow, so memory follows the number of
-        keys (a few thousand), not of rows (revisions: tens of thousands a day)."""
+        """The latest accepted hash of every key of the last ``dedup_days`` days: the highest
+        (epoch, offset), since every version of a key is in the same partition within an epoch and
+        a reset starts a later epoch (rows before epochs existed count as epoch 0). Read batch by
+        batch and reduced to one row per key in Arrow, so memory follows the number of keys (a
+        few thousand), not of rows (revisions: tens of thousands a day)."""
         if self.table.current_snapshot() is None:
             return {}
         since = self.clock() - timedelta(days=self.settings.dedup_days)
         scan = self.table.scan(
-            row_filter=f"kafka_topic_id == '{self.topic_id}' AND ts_utc >= '{since.isoformat()}'",
-            selected_fields=("series_id", "ts_utc", "kafka_offset", "content_sha256"),
+            row_filter=f"ts_utc >= '{since.isoformat()}'",
+            selected_fields=(
+                "series_id",
+                "ts_utc",
+                "stream_epoch",
+                "kafka_offset",
+                "content_sha256",
+            ),
         )
-        latest: dict[tuple[str, datetime], tuple[int, str]] = {}
+        latest: dict[tuple[str, datetime], tuple[tuple[int, int], str]] = {}
         for batch in scan.to_arrow_batch_reader():
             if not batch.num_rows:
                 continue
-            reduced = (
-                pa.Table.from_batches([batch])
-                .sort_by([("kafka_offset", "descending")])
-                .group_by(["series_id", "ts_utc"], use_threads=False)
-                .aggregate([("kafka_offset", "first"), ("content_sha256", "first")])
+            rows = pa.Table.from_batches([batch])
+            rows = rows.set_column(
+                rows.schema.get_field_index("stream_epoch"),
+                "stream_epoch",
+                pc.fill_null(rows["stream_epoch"], 0),
             )
-            columns = ("series_id", "ts_utc", "kafka_offset_first", "content_sha256_first")
-            for series, ts, offset, digest in zip(
+            reduced = (
+                rows.sort_by([("stream_epoch", "descending"), ("kafka_offset", "descending")])
+                .group_by(["series_id", "ts_utc"], use_threads=False)
+                .aggregate(
+                    [
+                        ("stream_epoch", "first"),
+                        ("kafka_offset", "first"),
+                        ("content_sha256", "first"),
+                    ]
+                )
+            )
+            columns = (
+                "series_id",
+                "ts_utc",
+                "stream_epoch_first",
+                "kafka_offset_first",
+                "content_sha256_first",
+            )
+            for series, ts, epoch, offset, digest in zip(
                 *(reduced[column].to_pylist() for column in columns), strict=True
             ):
-                if latest.get((series, ts), (-1, ""))[0] < offset:
-                    latest[(series, ts)] = (offset, digest)
+                order = (epoch, offset)
+                if (series, ts) not in latest or latest[(series, ts)][0] < order:
+                    latest[(series, ts)] = (order, digest)
         return {key: digest for key, (_, digest) in latest.items()}
 
     # --- Messages ------------------------------------------------------------------------------
@@ -443,6 +588,7 @@ class StreamConsumer:
             return
         partition, offset = cast(int, message.partition()), cast(int, message.offset())
         self.next_offsets[partition] = offset + 1
+        self.next_timestamps[partition] = message.timestamp()[1]
         self.totals["consumed"] += 1
         try:
             event = self._validate(message)
@@ -534,8 +680,13 @@ class StreamConsumer:
         self._drain_dead_letters()
         run_id = new_run_id(now)
         rows = self._arrow(run_id, now)
-        offsets = dict(self.next_offsets)
-        checkpoint = Checkpoint(self.settings.topic, cast(str, self.topic_id), offsets)
+        checkpoint = Checkpoint(
+            self.settings.topic,
+            cast(str, self.topic_id),
+            dict(self.next_offsets),
+            self.epoch,
+            dict(self.next_timestamps),
+        )
         audit = wap.start(self.table, run_id)
         try:
             # The fence: publish requires main at the run's base, and here the base must still
@@ -555,6 +706,9 @@ class StreamConsumer:
                 self._audit(head, run_id, rows)
             else:
                 head = audit.base_snapshot_id
+            # A topic recreated and refilled past this consumer's position gives no out-of-range
+            # error: its messages are read as if they continued the old topic. Not published.
+            self._check_topic()
             published = self._publish(audit, head, {self.property: checkpoint.to_json()})
         except BaseException:
             self._discard(audit)
@@ -612,6 +766,7 @@ class StreamConsumer:
                     "ingested_at": ingested_at,
                     "run_id": run_id,
                     "kafka_topic_id": self.topic_id,
+                    "stream_epoch": self.epoch,
                 }
                 for item in self.buffer
             ],
@@ -738,6 +893,9 @@ class StreamConsumer:
                 if exc.args and isinstance(exc.args[0], KafkaError) and exc.args[0].fatal():
                     raise
                 started, backoff = self._failed(exc, stop, backoff)
+            except Refused as exc:
+                self.refused = str(exc)  # unhealthy at once: only an operator moves on
+                started, backoff = self._failed(exc, stop, backoff)
             except Exception as exc:
                 started, backoff = self._failed(exc, stop, backoff)
             else:
@@ -750,6 +908,7 @@ class StreamConsumer:
                     role="consumer",
                     failures=self.failures,
                     failing_since=self.failing_since,
+                    refused=self.refused,
                     last_flush_at=self.last_flush_at,
                     **self.totals,
                 )
@@ -760,7 +919,22 @@ class StreamConsumer:
             except Exception as exc:
                 log.error("stream.consumer.final_flush_failed", error=str(exc))
 
+    def _check_topic(self) -> None:
+        """The broker answers this consumer's credentials and the topic is still the one the
+        checkpoint was taken on; ``Refused`` otherwise, ``ConsumerError`` when it cannot tell."""
+        topic_id = topic_identity(self.admin, self.settings.topic)
+        if topic_id != self.topic_id:
+            raise Refused(
+                f"{self.settings.topic} is now {topic_id}, not {self.topic_id}: it was deleted and "
+                "recreated while this consumer read it. Reset deliberately: ibergrid stream reset"
+            )
+
     def _housekeeping(self) -> None:
+        # Without traffic librdkafka reports neither an unreachable broker nor a rejected
+        # password to the consumer; this probe does, into the failure streak.
+        if time.monotonic() - self.last_probe >= PROBE_EVERY:
+            self.last_probe = time.monotonic()
+            self._check_topic()
         if (self.clock() - self.last_sweep).total_seconds() >= self.settings.stale_branch_age:
             self.sweep_stale_branches()
         if time.monotonic() >= self.next_expiry:

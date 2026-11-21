@@ -2,9 +2,11 @@
 watchdog that ends a stuck process.
 
 Each service rewrites its heartbeat file (a JSON object with its latest counters) whenever its
-loop goes round, with ``failing_since`` set while its iterations keep failing (a catalog down, an
-ACL revoked, dead letters refused). It is healthy while the file is fresh and it has not been
-failing for longer than ``--max-failing``. The compose healthcheck runs inside the service's own
+loop goes round, with ``failing_since`` set while its iterations keep failing (a catalog down, a
+broker unreachable or refusing the password, dead letters refused) and ``refused`` while the
+consumer refuses to start (a topic that changed under its checkpoint: only an operator moves on).
+It is healthy while the file is fresh, nothing was refused, and it has not been failing for longer
+than ``--max-failing``. The compose healthcheck runs inside the service's own
 cgroup every 30 s, so it runs this module (``python -m ibergrid.stream.health``, standard library
 only) instead of the full CLI, which costs 0.9 s of CPU and 133 MiB of memory per start in the app
 image; ``ibergrid stream health`` runs the same check.
@@ -58,6 +60,8 @@ def check(
         return False, f"no usable heartbeat at {path}: {exc}"
     if age > max_age:
         return False, f"heartbeat {age:.0f} s old (limit {max_age:.0f} s): {content}"
+    if payload.get("refused"):
+        return False, f"refused to start: {content}"
     if failing_for is not None and failing_for > max_failing:
         return False, f"failing for {failing_for:.0f} s (limit {max_failing:.0f} s): {content}"
     return True, f"heartbeat {age:.0f} s old: {content}"

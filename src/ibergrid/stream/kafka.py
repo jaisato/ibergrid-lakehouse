@@ -46,13 +46,14 @@ def producer_config(broker: BrokerSettings, client_id: str) -> Config:
 
 def consumer_config(broker: BrokerSettings, client_id: str, group_id: str) -> Config:
     """Manual assignment and commits: the table's checkpoint decides where reading starts, and
-    the group only receives the offsets for lag visibility. A checkpoint older than the topic's
-    retention restarts at the earliest message still there."""
+    the group only receives the offsets for lag visibility. An offset out of range is an error
+    (``_AUTO_OFFSET_RESET``), never a silent jump: the consumer starts again from its checkpoint,
+    whose checks decide (ADR 0006)."""
     return {
         **client_config(broker, client_id),
         "group.id": group_id,
         "enable.auto.commit": False,
         "enable.auto.offset.store": False,
-        "auto.offset.reset": "earliest",
+        "auto.offset.reset": "error",
         "isolation.level": "read_committed",
     }

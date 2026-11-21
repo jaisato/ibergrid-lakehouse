@@ -49,6 +49,7 @@ from ibergrid.stream.consumer import (
     ConsumerError,
     StreamConsumer,
     describe_status,
+    drop_property,
     read_checkpoint,
     reset_checkpoint,
 )
@@ -414,6 +415,9 @@ def stream_reset(
         Position,
         typer.Option(help="earliest: write what the topic retains again; latest: skip it."),
     ],
+    force: Annotated[
+        bool, typer.Option("--force", help="Reset a checkpoint that still fits the topic.")
+    ] = False,
 ) -> None:
     """Point the consumer's checkpoint at the topic as it is now, after the topic was recreated
     or lost its tail (the consumer refuses to start then). Stop the consumer first."""
@@ -422,13 +426,31 @@ def stream_reset(
     kafka, admin = _stream_clients(settings, "ibergrid-stream-reset")
     try:
         before = read_checkpoint(table, settings.stream.group_id)
-        after = reset_checkpoint(table, kafka, admin, settings.stream, to.value)
+        after = reset_checkpoint(table, kafka, admin, settings.stream, to.value, force=force)
     except (ConsumerError, KafkaException, WapError) as exc:
         _fail(exc)
     finally:
         kafka.close()
     typer.echo(f"stream: checkpoint was {None if before is None else before.to_json()}")
     typer.echo(f"stream: checkpoint is  {after.to_json()}")
+
+
+@stream_app.command("drop-property")
+def stream_drop_property(
+    name: Annotated[str, typer.Argument(help="For example ibergrid.stream.checkpoint.<group>.")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Also drop this consumer's own checkpoint.")
+    ] = False,
+) -> None:
+    """Remove a stream property from the table through the fenced publish: another group's
+    checkpoint after a deliberate migration, or one an earlier version left."""
+    settings = _load_settings()
+    table = _stream_table(settings)
+    try:
+        drop_property(table, settings.stream, name, force=force)
+    except (ConsumerError, WapError) as exc:
+        _fail(exc)
+    typer.echo(f"stream: dropped {name}")
 
 
 def _stream_clients(settings: Settings, client_id: str) -> tuple[Consumer, AdminClient]:

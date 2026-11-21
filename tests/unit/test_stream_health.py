@@ -90,5 +90,6 @@ def test_the_producer_is_idempotent_and_the_consumer_commits_by_hand() -> None:
     assert produce["sasl.mechanism"] == "SCRAM-SHA-256"
     assert produce["sasl.password"] == "not-a-secret"
     assert consume["enable.auto.commit"] is False
+    assert consume["auto.offset.reset"] == "error"  # out of range restarts, never jumps
     assert consume["group.id"] == "ibergrid.stream.bronze"
     assert str(consume["client.id"]).startswith("ibergrid-stream-consumer/")

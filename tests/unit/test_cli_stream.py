@@ -117,7 +117,11 @@ def test_the_stream_commands_refuse_a_broker_without_credentials(
 
 
 def test_consume_writes_the_topic_and_flushes_on_stop(
-    broker: FakeBroker, stream_table: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    broker: FakeBroker,
+    stream_table: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_watchdog_thread: list[float],
 ) -> None:
     runner.invoke(app, ["stream", "produce", "--source-file", str(REDATA_FIXTURES / FIXTURE)])
     stop = threading.Event()
@@ -138,6 +142,7 @@ def test_consume_writes_the_topic_and_flushes_on_stop(
     assert result.exit_code == 0, result.output
     stream_table.refresh()
     assert stream_table.scan().count() == len(broker.messages(TOPIC))
+    assert no_watchdog_thread == [900.0]  # consume started its watchdog
 
 
 def test_consume_and_status_need_the_table(
@@ -218,3 +223,36 @@ def test_sigterm_asks_the_loops_to_stop() -> None:
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+
+def test_drop_property_and_a_guarded_reset_from_the_command_line(
+    broker: FakeBroker, stream_table: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner.invoke(app, ["stream", "produce", "--source-file", str(REDATA_FIXTURES / FIXTURE)])
+    stop = threading.Event()
+    consume = broker.consume
+
+    def consume_then_stop(num_messages: int = 1, timeout: float = -1) -> Any:
+        found = consume(num_messages, timeout)
+        if not found:
+            stop.set()
+        return found
+
+    monkeypatch.setattr(broker, "consume", consume_then_stop)
+    monkeypatch.setattr(cli, "_stop_on_signals", lambda: stop)
+    monkeypatch.setenv("IBERGRID_STREAM_HEARTBEAT_PATH", str(tmp_path / "heartbeat"))
+    assert runner.invoke(app, ["stream", "consume"]).exit_code == 0
+    with stream_table.transaction() as tx:
+        tx.set_properties({"ibergrid.stream.leftover": "x"})
+
+    guarded = runner.invoke(app, ["stream", "reset", "--to", "latest"])
+    forced = runner.invoke(app, ["stream", "reset", "--to", "latest", "--force"])
+    dropped = runner.invoke(app, ["stream", "drop-property", "ibergrid.stream.leftover"])
+    refused = runner.invoke(app, ["stream", "drop-property", "ibergrid.stream.leftover"])
+
+    assert guarded.exit_code == 1
+    assert "nothing to reset" in guarded.stderr
+    assert forced.exit_code == 0, forced.output
+    assert dropped.stdout == "stream: dropped ibergrid.stream.leftover\n"
+    assert refused.exit_code == 1
+    assert "has no property" in refused.stderr

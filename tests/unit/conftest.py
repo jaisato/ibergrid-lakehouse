@@ -362,6 +362,8 @@ class FakeBroker:
             topic: [[] for _ in range(count)] for topic, count in partitions.items()
         }
         self.topic_ids = {topic: uuid.uuid4().hex for topic in partitions}
+        self.produced_at = 1_795_000_000_000  # each message one millisecond after the last
+        self.unreachable = False  # describe_topics fails, as with a broker down
         self.low: dict[tuple[str, int], int] = {}  # log start offsets, after retention
         self.positions: dict[int, int] = {}
         self.assignments: list[dict[int, int]] = []
@@ -382,7 +384,10 @@ class FakeBroker:
     ) -> None:
         log = self.logs[topic]
         partition = 0 if key is None else sum(key) % len(log)
-        message = FakeMessage(topic, partition, len(log[partition]), key, value)
+        self.produced_at += 1
+        message = FakeMessage(
+            topic, partition, len(log[partition]), key, value, timestamp_=(1, self.produced_at)
+        )
         if self.refuse is None:
             log[partition].append(message)
             self.headers.append(headers)
@@ -435,7 +440,9 @@ class FakeBroker:
         found: dict[str, Future[Any]] = {}
         for name in topics.topic_names:
             found[name] = Future()
-            if name in self.topic_ids:
+            if self.unreachable:
+                found[name].set_exception(KafkaException(KafkaError(KafkaError._TRANSPORT)))
+            elif name in self.topic_ids:
                 found[name].set_result(SimpleNamespace(topic_id=self.topic_ids[name]))
             else:
                 found[name].set_exception(
