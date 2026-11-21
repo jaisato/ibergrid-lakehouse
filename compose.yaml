@@ -262,6 +262,13 @@ services:
         umask 077
         netrc=/tmp/broker-init.netrc body=/tmp/broker-init.json answer=/tmp/broker-init.answer
         trap 'rm -f "$$netrc" "$$body" "$$answer"' EXIT
+        # The passwords go into a netrc and a JSON body unescaped: make env writes hex.
+        for password in "$$RPK_PASS" "$$PRODUCER_PASSWORD" "$$CONSUMER_PASSWORD"; do
+          if [[ ! "$$password" =~ ^[A-Za-z0-9._~-]+$$ ]]; then
+            echo "a REDPANDA_*_PASSWORD holds characters other than A-Z a-z 0-9 . _ ~ -" >&2
+            exit 1
+          fi
+        done
         printf 'machine broker login %s password %s\n' "$$RPK_USER" "$$RPK_PASS" > "$$netrc"
         # Create a SCRAM user, or set its password when it exists with another (rotation).
         scram_user() {
@@ -269,7 +276,7 @@ services:
           for method in POST PUT; do
             url=http://broker:9644/v1/security/users
             [ "$$method" = PUT ] && url="$$url/$$1"
-            status="$$(curl -sS --netrc-file "$$netrc" -o "$$answer" -w '%{http_code}' \
+            status="$$(curl -sS --max-time 30 --netrc-file "$$netrc" -o "$$answer" -w '%{http_code}' \
               -X "$$method" -H 'Content-Type: application/json' --data "@$$body" "$$url")"
             [ "$$status" = 200 ] && return 0
             [ "$$status" = 401 ] && break
@@ -507,8 +514,10 @@ services:
       catalog-init:
         condition: service_completed_successfully
     networks: [broker, catalog, storage]
-    # Failing iterations (catalog, broker, dead letters refused) for 10 minutes make it unhealthy;
-    # a loop stuck for IBERGRID_STREAM_WATCHDOG_TIMEOUT ends the process, and restart recovers it.
+    # Unhealthy at once when it refuses to start (a topic changed under its checkpoint), and after
+    # 10 minutes of failing iterations: the catalog, refused dead letters, or a broker that a probe
+    # every minute finds unreachable or refusing the password. A loop stuck for
+    # IBERGRID_STREAM_WATCHDOG_TIMEOUT ends the process, and the restart policy recovers it.
     healthcheck:
       test: ["CMD", "python", "-m", "ibergrid.stream.health", "--max-age", "120", "--max-failing", "600"]
       interval: 30s
