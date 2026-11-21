@@ -79,10 +79,12 @@ AWS's public endpoint (`NoSuchBucket`).
 Four interoperability traps, pinned by tests:
 
 - A snapshot with an empty manifest list cannot be read by DuckDB ("Invalid Avro file block count
-  or size"), and PyIceberg writes one in two cases: an append of zero rows to a table without
-  snapshots, and an overwrite of zero rows whose filter matches every row (its `append` snapshot
-  carries no manifest; published, it left `main` unreadable for DuckDB scans and `describe`). A
-  `delete` with the same filter keeps one manifest, and DuckDB reads it as empty.
+  or size"), and PyIceberg writes one in three cases: an append of zero rows to a table without
+  snapshots, an overwrite of zero rows whose filter matches every row (its `append` snapshot
+  carries no manifest; published, it left `main` unreadable for DuckDB scans and `describe`), and
+  an append of zero rows on top of a snapshot without live data files (a checkpoint after a
+  delete-everything run; same failure on Lakekeeper). A `delete` keeps one manifest, and DuckDB
+  reads it as empty.
 - PyIceberg refuses branch writes on a table without snapshots, and an Iceberg ref needs a
   snapshot to point at.
 - PyIceberg retries a data commit that lost a race (four retries by default), on fresh metadata.
@@ -135,7 +137,8 @@ runs restart afterwards.
   `ibergrid catalog update-credential` rewrites its profile (or, locally, until
   `make down-volumes`). That command overlays only the profile fields this code owns (flavor,
   endpoint, region, path-style addressing, remote signing) on the current profile, keeps every
-  other field as it is, and logs the owned fields that changed.
+  other field as it is, and logs the owned fields that changed. It refuses a configured bucket
+  or key prefix other than the warehouse's: a warehouse cannot move.
 - PyIceberg: `ibergrid.lake.catalog.LakeCatalog` drops any vended credential from the table
   config and applies the client's FileIO properties (`PyArrowFileIO`, `IBERGRID_S3_ENDPOINT_URL`,
   the keys, the region, path-style addressing and remote signing off) on top. That overrides a
@@ -190,16 +193,22 @@ sequenceDiagram
    so chaining both ref updates would drop the branch guard. A run that wrote nothing but sets
    properties would not move `main`, and a commit that leaves `main` where it was is not ordered
    by "`main` at the base": a stale checkpoint would win. Such a run first gets a checkpoint
-   snapshot, an empty append on its branch (no data change, the run id in its summary), and
-   publishes that, so `main` moves and the next publish from the same base conflicts. On a table
-   without snapshots there is nothing to append to that DuckDB could read, so a checkpoint needs
-   data there (`WapError`).
+   snapshot, an empty append on its branch (no data change; the run id and
+   `ibergrid.checkpoint=true` in its summary), and publishes that, so `main` moves and the next
+   publish from the same base conflicts. When `main` holds no live data file (no snapshot yet, or
+   everything deleted), an empty append there is the empty-manifest trap, so a checkpoint needs
+   data (`WapError`). If the publish commit fails after the checkpoint append (a lost answer, a
+   crash), the next `publish` with the same arguments finds the run's own checkpoint on the
+   branch (on top of `expected_head`, carrying the run id and the marker) and publishes it;
+   anything else on the branch still conflicts.
 5. Publishing again is safe: when the branch is gone and `expected_head` is in `main`'s history
    since the base (for a checkpoint run, a snapshot with its run id), `publish` returns it; a
    discarded run raises `WapError`. An empty run without properties changes nothing, so publishing
    it after a discard also succeeds: that result carries no proof. The same check runs after a
    commit whose answer was lost (`CommitStateUnknownException`, a 5xx): a landed commit is
-   reported as published, one that did not land raises `WapError` so the caller publishes again.
+   reported as published, one that did not land raises `WapError`, and publishing again with the
+   same arguments completes it. A reused run id cannot claim the previous run's checkpoint: the
+   search stops at the run's base before looking at run ids.
 6. `wap.discard(table, run)` removes the branch; snapshot expiry later drops its snapshots and
    keeps the whole lineage of every open branch back to its fork from `main`.
 
@@ -262,9 +271,20 @@ summaries are not a durable place for checkpoints either: compaction makes `main
 - **Phase 2, streaming lane.** Each micro-batch is a WAP run whose publish sets the consumer
   offsets as table properties in the same, fenced commit (a batch that wrote nothing publishes a
   checkpoint snapshot); a restarted consumer resumes from the offsets on `main`: the basis for
-  exactly-once writes into Bronze. The first checkpoint of a table needs at least one row.
-  Concurrent runs on one table conflict instead of interleaving, so one writer owns a stream's
-  table and retries a conflict from the new `main`.
+  exactly-once writes into Bronze. A checkpoint needs live data in `main`: on a table that is
+  empty or wiped, the batch that advances the offsets has to carry at least one row. Concurrent
+  runs on one table conflict instead of interleaving, so one writer owns a stream's table and
+  retries a conflict from the new `main`.
+  Two phase-2 tasks follow. A consumer that restarts without its run handle cannot discard the
+  old run with the same id (`start` reports that the branch exists) and, with a new id, leaves
+  the old branch behind: recovery lists the `audit-*` refs and discards the stale ones by name.
+  There is no `discard_stale` helper yet because Iceberg refs carry no creation time, and the
+  head's timestamp misjudges a run that wrote nothing (its head is the base, however old); the
+  streaming lane has to record when each run started. And idle batches are not free: each one
+  with offsets costs three catalog commits (branch creation, checkpoint append, publish) and
+  leaves a snapshot, a manifest list and a metadata file, which nothing deletes. So idle batches
+  checkpoint less often than busy ones, snapshot expiry is mandatory on stream tables, and the
+  orphan-file cleanup of phase 4 is what finally frees the storage.
 - **Phase 3, dbt medallion.** Open question: dbt-duckdb writing Iceberg through DuckDB's attached
   catalog would write `main` directly (DuckDB cannot write branches), outside WAP. The leading
   option is to let dbt-duckdb build the Silver and Gold models in DuckDB and hand them to the WAP
