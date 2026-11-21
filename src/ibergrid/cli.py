@@ -176,6 +176,11 @@ def _print_chunk(report: ChunkReport) -> None:
             f"{day} {received}/{expected}" for day, expected, received in measured.incomplete
         )
         line += f"; incomplete days: {days}"
+    if report.violations:
+        broken = ", ".join(f"{series} {count}" for series, count in report.violations.items())
+        line += f"; points breaking the value rules: {broken}"
+    if report.dropped_series:
+        line += f"; series no longer in the answer: {', '.join(report.dropped_series)}"
     typer.echo(line)
 
 

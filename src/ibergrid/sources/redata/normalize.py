@@ -2,9 +2,11 @@
 
 The answer lists one ``included[]`` item per series (``id``, ``type``, ``attributes.title``,
 ``attributes.last-update`` and ``attributes.values[]`` of ``{value, percentage, datetime}``).
-Validation refuses the whole chunk on any problem: shape and types, a point outside the window,
-a repeated key, a value outside the dataset's rule or a percentage outside 0..1. Completeness is
-only measured: Bronze keeps what the source gave.
+Structural problems refuse the whole chunk: another widget scope (``data.type``), shape and
+types, a number that is not finite, a datetime without an offset, a point outside the window or a
+repeated key. Everything else is measured, not enforced, because Bronze keeps what the source
+gave (quality gates are phase 4): completeness per local day, and the points that break the
+dataset's value rule or have a percentage outside 0..1.
 """
 
 import json
@@ -82,6 +84,16 @@ def parse(payload: bytes, chunk: Chunk) -> list[Point]:
     included = document.get("included") if isinstance(document, dict) else None
     if not isinstance(included, list):
         raise InvalidResponse(chunk, ["no included[] list of series"])
+    data = document.get("data")
+    answer_type = data.get("type") if isinstance(data, dict) else None
+    if answer_type != chunk.dataset.answer_type:
+        raise InvalidResponse(
+            chunk,
+            [
+                f"the answer is {answer_type!r}, not {chunk.dataset.answer_type!r}: "
+                "REData changed what this widget returns"
+            ],
+        )
     problems: list[str] = []
     points = [point for item in included for point in _series(item, problems)]
     problems += _check(points, chunk)
@@ -90,6 +102,19 @@ def parse(payload: bytes, chunk: Chunk) -> list[Point]:
     if problems:
         raise InvalidResponse(chunk, problems)
     return points
+
+
+def violations(points: list[Point], chunk: Chunk) -> dict[str, int]:
+    """Per series, the points whose value breaks the dataset's rule or whose percentage is
+    outside 0..1: recorded with the run, not refused."""
+    rule = chunk.dataset.value_rule
+    found = Counter(
+        point.series_id
+        for point in points
+        if (rule is not None and not rule.check(point.value))
+        or (point.percentage is not None and not 0 <= point.percentage <= 1)
+    )
+    return dict(sorted(found.items()))
 
 
 def granularities(points: list[Point], chunk: Chunk) -> dict[str, Granularity]:
@@ -210,7 +235,6 @@ def _series(item: Any, problems: list[str]) -> list[Point]:
 
 def _check(points: list[Point], chunk: Chunk) -> list[str]:
     start, end = chunk.window_utc
-    rule = chunk.dataset.value_rule
     keys = Counter((point.series_id, point.ts_utc) for point in points)
     problems = [
         f"series {series} at {ts:%Y-%m-%dT%H:%MZ}: {count} points"
@@ -221,10 +245,6 @@ def _check(points: list[Point], chunk: Chunk) -> list[str]:
         where = f"series {point.series_id} at {point.ts_local}"
         if not start <= point.ts_utc < end:
             problems.append(f"{where}: outside the window {chunk.start}..{chunk.end}")
-        if rule is not None and not rule.check(point.value):
-            problems.append(f"{where}: value {point.value} is not {rule.description}")
-        if point.percentage is not None and not 0 <= point.percentage <= 1:
-            problems.append(f"{where}: percentage {point.percentage} is not within 0..1")
     return problems
 
 

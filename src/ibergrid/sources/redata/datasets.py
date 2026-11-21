@@ -1,7 +1,9 @@
 """What ibergrid pulls from REData, one entry per widget, as measured on 2026-11-21 (ADR 0003).
 
 Every request asks for whole local days (``YYYY-MM-DDT00:00`` to ``T23:59``) inside one calendar
-month (sub-daily widgets) or one calendar year (daily): the largest windows the API accepted.
+month (sub-daily widgets) or one calendar year (daily), the largest windows the API accepted; a
+year chunk that would end inside a month stops at the month before, because a long daily request
+ending mid-month is answered up to the month's end.
 """
 
 from collections.abc import Callable
@@ -10,8 +12,9 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-# REData's days are Spanish peninsular days for every system: Canarias is delivered in
-# peninsular time too (+01:00 / +02:00 offsets).
+# REData's days are Madrid days, and every system is stamped with peninsular offsets (+01:00 /
+# +02:00). Whether Canarias' stamps are peninsular instants or Canarian wall-clock times is not
+# verified (ADR 0003): until it is, joining Canarias to other systems on ts_utc is unsafe.
 MADRID = ZoneInfo("Europe/Madrid")
 
 Granularity = Literal["5min", "15min", "hour", "day"]
@@ -34,76 +37,79 @@ class ValueRule:
 class Dataset:
     name: str
     widget: str
+    # The answer's data.type, which names the widget's scope ("Demanda nacional ..."): a different
+    # one means REData changed what the widget returns, and the chunk is refused.
+    answer_type: str
     time_trunc: Literal["hour", "day"]
     # Nominal spacing; each series' own is measured per chunk (ADR 0003), this is only the fallback
     # for a series with fewer than two points.
     granularity: Granularity
     chunk: Literal["month", "year"]
     systems: tuple[System, ...]
-    value_rule: ValueRule | None = None  # None: any finite value
+    # Counted, not enforced, in Bronze (quality gates are phase 4). None: any finite value.
+    value_rule: ValueRule | None = None
 
 
 POSITIVE = ValueRule("> 0", lambda value: value > 0)
 # SDAC's harmonised clearing-price limits in EUR/MWh, applied to both REData price series.
 HARMONISED_PRICE = ValueRule("within -500..4000 EUR/MWh", lambda value: -500 <= value <= 4000)
+SYSTEMS = (
+    System("peninsular", 8741),
+    System("canarias", 8742),
+    System("baleares", 8743),
+    System("ceuta", 8744),
+    System("melilla", 8745),
+)
 
 DATASETS: dict[str, Dataset] = {
     dataset.name: dataset
     for dataset in (
         # 5-minute points: Real, Forecasted, Scheduled and, in recent data only, Total scheduled.
-        # Peninsular only: with geo parameters the widget answers 400 or 502.
+        # National, as its data.type says (Real is above the five systems' sum); with geo
+        # parameters the widget answers 400 or 502.
         Dataset(
-            "demand_realtime",
-            "demanda/demanda-tiempo-real",
-            "hour",
-            "5min",
-            "month",
-            (System("peninsular"),),
-            POSITIVE,
+            name="demand_realtime",
+            widget="demanda/demanda-tiempo-real",
+            answer_type="Demanda nacional en tiempo real",
+            time_trunc="hour",
+            granularity="5min",
+            chunk="month",
+            systems=(System("national"),),
+            value_rule=POSITIVE,
         ),
         # Hourly demand per electric system; without geo parameters it answers 400.
         Dataset(
-            "demand_hourly",
-            "demanda/evolucion",
-            "hour",
-            "hour",
-            "month",
-            (
-                System("peninsular", 8741),
-                System("canarias", 8742),
-                System("baleares", 8743),
-                System("ceuta", 8744),
-                System("melilla", 8745),
-            ),
-            POSITIVE,
+            name="demand_hourly",
+            widget="demanda/evolucion",
+            answer_type="Evolución de la demanda",
+            time_trunc="hour",
+            granularity="hour",
+            chunk="month",
+            systems=SYSTEMS,
+            value_rule=POSITIVE,
         ),
         # Daily only (time_trunc=hour answers 400). Net generation can be negative (auxiliary
-        # consumption: coal at -120 MWh on some 2026 days), so only finiteness is checked.
+        # consumption: coal at -120 MWh on some 2026 days), so no value rule.
         Dataset(
-            "generation_daily",
-            "generacion/estructura-generacion",
-            "day",
-            "day",
-            "year",
-            (
-                System("national"),
-                System("peninsular", 8741),
-                System("canarias", 8742),
-                System("baleares", 8743),
-                System("ceuta", 8744),
-                System("melilla", 8745),
-            ),
+            name="generation_daily",
+            widget="generacion/estructura-generacion",
+            answer_type="Generation structure by technology",
+            time_trunc="day",
+            granularity="day",
+            chunk="year",
+            systems=(System("national"), *SYSTEMS),
         ),
         # PVPC (hourly) and the spot price (24 points a day until 2024-12-31, then 96). With geo
         # parameters the widget drops the spot price, so it is asked without them.
         Dataset(
-            "market_prices",
-            "mercados/precios-mercados-tiempo-real",
-            "hour",
-            "hour",
-            "month",
-            (System("peninsular"),),
-            HARMONISED_PRICE,
+            name="market_prices",
+            widget="mercados/precios-mercados-tiempo-real",
+            answer_type="Precios mercado peninsular en tiempo real",
+            time_trunc="hour",
+            granularity="hour",
+            chunk="month",
+            systems=(System("peninsular"),),
+            value_rule=HARMONISED_PRICE,
         ),
     )
 }
@@ -131,12 +137,12 @@ class Chunk:
     def slug(self) -> str:
         return f"{self.dataset.name}-{self.system.name}-{self.start:%Y%m%d}-{self.end:%Y%m%d}"
 
-    @property
-    def landing_key(self) -> str:
-        """Deterministic, outside the warehouse prefix: a rerun overwrites the same object."""
+    def landing_key(self, prefix: str, payload_sha256: str) -> str:
+        """Outside the warehouse prefix, named by window and content: a rerun with the same answer
+        overwrites the same object, a different answer gets its own."""
         return (
-            f"landing/redata/{self.dataset.name}/{self.system.name}/"
-            f"{self.start:%Y}/{self.start:%m}/{self.start}_{self.end}.json"
+            f"{prefix}/{self.dataset.name}/{self.system.name}/{self.start:%Y}/{self.start:%m}/"
+            f"{self.start}_{self.end}-{payload_sha256[:12]}.json"
         )
 
     def params(self) -> dict[str, str]:
@@ -153,13 +159,25 @@ class Chunk:
             }
         return params
 
+    # PyIceberg filter syntax; the names are this module's constants, so nothing needs escaping.
+    def scope_filter(self) -> str:
+        """Every row of this dataset and system."""
+        return f"dataset = '{self.dataset.name}' AND electric_system = '{self.system.name}'"
+
     def row_filter(self) -> str:
-        """Exactly the rows this chunk replaces, in PyIceberg's filter syntax (the names are this
-        module's constants, so nothing needs escaping)."""
+        """Exactly the rows this chunk replaces."""
         start, end = self.window_utc
         return (
-            f"dataset = '{self.dataset.name}' AND electric_system = '{self.system.name}' "
+            f"{self.scope_filter()} "
             f"AND ts_utc >= '{start.isoformat()}' AND ts_utc < '{end.isoformat()}'"
+        )
+
+    def outside_filter(self) -> str:
+        """The dataset's and system's rows that this chunk must leave alone."""
+        start, end = self.window_utc
+        return (
+            f"{self.scope_filter()} "
+            f"AND (ts_utc < '{start.isoformat()}' OR ts_utc >= '{end.isoformat()}')"
         )
 
 
@@ -183,7 +201,9 @@ def dataset_named(name: str) -> Dataset:
 
 def plan(dataset: Dataset, start: date, end: date, systems: tuple[str, ...] = ()) -> list[Chunk]:
     """The chunks for [start, end] (local days, inclusive): every selected system (all of them
-    when none is named), each split at calendar month or year boundaries."""
+    when none is named), each split at calendar month or year boundaries. A year chunk that would
+    end inside a month ends at the month before, and the rest of that month is a chunk of its own:
+    REData answers a long daily window ending mid-month up to the month's end (ADR 0003)."""
     if end < start:
         raise ValueError(f"end {end} is before start {start}")
     known = {system.name: system for system in dataset.systems}
@@ -198,10 +218,15 @@ def plan(dataset: Dataset, start: date, end: date, systems: tuple[str, ...] = ()
         first = start
         while first <= end:
             if dataset.chunk == "month":
-                following = (first.replace(day=1) + timedelta(days=32)).replace(day=1)
+                last = min(end, _month_end(first))
             else:
-                following = first.replace(year=first.year + 1, month=1, day=1)
-            last = min(end, following - timedelta(days=1))
+                last = min(end, first.replace(month=12, day=31))
+                if last != _month_end(last) and last.replace(day=1) > first:
+                    last = last.replace(day=1) - timedelta(days=1)
             chunks.append(Chunk(dataset, system, first, last))
             first = last + timedelta(days=1)
     return chunks
+
+
+def _month_end(day: date) -> date:
+    return (day.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)

@@ -23,20 +23,48 @@ def test_sub_daily_datasets_split_at_calendar_months() -> None:
     chunks = plan(REALTIME, date(2026, 1, 15), date(2026, 3, 2))
 
     assert windows(chunks) == [
-        ("peninsular", "2026-01-15", "2026-01-31"),
-        ("peninsular", "2026-02-01", "2026-02-28"),
-        ("peninsular", "2026-03-01", "2026-03-02"),
+        ("national", "2026-01-15", "2026-01-31"),
+        ("national", "2026-02-01", "2026-02-28"),
+        ("national", "2026-03-01", "2026-03-02"),
     ]
 
 
 def test_daily_datasets_split_at_calendar_years() -> None:
-    chunks = plan(GENERATION, date(2024, 6, 1), date(2026, 2, 1), ("canarias",))
+    chunks = plan(GENERATION, date(2024, 6, 1), date(2026, 2, 28), ("canarias",))
 
     assert windows(chunks) == [
         ("canarias", "2024-06-01", "2024-12-31"),
         ("canarias", "2025-01-01", "2025-12-31"),
-        ("canarias", "2026-01-01", "2026-02-01"),
+        ("canarias", "2026-01-01", "2026-02-28"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        # Long windows ending mid-month come back up to the month's end: split at the month.
+        ("2025-02-10", "2025-10-20", [("2025-02-10", "2025-09-30"), ("2025-10-01", "2025-10-20")]),
+        ("2026-01-01", "2026-11-19", [("2026-01-01", "2026-10-31"), ("2026-11-01", "2026-11-19")]),
+        (
+            "2024-06-01",
+            "2025-02-01",
+            [
+                ("2024-06-01", "2024-12-31"),
+                ("2025-01-01", "2025-01-31"),
+                ("2025-02-01", "2025-02-01"),
+            ],
+        ),
+        # Within one month, or ending at a month's end, a window stays whole.
+        ("2026-11-02", "2026-11-19", [("2026-11-02", "2026-11-19")]),
+        ("2025-02-10", "2025-09-30", [("2025-02-10", "2025-09-30")]),
+    ],
+)
+def test_a_year_chunk_ends_at_the_last_full_month(
+    start: str, end: str, expected: list[tuple[str, str]]
+) -> None:
+    chunks = plan(GENERATION, date.fromisoformat(start), date.fromisoformat(end), ("national",))
+
+    assert [(str(c.start), str(c.end)) for c in chunks] == expected
 
 
 def test_every_system_by_default_and_named_ones_once_in_order() -> None:
@@ -111,13 +139,17 @@ def test_request_parameters_landing_key_and_filter() -> None:
         "end_date": "2025-12-31T23:59",
         "time_trunc": "day",
     }
-    assert canarias.landing_key == (
-        "landing/redata/demand_hourly/canarias/2026/11/2026-11-01_2026-11-30.json"
+    assert canarias.landing_key("landing/redata", "0123456789abcdef" * 4) == (
+        "landing/redata/demand_hourly/canarias/2026/11/2026-11-01_2026-11-30-0123456789ab.json"
     )
     assert canarias.slug == "demand_hourly-canarias-20261101-20261130"
     assert canarias.row_filter() == (
         "dataset = 'demand_hourly' AND electric_system = 'canarias' "
         "AND ts_utc >= '2026-10-31T23:00:00+00:00' AND ts_utc < '2026-11-30T23:00:00+00:00'"
+    )
+    assert canarias.outside_filter() == (
+        "dataset = 'demand_hourly' AND electric_system = 'canarias' "
+        "AND (ts_utc < '2026-10-31T23:00:00+00:00' OR ts_utc >= '2026-11-30T23:00:00+00:00')"
     )
 
 

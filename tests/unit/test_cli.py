@@ -413,3 +413,23 @@ def test_ingest_redata_refuses_an_unknown_dataset() -> None:
 
     assert result.exit_code == 1
     assert result.stderr.startswith("error: unknown dataset 'balance'; expected one of: ")
+
+
+def test_ingest_redata_names_rule_breaches_and_dropped_series(redata_stack: FakeRedata) -> None:
+    args = ["ingest", "redata", "--dataset", "demand_realtime", "--start", "2026-11-18"]
+    assert runner.invoke(app, [*args, "--end", "2026-11-18"]).exit_code == 0
+    name = "demand_realtime-national-2026-11-18_2026-11-18.json"
+    document = json.loads(fixture(name))
+    document["included"] = [item for item in document["included"] if item["id"] == "2037"]
+    document["included"][0]["attributes"]["values"][0]["value"] = -1
+    redata_stack.payloads[name] = json.dumps(document).encode()
+
+    result = runner.invoke(app, [*args, "--end", "2026-11-18"])
+
+    assert result.exit_code == 0, result.output
+    line = result.stdout.splitlines()[0]
+    assert line.startswith("redata: demand_realtime national 2026-11-18..2026-11-18: 288 rows")
+    assert line.endswith(
+        "; points breaking the value rules: 2037 1"
+        "; series no longer in the answer: 2052, 2053, 2054"
+    )

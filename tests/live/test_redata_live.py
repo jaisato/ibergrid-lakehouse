@@ -26,3 +26,14 @@ def test_a_recent_day_parses_and_is_complete(name: str) -> None:
     measured = completeness(points, granularities(points, chunk), chunk)
 
     assert measured.received == measured.expected > 0, measured.incomplete
+
+
+def test_year_to_date_generation_comes_back_exact() -> None:
+    """The plan splits a long daily window ending mid-month: each piece holds its window only
+    (parse refuses any point outside it)."""
+    day = datetime.now(MADRID).date() - timedelta(days=2)
+    chunks = plan(DATASETS["generation_daily"], day.replace(month=1, day=1), day, ("national",))
+
+    for chunk in chunks:
+        assert parse(CLIENT.fetch(chunk), chunk)
+    assert chunks[-1].end == day

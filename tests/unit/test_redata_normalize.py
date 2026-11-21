@@ -15,6 +15,7 @@ from ibergrid.sources.redata.normalize import (
     granularities,
     parse,
     to_arrow,
+    violations,
 )
 
 from .conftest import fixture
@@ -44,9 +45,9 @@ def problems_of(c: Chunk, doc: object) -> list[str]:
 @pytest.mark.parametrize(
     ("dataset", "system", "day", "series", "grains", "expected"),
     [
-        ("demand_realtime", "peninsular", "2026-11-18", 4, {"5min"}, 4 * 288),
-        ("demand_realtime", "peninsular", "2026-03-29", 1, {"5min"}, 276),
-        ("demand_realtime", "peninsular", "2026-10-25", 1, {"5min"}, 300),
+        ("demand_realtime", "national", "2026-11-18", 4, {"5min"}, 4 * 288),
+        ("demand_realtime", "national", "2026-03-29", 1, {"5min"}, 276),
+        ("demand_realtime", "national", "2026-10-25", 1, {"5min"}, 300),
         ("demand_hourly", "peninsular", "2026-11-18", 1, {"hour"}, 24),
         ("demand_hourly", "peninsular", "2026-03-29", 1, {"hour"}, 23),
         ("demand_hourly", "peninsular", "2026-10-25", 1, {"hour"}, 25),
@@ -88,8 +89,8 @@ def test_the_25_hour_day_keeps_both_two_oclocks_apart() -> None:
 
 def test_total_scheduled_exists_only_in_recent_data() -> None:
     old, new = (
-        chunk("demand_realtime", "peninsular", "2023-06-15"),
-        chunk("demand_realtime", "peninsular", "2026-11-18"),
+        chunk("demand_realtime", "national", "2023-06-15"),
+        chunk("demand_realtime", "national", "2026-11-18"),
     )
 
     old_series = {p.series_title for p in parse(recorded(old), old)}
@@ -205,19 +206,30 @@ def with_point(c: Chunk, **changes: Any) -> dict[str, Any]:
     return doc
 
 
+def scoped(included: str, answer: str = "Evolución de la demanda") -> bytes:
+    return f'{{"data": {{"type": "{answer}"}}, "included": {included}}}'.encode()
+
+
 @pytest.mark.parametrize(
     ("payload", "problem"),
     [
         (b"<html>", "not JSON (Expecting value: line 1 column 1 (char 0))"),
         (b"[]", "no included[] list of series"),
         (b'{"data": {}}', "no included[] list of series"),
-        (b'{"included": []}', "no observations: the window would be replaced with nothing"),
-        (b'{"included": [1]}', "a series without attributes"),
         (
-            b'{"included": [{"attributes": {"title": "Demand"}}]}',
-            "a series without an id ('Demand')",
+            b'{"included": []}',
+            "the answer is None, not 'Evolución de la demanda': "
+            "REData changed what this widget returns",
         ),
-        (b'{"included": [{"id": "1", "attributes": {}}]}', "series 1: no values[] list"),
+        (
+            scoped("[]", answer="Demanda nacional en tiempo real"),
+            "the answer is 'Demanda nacional en tiempo real', not 'Evolución de la demanda': "
+            "REData changed what this widget returns",
+        ),
+        (scoped("[]"), "no observations: the window would be replaced with nothing"),
+        (scoped("[1]"), "a series without attributes"),
+        (scoped('[{"attributes": {"title": "Demand"}}]'), "a series without an id ('Demand')"),
+        (scoped('[{"id": "1", "attributes": {}}]'), "series 1: no values[] list"),
     ],
 )
 def test_malformed_answers(payload: bytes, problem: str) -> None:
@@ -239,10 +251,7 @@ def test_malformed_answers(payload: bytes, problem: str) -> None:
         ({"value": True}, "value True"),
         ({"value": float("nan")}, "value nan"),
         ({"percentage": "1"}, "percentage '1'"),
-        ({"percentage": 1.5}, "percentage 1.5 is not within 0..1"),
-        ({"percentage": -0.1}, "percentage -0.1 is not within 0..1"),
-        ({"value": 0}, "value 0.0 is not > 0"),
-        ({"value": -3.5}, "value -3.5 is not > 0"),
+        ({"percentage": float("inf")}, "percentage inf"),
         (
             {"datetime": "2026-11-17T23:00:00.000+01:00"},
             "outside the window 2026-11-18..2026-11-18",
@@ -258,21 +267,44 @@ def test_invalid_points(changes: dict[str, Any], problem: str) -> None:
     assert problem in problems[0]
 
 
-def test_prices_outside_the_harmonised_limits_are_refused() -> None:
-    problems = problems_of(PRICES, with_point(PRICES, value=4000.5))
+@pytest.mark.parametrize(
+    ("c", "changes", "counted"),
+    [
+        (HOURLY, {"value": 0}, {"10297": 1}),
+        (HOURLY, {"value": -3.5, "percentage": 1.5}, {"10297": 1}),  # one point, counted once
+        (HOURLY, {"percentage": -0.1}, {"10297": 1}),
+        (PRICES, {"value": 4000.5}, {"1001": 1}),
+        (PRICES, {"value": -500}, {}),
+        (chunk("generation_daily", "national", "2026-11-18"), {"value": -120.0}, {}),
+    ],
+)
+def test_value_rule_breaches_are_counted_not_refused(
+    c: Chunk, changes: dict[str, Any], counted: dict[str, int]
+) -> None:
+    points = parse(json.dumps(with_point(c, **changes)).encode(), c)
 
-    assert problems == [
-        "series 1001 at 2026-11-18T00:00:00.000+01:00: "
-        "value 4000.5 is not within -500..4000 EUR/MWh"
-    ]
+    assert violations(points, c) == counted
+    assert points[0].percentage == changes.get("percentage", points[0].percentage)
 
 
-def test_negative_net_generation_is_kept() -> None:
-    c = chunk("generation_daily", "national", "2026-11-18")
-    doc = document(c)
-    doc["included"][0]["attributes"]["values"][0]["value"] = -120.0
+def test_recorded_answers_break_no_rule() -> None:
+    for c in (HOURLY, PRICES, chunk("demand_realtime", "national", "2026-11-18")):
+        assert violations(parse(recorded(c), c), c) == {}
 
-    assert parse(json.dumps(doc).encode(), c)[0].value == -120.0
+
+def test_a_long_daily_window_ending_mid_month_is_refused() -> None:
+    """REData answers it up to the month's end (2025-10-31 here); plan() never asks for it."""
+    leaking = chunk("generation_daily", "canarias", "2025-02-10", "2025-10-20")
+
+    with pytest.raises(InvalidResponse) as failure:
+        parse(recorded(leaking), leaking)
+
+    assert len(failure.value.problems) == 11  # 2025-10-21 .. 2025-10-31
+    assert "outside the window 2025-02-10..2025-10-20" in failure.value.problems[0]
+    for start, end in (("2025-02-10", "2025-09-30"), ("2025-10-01", "2025-10-20")):
+        exact = chunk("generation_daily", "canarias", start, end)
+        points = parse(recorded(exact), exact)
+        assert {p.ts_local[:10] for p in points} <= {str(day) for day in exact.days}
 
 
 def test_a_null_percentage_is_fine() -> None:
@@ -294,13 +326,13 @@ def test_an_unusable_last_update_is_a_problem() -> None:
 def test_every_problem_is_counted_and_the_message_stays_short() -> None:
     doc = document(HOURLY)
     for point in doc["included"][0]["attributes"]["values"]:
-        point["value"] = -1
+        point["value"] = "n/a"
 
     with pytest.raises(InvalidResponse) as failure:
         parse(json.dumps(doc).encode(), HOURLY)
 
     assert len(failure.value.problems) == 24
-    assert str(failure.value).endswith("is not > 0 (and 19 more)")
+    assert str(failure.value).endswith("value 'n/a' (and 19 more)")
 
 
 def test_daily_points_are_days_apart_also_across_daylight_saving() -> None:
