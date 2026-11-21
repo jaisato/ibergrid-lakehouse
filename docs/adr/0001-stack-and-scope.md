@@ -47,7 +47,7 @@ and runs without a JVM.
 - **DuckDB, Polars and PyIceberg** as engines: in-process and fast on sub-terabyte data. PyIceberg
   talks to the REST catalog, Polars scans Iceberg tables through it, and DuckDB has its own Iceberg
   extension with REST catalog support.
-- **Dagster** (from phase 3) for asset-based orchestration with partitions, backfills and checks.
+- **Dagster** (from phase 1) for asset-based orchestration with partitions, backfills and checks.
 - **Redpanda** as the Kafka-compatible broker: one binary, no JVM, no ZooKeeper, small enough for
   a single node.
 

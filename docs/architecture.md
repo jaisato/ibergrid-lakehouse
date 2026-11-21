@@ -107,7 +107,8 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   (`ibergrid version`) and pushed. The server never builds anything.
 - **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
   creates it and never updates them. After rotating `IBERGRID_S3_*`, run
-  `ibergrid catalog update-credential` (see `.env.example`).
+  `ibergrid catalog update-credential` (see `.env.example`), which also rewrites the storage
+  profile: that is how a warehouse created before ADR 0002 gets remote signing turned off.
 
 ## Environments
 

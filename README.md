@@ -77,24 +77,30 @@ its data.
 Write-Audit-Publish protocol and the measured engine capabilities are in
 [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md).
 
-- **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` and created
-  by `ensure_table`, which also adds new optional columns and refuses any other change. Every
-  write goes to a run's audit branch (`wap.start`, `wap.write`), and `wap.publish` moves `main` to
-  it in one guarded commit, or raises `PublishConflict` and changes nothing.
-- **DuckDB reads.** `duck.connect` attaches the catalog as `lake`; `duck.scan`, `duck.scan_ref`
-  (a branch), `duck.metadata` and `duck.describe` answer from it.
+- **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` (empty
+  until the connectors add their Bronze tables) and created by `ensure_table`, which also adds new
+  optional columns and refuses any other change. Every write goes to a run's audit branch
+  (`wap.start`, `wap.write`); the audit reads the snapshot `wap.head` (or `wap.read`) returns, and
+  `wap.publish(table, run, expected_head)` moves `main` to exactly that snapshot in one guarded
+  commit, optionally with table properties such as stream offsets, or raises `PublishConflict`
+  and changes nothing.
+- **DuckDB reads.** `duck.connect` attaches the catalog as `lake`; `duck.scan` (main or a
+  snapshot), `duck.metadata` and `duck.describe` answer from it.
 - **Maintenance.** `maintenance.expire_snapshots` (PyIceberg) and
-  `maintenance.rewrite_data_files` (DuckDB compaction).
+  `maintenance.rewrite_data_files` (DuckDB compaction, which commits to `main`, so runs open
+  across it have to restart).
 
 The CLI wraps the table registry and the metadata queries, from inside the compose network:
 
 ```bash
-docker compose run --rm --no-deps doctor lake init               # create the registry's tables
-docker compose run --rm --no-deps doctor lake describe ops.smoke # snapshot, refs, data files
+docker compose run --rm --no-deps doctor lake init                  # create the registry's tables
+docker compose run --rm --no-deps doctor lake describe <ns>.<table> # snapshot, refs, data files
 ```
 
 Clients use their own S3 endpoint and keys (`IBERGRID_S3_*`), so the same code runs from the host
-against the published ports, as the integration tests do.
+against the published ports, as the integration tests do. Warehouses are created with remote
+signing off; one created by an earlier version keeps it on until `make down-volumes && make up`
+(local) or `catalog update-credential` (server, see `.env.example`) rewrites its storage profile.
 
 ## Services
 
@@ -160,13 +166,13 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Foundation: compose stack, `ibergrid` CLI, CI/CD, docs | In progress |
-| 1 | Lake library: Iceberg table conventions and I/O with PyIceberg, DuckDB and Polars | In progress (PyIceberg and DuckDB: [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) |
-| 2 | Connectors: REE REData and OMIE ingestion, raw events on Redpanda topics | Planned |
-| 3 | Orchestration with Dagster: assets, partitions, schedules, backfills, asset checks | Planned |
-| 4 | Streaming: continuous ingestion from Redpanda into Iceberg | Planned |
-| 5 | Modelled layers, data quality and table maintenance (compaction, snapshot expiry) | Planned |
-| 6 | Production on a single server with R2 and public endpoints at `ibergrid-lakehouse.jasato.com` | Planned |
+| 0 | Foundation and risk spike: compose stack, `ibergrid` CLI, CI/CD, docs; the lake library and the measured engine capabilities ([ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) | In progress |
+| 1 | Batch ingestion: REE REData and OMIE connectors, orchestrated with Dagster (assets, partitions, schedules, backfills) | Planned |
+| 2 | Streaming lane: Redpanda producer and consumer, dead-letter queue, deduplication, exactly-once into Bronze | Planned |
+| 3 | dbt medallion: Silver and Gold models | Planned |
+| 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |
+| 5 | Benchmarks | Planned |
+| 6 | Serving (API and Evidence portal), production on a single server with R2 at `ibergrid-lakehouse.jasato.com`, final README | Planned |
 
 ## License
 
