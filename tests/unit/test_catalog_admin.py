@@ -50,6 +50,7 @@ def test_fresh_catalog_is_bootstrapped_and_gets_the_warehouse(serve: Serve) -> N
             "endpoint": "http://storage:9000",
             "path-style-access": True,
             "sts-enabled": False,
+            "remote-signing-enabled": False,
         },
         "storage-credential": {
             "type": "s3",

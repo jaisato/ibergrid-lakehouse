@@ -90,6 +90,8 @@ def warehouse_request(catalog: CatalogSettings, storage: StorageSettings) -> dic
             # RustFS and Cloudflare R2 both accept path-style addressing.
             "path-style-access": True,
             "sts-enabled": False,
+            # Every client uses its own S3 keys (ADR 0002): no signing service on the open catalog.
+            "remote-signing-enabled": False,
         },
         "storage-credential": storage_credential(storage),
     }
