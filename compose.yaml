@@ -14,7 +14,8 @@ x-lakekeeper-env: &lakekeeper-env
   LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env (make env)}@catalog-db:5432/lakekeeper
   LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env (make env)}@catalog-db:5432/lakekeeper
   LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY:?set LAKEKEEPER_ENCRYPTION_KEY in .env (make env)}
-  LAKEKEEPER__BASE_URI: http://catalog:8181
+  # No LAKEKEEPER__BASE_URI: Lakekeeper then derives the catalog URI it advertises from each
+  # request's Host header, so host clients get 127.0.0.1:28181 and containers get catalog:8181.
   RUST_LOG: info
 
 # The ibergrid app image (catalog-init, doctor). Same variable names as ibergrid.settings.
@@ -56,7 +57,7 @@ services:
       timeout: 3s
       retries: 12
 
-  # One-shot: create the bucket; an existing bucket is fine.
+  # One-shot: create the bucket unless it exists (RustFS answers create-bucket with 200 either way).
   storage-init:
     <<: *hardened
     profiles: [local-storage]
@@ -74,16 +75,14 @@ services:
       AWS_ENDPOINT_URL: http://storage:9000
       BUCKET: ${IBERGRID_S3_BUCKET:-ibergrid}
       HOME: /tmp
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        if out=$$(aws s3api create-bucket --bucket "$$BUCKET" 2>&1); then
-          echo "created bucket $$BUCKET"
+        if aws s3api head-bucket --bucket "$$BUCKET" 2>/dev/null; then
+          echo "bucket $$BUCKET already exists"
         else
-          case "$$out" in
-            *BucketAlreadyOwnedByYou*) echo "bucket $$BUCKET already exists" ;;
-            *) echo "$$out" >&2; exit 1 ;;
-          esac
+          aws s3api create-bucket --bucket "$$BUCKET" > /dev/null
+          echo "created bucket $$BUCKET"
         fi
     networks: [storage]
 
@@ -113,6 +112,8 @@ services:
   catalog-migrate:
     <<: *hardened
     image: quay.io/lakekeeper/catalog:v0.15.1@sha256:22dcb6044c106a962c242b70051bd226bd50c9134c763121d8713c37fe9a70ec
+    # The image declares no USER (it would run as root); 65532 is distroless's "nonroot".
+    user: "65532:65532"
     command: ["migrate"]
     restart: "no"
     mem_limit: 256m
@@ -125,6 +126,7 @@ services:
   catalog:
     <<: *hardened
     image: quay.io/lakekeeper/catalog:v0.15.1@sha256:22dcb6044c106a962c242b70051bd226bd50c9134c763121d8713c37fe9a70ec
+    user: "65532:65532"
     command: ["serve"]
     restart: on-failure
     mem_limit: 256m
