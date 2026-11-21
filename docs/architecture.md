@@ -1,12 +1,13 @@
 # Architecture
 
 The stack runs the storage, catalog and broker layers and the CLI that wires them together; the
-lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, and the first connector
-(`ibergrid.sources.redata`, phase 1) ingests REData into Bronze through it. Dagster, OMIE and
-streaming build on these next. The decisions behind the stack are in
+lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, and the phase-1 connectors
+(`ibergrid.sources.redata` and `ibergrid.sources.omie`) ingest REData and OMIE into Bronze
+through it. Dagster and streaming build on these next. The decisions behind the stack are in
 [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
 Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
-ingested, in [ADR 0003](adr/0003-redata-ingestion.md).
+ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
+[ADR 0004](adr/0004-omie-ingestion.md).
 
 ## System context (C4 level 1)
 
@@ -39,7 +40,7 @@ C4Container
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData")
+    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(broker, "broker", "Redpanda 26.2", "Kafka API for streaming ingestion (topics from phase 2)")
@@ -48,11 +49,13 @@ C4Container
 
   System_Ext(r2, "Cloudflare R2", "Object storage in production")
   System_Ext(ree, "Red Electrica REData API", "Public JSON:API, no token")
+  System_Ext(omie, "OMIE", "Daily marginalpdbc files, public downloads, no token")
 
   Rel(analyst, catalog, "Iceberg REST", "HTTP")
   Rel(app, ree, "ingest redata: at most 1 request/s", "HTTPS")
+  Rel(app, omie, "ingest omie: one file per delivery day, at most 1 request/s", "HTTPS")
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
-  Rel(app, storage, "Table data and landed raw answers, with its own keys; HeadBucket", "S3 API")
+  Rel(app, storage, "Table data and landed raw answers and files, with its own keys; HeadBucket", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
   Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
@@ -106,6 +109,13 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   to `bronze.redata_observations` through Write-Audit-Publish, replacing exactly that window. It
   has a 384 MiB memory limit, since a month of five-minute demand peaks at 238 MiB; the other app
   one-shots keep 192 MiB.
+- **OMIE ([ADR 0004](adr/0004-omie-ingestion.md)).** `ibergrid ingest omie` runs in the same
+  one-shot. Per chunk (a calendar month of delivery days) it downloads one file per day, checks
+  each against its contract version (hourly until 2025-09-30, quarter-hourly from 2025-10-01),
+  lands the original files under `landing/omie/` and publishes the rows to
+  `bronze.omie_day_ahead_prices` through Write-Audit-Publish, replacing exactly those delivery
+  days. It stops, with exit 0, at the first day OMIE has not published yet. A month peaks at
+  114 MiB.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.
