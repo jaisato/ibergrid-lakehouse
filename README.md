@@ -231,7 +231,7 @@ choice against Airflow, the measurements behind the schedules and the decisions.
 
 | Asset (group `bronze`) | Partitions (Madrid days) | Pool | Schedule (Madrid time) |
 |---|---|---|---|
-| `bronze/redata_observations/<dataset>`, one per REData dataset | 2023-01-01 to yesterday | `redata` | 08:00, yesterday |
+| `bronze/redata_observations/<dataset>`, one per REData dataset | 2023-01-01 to yesterday | `redata` | 09:00, yesterday; re-ingests the 3 days before |
 | `bronze/omie_day_ahead_prices` | 2023-01-01 to tomorrow | `omie` | 16:00, tomorrow if out; 21:30, tomorrow required; both re-ingest the last 7 delivery days |
 
 - **Backfills are one run per range.** A run hands its whole partition range to one connector
@@ -249,6 +249,9 @@ choice against Airflow, the measurements behind the schedules and the decisions.
   the others.
 - **Schedules start stopped** unless `IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING=true`, the
   production default; start them from the UI to try them locally.
+- **Failures.** A scheduled run retries a failed step twice, 15 minutes apart; backfills are not
+  retried (a retry redoes the whole range). A failed run shows in the UI, and the trailing windows
+  refill missed days; nothing sends notifications yet (phase 6).
 - **Runs** execute in `dagster-code`; their metadata, logs and schedule ticks live in
   `orchestration-db` (Postgres), and survive `make down` (not `make down-volumes`).
 
@@ -282,7 +285,8 @@ the app plus Dagster, so the app image stays without it.
 ```bash
 make sync               # install the locked dependencies (uv.lock)
 make ci                 # lint, types, unit tests (>= 90 % branch coverage) and repository checks
-make test-integration   # against the running stack (make up first)
+make test-integration   # against the running stack (make up first); the Dagster tests that
+                        # materialize assets run only on a fresh stack and skip on a backfilled one
 make test-live          # opt-in: a few requests to the live REData API and omie.es (never in CI)
 ```
 
@@ -301,8 +305,10 @@ Pushes to `main` publish the app and orchestration images to `ghcr.io/jaisato/ib
 and `ghcr.io/jaisato/ibergrid-lakehouse-orchestration`. Tags `v*.*.*` rerun CI, publish the
 version and deploy it to a single server over SSH: the job copies [compose.yaml](compose.yaml) and
 [compose.prod.yaml](compose.prod.yaml), pins both image digests in `release.env` (the secrets in
-`.env` are never rewritten), runs `docker compose up -d --wait` and then `ibergrid doctor`
-([deploy/remote.sh](deploy/remote.sh)). Production storage is Cloudflare R2. The deploy job stays
+`.env` are never rewritten), creates the lake's tables (`lake init`, idempotent), runs
+`docker compose up -d --wait` and then `ibergrid doctor` ([deploy/remote.sh](deploy/remote.sh)).
+The Dagster UI publishes no port there: an SSH tunnel to the webserver's internal address serves
+it ([deploy/deploy.env.example](deploy/deploy.env.example)). Production storage is Cloudflare R2. The deploy job stays
 skipped until the server's variables exist ([deploy/deploy.env.example](deploy/deploy.env.example)).
 
 ## Data sources

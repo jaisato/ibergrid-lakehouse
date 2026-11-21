@@ -161,9 +161,12 @@ long-running service is healthy and every one-shot has exited 0.
   of `dagster-code` (the default run launcher: no Docker socket anywhere), whose memory limit
   covers them. The daemon launches a queued run only when its pool (`redata`, `omie`, limit 1) is
   free. Run metadata, materializations and schedule ticks live in `orchestration-db`; compute
-  logs in a volume written by `dagster-code` and read by the webserver. Run monitoring cancels runs
-  past 12 hours, so a run whose code server died is eventually marked over and the daily sweeper
-  frees its audit branches.
+  logs in a volume written by `dagster-code` and read by the webserver. A stop of `dagster-code`
+  waits up to 5 minutes (`stop_grace_period`) for its runs to end; a run killed anyway holds its
+  pool until run monitoring cancels it after 2 hours, and the daily sweeper then frees its audit
+  branches. Healthchecks run every 60 s (every 5 s while a service starts): each one starts a
+  Python process. The deploy runs `lake init` before `up`, so the schedules never meet missing
+  tables.
 - **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
   creates it and never updates them. After rotating `IBERGRID_S3_*`, run
   `ibergrid catalog update-credential` (see `.env.example`), which also resets the storage-profile

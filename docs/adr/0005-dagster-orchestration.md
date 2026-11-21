@@ -130,9 +130,12 @@ Chosen: **Dagster 1.13.31** (dagster, dagster-webserver, dagster-graphql; dagste
   chunks and turn each year of daily generation into many requests; one run per partition would
   cost a request, a WAP cycle and two snapshots per day (ADR 0003).
 - **Partitions are recorded as their chunks publish.** The asset passes `on_chunk` and logs one
-  materialization per day of each published chunk; for REData, whose chunks run system by system,
-  a day is recorded once every system's chunk holding it has published. The asset yields no output
-  of its own. So a long backfill that fails part way keeps, in Dagster as in the lake, the
+  materialization per day of each published chunk; for REData a day is recorded once every
+  system's chunk of its window has published. REData's plan now goes window by window, every
+  system's chunk of a month (or year) before the next one; it went system by system, so a
+  five-system backfill recorded no partition until its last system's pass, and one failing in its
+  third system recorded none of what the first two published. The asset yields no output of its
+  own. So a long backfill that fails part way keeps, in Dagster as in the lake, the
   partitions it published; rerunning the range redoes all of it, idempotently, and a narrower
   range resumes where it stopped.
 - **The metadata is what snapshot expiry would erase.** REData, per day: `complete`,
@@ -168,9 +171,9 @@ calls the sources on its own.
 
 | Schedule | Madrid time | Asks for | Why |
 |---|---|---|---|
-| `redata_daily_schedule` | 08:00 | yesterday, every REData dataset | D-1 complete by 08:50, after REData's 06:47 update (above); never today, which answers 502 or provisional points |
+| `redata_daily_schedule` | 09:00 | yesterday and the 3 days before, every REData dataset | D-1 complete at 08:50 and 09:46 on 2026-11-21 (one morning's evidence), after REData's 06:47 update; never today, which answers 502 or provisional points; the trailing days pick up later corrections |
 | `omie_afternoon_schedule` | 16:00 | tomorrow, tolerating "not published yet"; the last 7 delivery days again | 91 % of the 15-minute era's files were final by 16:00 |
-| `omie_evening_schedule` | 21:30 | tomorrow, **required**; the last 7 delivery days again | 97 % final by 21:30; a later file fails the run loudly instead of passing as "not yet" |
+| `omie_evening_schedule` | 21:30 | tomorrow, **required**; the last 7 delivery days again | 97 % final by 21:30; a later file fails the run (after its retries at 21:45 and 22:00) instead of passing as "not yet" |
 | `sweep_audit_branches_schedule` | 05:30 | the sweeper | before the day's runs |
 
 **The OMIE runs make two connector calls**, as ADR 0004 requires: first the delivery days up to
@@ -183,9 +186,18 @@ the afternoon, a tomorrow not yet out is a successful run that does not record t
 partition; in the evening it fails the run. A file that appears after 21:30 is still ingested by
 the next day's trailing window (then it is a day up to today, which must exist).
 
-REData has no trailing window: if REE revises past values (not measured here), the revisions
-reach Bronze only when a backfill reruns the window. A trailing re-ingest for REData is future
-work, sized by how often and how far back REE revises, once measured.
+**REData's scheduled runs also re-ingest the 3 days before yesterday** (`trailing_days: 3`): one
+request per system, as for yesterday alone, and two across a month boundary. They pick up late
+points and any revision REE makes within those days (how often and how far back REE revises is not
+measured), and they fill a day whose run failed, up to three days later. Older revisions reach
+Bronze only when a backfill reruns the window. Both trailing windows stop at 2023-01-01.
+
+**Retries and failures.** A scheduled run whose step fails runs it again twice, 15 minutes apart
+(`op_retry_policy` on the three scheduled jobs: a source not ready yet, a transient outage). A run
+that fails without a failed step (one that never started, for example) is queued again up to twice
+(`run_retries`, which has no delay of its own). Backfills are not retried, since a retry redoes the
+whole range. What is left is a failed run, visible in the UI and in its run status, and the next
+days' trailing windows; nothing sends a notification yet (phase 6, with the public endpoints).
 
 ### The sweeper: ownership, not age
 
@@ -198,10 +210,17 @@ CLI's timestamped prefixes) is kept and logged; each removal is logged with the 
 status. Age cannot be used: refs carry no creation time and an idle run's head is its base
 (ADR 0002).
 
-A run whose code server dies (a restart, an out-of-memory kill) never reports its end, and the
-default launcher cannot check a run worker's health. Run monitoring therefore cancels any run past
-`max_runtime_seconds` (12 hours, against 30 minutes for the full backfill; a longer one sets the
-`dagster/max_runtime_seconds` tag), and the next sweep frees its branches.
+A stop of `dagster-code` (a deploy recreates it) waits for its runs: the code server does not exit
+while a run is in flight, so compose gives it `stop_grace_period: 5m`. With Docker's default 10 s,
+the review measured a restart in 10.9 s that killed the run worker, left the run "started" and kept
+a second run of its pool queued; with the grace period, a stop during a 31-day OMIE run took 29.8 s
+and the run ended in success (measured on a fresh stack, 2026-11-21). A run whose worker is killed
+anyway (a stop beyond 5 minutes, an out-of-memory kill) never reports its end, and the default
+launcher cannot check a run worker's health: run monitoring cancels it past
+`max_runtime_seconds`, 2 hours (4 times the full backfill's 30 minutes; a longer run sets the
+`dagster/max_runtime_seconds` tag). Until then the run holds its pool (Dagster counts starting,
+started and canceling runs against run-granularity pools), so that source's runs queue for up to 2
+hours; the next sweep frees its branches.
 
 ### Services and run launcher
 
@@ -224,11 +243,25 @@ Dockerfile target (`orchestration`, the app plus the `orchestration` dependency 
 image used by `ingest` and `doctor` stays without Dagster; production pulls it by digest like the
 app image.
 
+Each healthcheck starts a Python process (about 1 s of CPU, measured in review: with 10 and 15 s
+intervals they took some 17 % of a core), so they run every 60 s, and every 5 s during a service's
+first 2 minutes so that `up --wait` still returns quickly.
+
+The deploy (`deploy/remote.sh`) creates the lake's tables before it starts the stack:
+`docker compose run --rm doctor lake init`, idempotent, which first starts the catalog and its
+one-shots. On an empty project that command started storage, the catalog and their one-shots,
+created both tables and started no Dagster service (measured locally with the local-storage
+profile), so the schedules never run against missing tables. In production the webserver
+publishes no port, but the server reaches it at its address on the internal `orchestration`
+network (measured: HTTP 200 from the host), so an SSH tunnel to that address serves the UI
+(`deploy/deploy.env.example`).
+
 ## The full backfill
 
 On 2026-11-21, on the local stack (`make up`, then `lake init`), two backfills launched through the
 webserver's GraphQL API at 09:12 Madrid, 2023-01-01 to 2026-11-20 (1,420 partitions), against the
-live REData API and omie.es:
+live REData API and omie.es (with REData's plan still going system by system, so demand_hourly's
+partitions were recorded during its last system's pass):
 
 | | REData (4 assets) | OMIE |
 |---|---|---|
@@ -280,17 +313,27 @@ defaults (no trailing window), which a unit test now pins against the schedule's
 - Good: a backfill of any range is one connector call per asset with the connectors' own chunks,
   never one WAP run per day; reruns are idempotent, so retrying a failed backfill is safe.
 - Good: the orchestration is unit-tested in-process against the connectors' fakes, and end to end
-  through the real services in the integration tests, without the live sources.
+  through the real services in the integration tests, without the live sources: the health and
+  sweeper tests everywhere, the materializing ones (partitions and metadata, a range as one
+  request, pool exclusion) only on an instance without real materializations, since they record
+  materializations of the real asset keys and deleting their runs does not undo that (CI's fresh
+  stack runs them; a backfilled stack skips them).
 - Good: the per-table and per-source limits are configuration (`pools.default_limit: 1`), checked
   before launch.
 - Bad: a single run per range means a failure late in a long backfill costs a rerun of the whole
   range (idempotent, but the requests are spent again); narrow the range to resume.
 - Bad: `backfill_policy` is a Dagster beta parameter: a minor release may change it.
-- Bad: runs live and die with `dagster-code`; a restart mid-run is noticed only by the runtime
-  limit, and the sweeper frees the branch a day later.
+- Bad: runs live and die with `dagster-code`: a stop waits up to 5 minutes for them, and a run
+  killed anyway holds its pool until the 2-hour runtime limit cancels it; the sweeper frees its
+  branches the next day.
 - Bad: the orchestration image adds 247 MB over the app image, and the stack four long-running
   services and a one-shot.
-- Bad: OMIE's evening run fails on the few days (3 % of the 15-minute era, an upper bound) whose
-  file appears after 21:30; that alert is intended.
-- Neutral: REData revisions after D-1 are not picked up by the schedule (no trailing window yet).
+- Bad: OMIE's evening run fails, after its retries, on the few days (3 % of the 15-minute era, an
+  upper bound) whose file appears after 22:00; until notifications exist (phase 6), a failed run
+  in the UI is the only signal, and the next day's trailing window ingests the file.
+- Bad: the lock moves python-dateutil from 4.0.0 to 2.9.0.post0 (which adds six) for both images:
+  graphene, through dagster-graphql, caps it below 3, and pyiceberg (through strictyaml) is the app
+  image's user of it.
+- Neutral: REData revisions older than the 3-day trailing window reach Bronze only through a
+  backfill.
 - Neutral: asset checks and quality gates are phase 4; lineage to Silver comes with phase 3.
