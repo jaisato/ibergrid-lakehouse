@@ -7,8 +7,11 @@
 2. Run `make ci` before pushing: it runs the same checks as the CI Quality and Repository jobs.
    When the change touches the stack, the compose files or the app image, also run
    `make up && make smoke && make test-integration`.
-3. Open the pull request with the template filled in (summary, checks run, risks). `main` only
-   receives reviewed pull requests with green CI.
+3. Open the pull request with the template filled in (summary, checks run, risks). Every pull
+   request is reviewed before merging. A repository ruleset on `main` enforces the rest: changes
+   arrive only through squash-merged pull requests with `Quality`, `Repository` and `Integration`
+   green, and the branch cannot be force-pushed or deleted. Deployments run only from `v*.*.*`
+   tags (the `production` environment accepts nothing else).
 
 ## Commits
 

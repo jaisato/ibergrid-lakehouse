@@ -34,6 +34,11 @@ updates:
     patterns: ["*"]
     cooldown:
       default-days: 7
+    # pyproject.toml requires Python <3.13 and the image never downloads another interpreter:
+    # only patch updates of python:3.12-slim-trixie.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # image: lines of compose.yaml (RustFS, AWS CLI, Postgres, Lakekeeper, Redpanda).
   - package-ecosystem: docker-compose
@@ -42,3 +47,8 @@ updates:
     patterns: ["*"]
     cooldown:
       default-days: 7
+    # A new Postgres major does not start on the previous major's data directory: CI starts from an
+    # empty volume and would not notice, so majors are a planned migration (dump and restore).
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]

@@ -55,8 +55,9 @@ jobs:
   image:
     name: Image
     needs: [version, ci]
-    # On main both are skipped; on a tag both must succeed.
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    # On main both are skipped; on a tag both must succeed. A job that hits its timeout reports
+    # `cancelled` without cancelling the run, so that result blocks the image too.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

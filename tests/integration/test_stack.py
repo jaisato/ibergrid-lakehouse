@@ -21,9 +21,9 @@ WAREHOUSE = os.environ.get("IBERGRID_CATALOG_WAREHOUSE", "lakehouse")
 BUCKET = os.environ.get("IBERGRID_S3_BUCKET", "ibergrid")
 
 
-def compose_run(service: str) -> subprocess.CompletedProcess[str]:
+def compose_run(service: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["docker", "compose", "run", "--rm", "--no-deps", service],
+        ["docker", "compose", "run", "--rm", "--no-deps", service, *args],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -64,3 +64,19 @@ def test_catalog_bootstrap_is_idempotent() -> None:
         assert f"warehouse {WAREHOUSE!r} already exists" in result.stdout
 
     assert warehouses() == before
+
+
+def test_update_credential_is_accepted_by_the_catalog() -> None:
+    """The rotation step of .env.example, with unchanged keys, against the real management API."""
+
+    def without_timestamp() -> list[dict[str, Any]]:
+        return [{k: v for k, v in w.items() if k != "updated-at"} for w in warehouses()]
+
+    before = without_timestamp()
+
+    result = compose_run("catalog-init", "catalog", "update-credential")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"warehouse {WAREHOUSE!r} now uses the current S3 keys" in result.stdout
+    # Only Lakekeeper's `updated-at` moves: same warehouse, same storage profile.
+    assert without_timestamp() == before
