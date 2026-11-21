@@ -90,6 +90,8 @@ def warehouse_request(catalog: CatalogSettings, storage: StorageSettings) -> dic
             # RustFS and Cloudflare R2 both accept path-style addressing.
             "path-style-access": True,
             "sts-enabled": False,
+            # Every client uses its own S3 keys (ADR 0002): no signing service on the open catalog.
+            "remote-signing-enabled": False,
         },
         "storage-credential": storage_credential(storage),
     }
@@ -118,18 +120,51 @@ def bootstrap_catalog(
     return BootstrapResult(bootstrapped=bootstrapped, warehouse_created=created)
 
 
+# The storage-profile fields this code decides; update_credential leaves every other field (a
+# hand-set remote-signing-url-style, push-s3-delete-disabled, aws-kms-key-arn...) as it is.
+OWNED_PROFILE_FIELDS = (
+    "flavor",
+    "endpoint",
+    "region",
+    "path-style-access",
+    "remote-signing-enabled",
+)
+
+
 def update_credential(
     admin: CatalogAdmin, catalog: CatalogSettings, storage: StorageSettings
 ) -> None:
-    """Replace the warehouse's stored S3 credential with the keys in ``storage``."""
+    """Replace the warehouse's stored S3 credential, and the storage-profile fields this code
+    owns, with the current settings.
+
+    The profile goes along because Lakekeeper validates a profile update with the credential
+    and because warehouses created before ADR 0002 still have remote signing on. The fields that
+    change are logged.
+    """
     warehouse_id = _warehouse_id(admin, catalog)
     if warehouse_id is None:
         raise CatalogError(f"warehouse {catalog.warehouse!r} does not exist: bootstrap it first")
-    path = f"/management/v1/warehouse/{warehouse_id}/storage-credential"
-    _send_secret(
-        admin, path, {"new-storage-credential": storage_credential(storage)}, storage, ok=200
-    )
-    log.info("catalog.credential", warehouse=catalog.warehouse, changed=True)
+    path = f"/management/v1/warehouse/{warehouse_id}"
+    current = admin.expect("GET", path, ok=200).get("storage-profile", {})
+    ours = warehouse_request(catalog, storage)["storage-profile"]
+    # Lakekeeper cannot move a warehouse, and the overlay below would keep the old location.
+    stored = (current.get("bucket"), current.get("key-prefix"))
+    if stored != (ours["bucket"], ours["key-prefix"]):
+        raise CatalogError(
+            f"warehouse {catalog.warehouse!r} lives in s3://{stored[0]}/{stored[1]}, not "
+            f"s3://{ours['bucket']}/{ours['key-prefix']}: a warehouse cannot move buckets "
+            "(check IBERGRID_S3_BUCKET)"
+        )
+    profile = current | {field: ours[field] for field in OWNED_PROFILE_FIELDS}
+    changed = [f for f in OWNED_PROFILE_FIELDS if _normal(current.get(f)) != _normal(ours[f])]
+    body = {"storage-profile": profile, "storage-credential": storage_credential(storage)}
+    _send_secret(admin, f"{path}/storage", body, storage, ok=200)
+    log.info("catalog.credential", warehouse=catalog.warehouse, changed=True, profile=changed)
+
+
+def _normal(value: Any) -> Any:
+    # Lakekeeper returns the endpoint with a trailing slash.
+    return value.rstrip("/") if isinstance(value, str) else value
 
 
 def _warehouse_id(admin: CatalogAdmin, catalog: CatalogSettings) -> str | None:

@@ -7,9 +7,12 @@ import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.exceptions import NoSuchTableError
 
 
 @dataclass(frozen=True)
@@ -100,13 +103,44 @@ class FakeLakekeeper:
                 name = request.body["warehouse-name"]
                 self.warehouses[name] = request.body
                 return 201, {"name": name, "id": f"id-{name}"}
-            case "POST", path if path.endswith("/storage-credential"):
+            case "GET", path if path.startswith("/management/v1/warehouse/id-"):
+                name = path.removeprefix("/management/v1/warehouse/id-")
+                if name not in self.warehouses:
+                    return 404, error("WarehouseNotFound", f"no warehouse {name}", 404)
+                return 200, {"name": name, **self.warehouses[name]}
+            case "POST", path if path.endswith("/storage"):
                 name = path.removeprefix("/management/v1/warehouse/id-").split("/")[0]
                 if name not in self.warehouses:
                     return 404, error("WarehouseNotFound", f"no warehouse {name}", 404)
-                credential = request.body["new-storage-credential"]
-                self.warehouses[name]["storage-credential"] = credential
+                self.warehouses[name] |= request.body
                 return 200, {"name": name, "id": f"id-{name}"}
+        return 404, error("NotFound", f"no route for {request.method} {request.path}", 404)
+
+
+class FakeIcebergRest:
+    """The read side of the Iceberg REST API (what DuckDB's ATTACH uses), over a real catalog.
+
+    Table metadata and files stay local, so DuckDB reads them without any object storage.
+    """
+
+    def __init__(self, catalog: SqlCatalog) -> None:
+        self.catalog = catalog
+
+    def __call__(self, request: Recorded) -> tuple[int, Any]:
+        path = request.path.partition("?")[0]
+        if path == "/catalog/v1/config":
+            return 200, {"defaults": {"prefix": "wh-id"}, "overrides": {}}
+        match path.removeprefix("/catalog/v1/wh-id/").split("/"):
+            case ["namespaces", namespace, "tables", name]:
+                try:
+                    table = self.catalog.load_table((namespace, name))
+                except NoSuchTableError:
+                    return 404, error("NoSuchTableException", f"no table {name}", 404)
+                return 200, {
+                    "metadata-location": table.metadata_location,
+                    "metadata": json.loads(table.metadata.model_dump_json()),
+                    "config": {},
+                }
         return 404, error("NotFound", f"no route for {request.method} {request.path}", 404)
 
 
@@ -153,3 +187,13 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IBERGRID_S3_ACCESS_KEY", "test-access-key")
     monkeypatch.setenv("IBERGRID_S3_SECRET_KEY", "test-secret-key-do-not-log")
+
+
+@pytest.fixture
+def catalog(tmp_path: Path) -> SqlCatalog:
+    """A real Iceberg catalog without Docker: sqlite for the pointers, files for the warehouse."""
+    warehouse = tmp_path / "warehouse"
+    warehouse.mkdir()
+    return SqlCatalog(
+        "test", uri=f"sqlite:///{tmp_path / 'catalog.db'}", warehouse=warehouse.as_uri()
+    )

@@ -3,8 +3,10 @@
 from importlib.metadata import version as package_version
 from typing import Annotated, NoReturn
 
+import duckdb
 import typer
 from pydantic import ValidationError
+from pyiceberg.exceptions import RESTError
 
 from ibergrid.catalog_admin import (
     CatalogAdmin,
@@ -13,6 +15,9 @@ from ibergrid.catalog_admin import (
     update_credential,
 )
 from ibergrid.doctor import run_checks
+from ibergrid.lake import duck, registry
+from ibergrid.lake.catalog import rest_catalog
+from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
 from ibergrid.logging import configure_logging
 from ibergrid.settings import Settings, base_url, describe_validation_error
 
@@ -26,6 +31,8 @@ catalog_app = typer.Typer(
     help="Manage the Iceberg REST catalog (Lakekeeper).", no_args_is_help=True
 )
 app.add_typer(catalog_app, name="catalog")
+lake_app = typer.Typer(help="Create and inspect the lake's Iceberg tables.", no_args_is_help=True)
+app.add_typer(lake_app, name="lake")
 
 
 def _load_settings() -> Settings:
@@ -75,7 +82,7 @@ def catalog_bootstrap() -> None:
 
 @catalog_app.command("update-credential")
 def catalog_update_credential() -> None:
-    """Store the current IBERGRID_S3_* keys in the warehouse (after rotating them)."""
+    """Store the current IBERGRID_S3_* keys and storage profile in the warehouse."""
     settings = _load_settings()
     admin = CatalogAdmin(base_url(settings.catalog.url))
     try:
@@ -85,6 +92,58 @@ def catalog_update_credential() -> None:
     typer.echo(f"catalog: warehouse {settings.catalog.warehouse!r} now uses the current S3 keys")
 
 
-def _fail(exc: CatalogError) -> NoReturn:
+@lake_app.command("init")
+def lake_init() -> None:
+    """Create the registry's namespaces and tables; existing tables only gain optional columns
+    and changed properties, and any other difference fails."""
+    settings = _load_settings()
+    if not registry.TABLES:
+        typer.echo("lake: no tables registered")
+        return
+    try:
+        catalog = rest_catalog(settings)
+        for spec in registry.TABLES:
+            result = ensure_table(catalog, spec)
+            typer.echo(f"lake: {spec.namespace}.{spec.name} {_outcome(result)}")
+    # OSError: requests' connection errors; RESTError: any HTTP error answer from the catalog.
+    except (IncompatibleTableChange, OSError, RESTError) as exc:
+        _fail(exc)
+
+
+@lake_app.command("describe")
+def lake_describe(
+    table: Annotated[str, typer.Argument(help="<namespace>.<table>, for example ops.smoke")],
+) -> None:
+    """Main's current snapshot, the refs (branches and tags) and main's data files."""
+    settings = _load_settings()
+    try:
+        name = duck.table_name(table)
+        info = duck.describe(duck.connect(settings), name)
+    except (ValueError, duckdb.Error) as exc:
+        _fail(exc)
+    if info.snapshot is None:
+        snapshot = "none (the table has no snapshot yet)"
+    else:
+        snapshot_id, operation, committed = info.snapshot
+        snapshot = f"{snapshot_id} ({operation}, {committed:%Y-%m-%d %H:%M:%S} UTC)"
+    refs = ", ".join(f"{ref} -> {target} ({kind.lower()})" for ref, kind, target in info.refs)
+    typer.echo(f"table:      {table}")
+    typer.echo(f"snapshot:   {snapshot}")
+    typer.echo(f"refs:       {refs or 'none'}")
+    typer.echo(f"data files: {info.data_files} ({info.data_bytes} bytes)")
+
+
+def _outcome(result: EnsureResult) -> str:
+    if result.created:
+        return "created"
+    changes = []
+    if result.added_columns:
+        changes.append("added columns " + ", ".join(result.added_columns))
+    if result.updated_properties:
+        changes.append("updated properties " + ", ".join(result.updated_properties))
+    return "; ".join(changes) or "unchanged"
+
+
+def _fail(exc: Exception) -> NoReturn:
     typer.echo(f"error: {exc}", err=True)
     raise typer.Exit(1) from exc

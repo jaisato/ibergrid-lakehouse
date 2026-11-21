@@ -1,8 +1,10 @@
 # Architecture
 
-Phase 0 runs the storage, catalog and broker layers and the CLI that wires them together. The
-pipelines (connectors, Dagster, streaming) build on these services in later phases. The decisions
-behind the stack are in [ADR 0001](adr/0001-stack-and-scope.md).
+Phase 0 runs the storage, catalog and broker layers and the CLI that wires them together, and the
+lake library (`ibergrid.lake`) writes and reads Iceberg tables on them. The pipelines
+(connectors, Dagster, streaming) build on these in later phases. The decisions behind the stack
+are in [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
+Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md).
 
 ## System context (C4 level 1)
 
@@ -35,7 +37,7 @@ C4Container
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(app, "ibergrid CLI", "Python 3.12, app image", "catalog-init bootstraps the catalog; doctor checks readiness")
+    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(broker, "broker", "Redpanda 26.2", "Kafka API for streaming ingestion (topics from phase 2)")
@@ -45,8 +47,8 @@ C4Container
   System_Ext(r2, "Cloudflare R2", "Object storage in production")
 
   Rel(analyst, catalog, "Iceberg REST", "HTTP")
-  Rel(app, catalog, "Bootstrap, warehouse, /health", "HTTP")
-  Rel(app, storage, "Signed HeadBucket", "S3 API")
+  Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
+  Rel(app, storage, "Table data with its own keys; HeadBucket", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
   Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
@@ -64,7 +66,7 @@ C4Container
 | `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | `lakekeeper serve`: Iceberg REST catalog and management API | catalog-db, catalog, storage | 28181 |
 | `catalog-init` | `ibergrid-app` (this repository) | One-shot: `ibergrid catalog bootstrap` | catalog | |
 | `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node, dev-container mode | broker | 29092 (Kafka), 29644 (admin) |
-| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor` | storage, catalog, broker | |
+| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
 
 Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
 healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `docker compose up
@@ -83,9 +85,15 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
 - **Secrets.** Compose reads them from `.env` with `${VAR:?}` and no defaults, so a missing secret
   stops `docker compose` before anything starts. The app keeps them as `SecretStr` and its
   validation errors never echo input values.
-- **Storage readiness.** `ibergrid doctor` sends a SigV4-signed `HEAD /<bucket>` instead of
-  RustFS's anonymous `/health/ready`: the same check proves the endpoint, the keys and the bucket
-  on RustFS and on Cloudflare R2, which has no health endpoint.
+- **Storage readiness.** `ibergrid doctor` sends a HeadBucket through pyarrow's S3 client
+  instead of RustFS's anonymous `/health/ready`: the same check proves the endpoint, the keys and
+  the bucket on RustFS and on Cloudflare R2, which has no health endpoint.
+- **Lake access ([ADR 0002](adr/0002-iceberg-write-and-read-paths.md)).** PyIceberg writes,
+  always to a run's audit branch, and publishes; DuckDB reads, queries metadata and compacts.
+  Lakekeeper hands every client the warehouse's in-network endpoint (`http://storage:9000`) and
+  no credentials, and the warehouse has remote signing off, so each client applies its own
+  `IBERGRID_S3_*` endpoint and keys: the same code runs in containers and from the host. The app
+  image bakes DuckDB's extensions at build time and never downloads them at runtime.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.
@@ -99,7 +107,9 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   (`ibergrid version`) and pushed. The server never builds anything.
 - **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
   creates it and never updates them. After rotating `IBERGRID_S3_*`, run
-  `ibergrid catalog update-credential` (see `.env.example`).
+  `ibergrid catalog update-credential` (see `.env.example`), which also resets the storage-profile
+  fields ibergrid owns and keeps the others: that is how a warehouse created before ADR 0002 gets
+  remote signing turned off.
 
 ## Environments
 
