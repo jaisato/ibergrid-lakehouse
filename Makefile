@@ -28,7 +28,7 @@ PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 
 .PHONY: help sync lock lint format typecheck test test-integration test-live contracts audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke \
-	transform quality-check maintain stream-up stream-down stream-status chaos-stream chaos-data
+	transform quality-check maintain stream-up stream-down stream-status chaos-stream chaos-data benchmark
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -147,3 +147,6 @@ chaos-stream: build ## SIGKILL the consumer mid-flush in a throwaway compose pro
 
 chaos-data: build ## Inject corrupt data into WAP audit branches in a throwaway stack; prove 100 % blocking & quarantine
 	$(UV) run python -u scripts/chaos_data.py
+
+benchmark: ## Run DuckDB vs Polars storage/engine & zero-scan metadata benchmarks against the running stack
+	$(UV) run python -u benchmarks/run.py

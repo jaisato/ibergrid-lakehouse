@@ -4,18 +4,21 @@ An open, multi-engine lakehouse for Iberian electricity data: Red Eléctrica's R
 day-ahead market files, stored as Apache Iceberg tables behind a REST catalog and readable from
 DuckDB, Polars and PyIceberg without a JVM.
 
-**Status: phase 4 (quality, maintenance & lineage) complete.** The stack runs end to end (object
+**Status: phase 5 (benchmarks & EU cost analysis) complete.** The stack runs end to end (object
 storage, Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes
-Iceberg tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
-Eléctrica's REData API and OMIE's day-ahead marginal prices into Bronze; Dagster runs them as
-partitioned assets with daily schedules, backfills from 2023-01-01, a dead-branch sweeper and daily
-automated table maintenance; a streaming lane carries REData's five-minute national demand through
-Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once; dbt Core +
+Iceberg tables through Write-Audit-Publish and reads them with DuckDB and Polars; two connectors
+ingest Red Eléctrica's REData API and OMIE's day-ahead marginal prices into Bronze; Dagster runs
+them as partitioned assets with daily schedules, backfills from 2023-01-01, a dead-branch sweeper
+and daily automated table maintenance; a streaming lane carries REData's five-minute national demand
+through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once; dbt Core +
 `dbt-duckdb` builds and tests 5 Silver and 4 Gold medallion Iceberg tables published via PyIceberg
-WAP; and zero-scan Iceberg metadata checks, declarative Soda v4 contracts (`contracts/soda/*.yml`),
+WAP; zero-scan Iceberg metadata checks, declarative Soda v4 contracts (`contracts/soda/*.yml`),
 ACID quarantine (`quarantine.rejected_records`), safety-windowed S3 orphan-file cleanup,
 OpenLineage v2 events and a reproducible data chaos proof (`make chaos-data`, 5/5 = 100 % WAP
-blocking) guard every layer. Benchmarks are next (see [Roadmap](#roadmap)).
+blocking) guard every layer; and a reproducible multi-engine benchmark suite (`make benchmark`)
+proves DuckDB 2.0 + Polars 2.1 performance, zero-scan metadata I/O savings and €3.79–€6.49/month
+European hosting cost ([ADR 0009](docs/adr/0009-duckdb-polars-vs-spark.md)). Serving (FastAPI +
+interactive portal) and production hardening are next (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -391,6 +394,35 @@ make maintain        # dry-run compaction, snapshot expiry and S3 orphan-file sc
 make chaos-data      # 5-scenario WAP data chaos proof in a throwaway compose project (100 % blocked)
 ```
 
+## Benchmarks and EU cloud cost
+
+`make benchmark` (`benchmarks/run.py`) runs a non-destructive, reproducible multi-engine benchmark
+suite against the live 3.9-year backfilled dataset (`2023-01-01`..`2026-11-21`, 2,546,472 rows,
+47.98 MiB Parquet, 229.25 MiB total S3 bucket footprint including raw JSON/OMIE landing) and saves
+machine-readable output to [benchmarks/results/latest.json](benchmarks/results/latest.json) and
+[docs/benchmarks.md](docs/benchmarks.md). Architectural rationale and Spark crossover thresholds
+are documented in [ADR 0009](docs/adr/0009-duckdb-polars-vs-spark.md).
+
+- **Sub-second cold starts & low memory:** DuckDB 2.0.1 starts in **96.8 ms** (`<= 252.9 MiB`
+  isolated query RSS) and Polars 2.1.0 in **124.7 ms** (`<= 214.0 MiB` isolated query RSS),
+  matching 100 % row-for-row across all 24 `(query, layout, engine)` combinations.
+- **Partition pruning & compaction:** on selective monthly queries (`Q1` on 1.69M-row
+  `bronze.redata_observations` and `Q3` on 409k-row `silver.demand_national_5min`), Iceberg
+  manifest/partition planning reduces the planned Parquet file footprint by **96.5 %–98.7 %**
+  (`1/192` files = `421.3 KiB` vs `16.95 MiB` unpartitioned Parquet on `Q1`) before either engine
+  opens a Parquet footer; compacting 971 fragmented Bronze files into 192 cuts DuckDB `Q1` p50
+  latency by **2.63x** (`29.11 ms -> 11.07 ms`).
+- **Zero-scan metadata auditing:** `inspect_table_metadata` verifies row counts, null counts and
+  min/max bounds across **all audited columns** of all 12 populated tables with **0 B Parquet data
+  scanned** (100 % data-file I/O avoided vs `47.98 MiB` full SQL scans).
+- **Real European monthly cost:** `229.25 MiB` stays inside Cloudflare R2's 10 GB free tier
+  (**€0.00/month** storage & **$0.00 egress**), pairing with Hetzner Cloud EU CAX11 (**€3.79/mo**)
+  or CAX21 (**€6.49/mo**) vs **~€360+/mo** for a managed Spark EU stack (**~55x cheaper**).
+
+```bash
+make benchmark       # DuckDB vs Polars storage/engine & zero-scan metadata benchmarks
+```
+
 ## Services
 
 One container per service. Ports are published on 127.0.0.1 only, and only in local development.
@@ -483,7 +515,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | 2 | Streaming lane: REData's real-time demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once through offsets in the WAP publish, contract, dead-letter topic, deduplication, crash test ([ADR 0006](docs/adr/0006-streaming-lane.md)) | Done |
 | 3 | dbt medallion: 5 Silver and 4 Gold Iceberg tables built with dbt Core + `dbt-duckdb`, 87 schema/singular tests, PyIceberg WAP publication, Dagster `@multi_asset` and full 2023-2026 materialization ([ADR 0007](docs/adr/0007-dbt-medallion.md)) | Done |
 | 4 | Quality and maintenance: zero-scan Iceberg metadata checks, Soda v4 YAML contracts, ACID quarantine, S3 orphan cleanup + Dagster maintenance, OpenLineage v2, reproducible data chaos proof ([ADR 0008](docs/adr/0008-quality-maintenance-lineage.md)) | Done |
-| 5 | Benchmarks | Planned |
+| 5 | Benchmarks: reproducible DuckDB 2.0 vs Polars 2.1 storage/engine & zero-scan metadata suite on 3.9-year dataset, chaos proof summary, EU monthly cost model and DuckDB/Polars vs Spark threshold ([ADR 0009](docs/adr/0009-duckdb-polars-vs-spark.md)) | Done |
 | 6 | Serving (API and Evidence portal), production on a single server with R2 at `ibergrid-lakehouse.jasato.com`, final README | Planned |
 
 ## License

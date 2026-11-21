@@ -50,8 +50,14 @@ orchestration = [
   "dagster-postgres==0.29.31",
   "dagster-webserver==1.13.31",
 ]
+# Polars (ADR 0009): multi-engine benchmark suite comparing DuckDB 2.0 and Polars 2.1 over
+# unpartitioned Parquet, partitioned Iceberg and compacted Iceberg. Kept out of runtime images.
+benchmarks = [
+  "polars==2.1.0",
+]
 dev = [
   { include-group = "orchestration" },
+  { include-group = "benchmarks" },
   "mypy>=2.4",
   "pip-audit>=2.10",
   "pre-commit>=4.7",
@@ -91,7 +97,7 @@ known-first-party = ["ibergrid"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-files = ["src", "tests"]
+files = ["src", "tests", "benchmarks"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
