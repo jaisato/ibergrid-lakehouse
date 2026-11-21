@@ -104,9 +104,12 @@ def test_omie_asks_for_tomorrow_once_a_day_across_dst(schedule: str, dst: date) 
     days = [dst + timedelta(days=n) for n in range(-3, 3)]
     hour = 16 if schedule == "omie_afternoon_schedule" else 21
 
-    keys = [request.partition_key for day in days for request in requested(schedule, at(day, hour))]
+    requests = [request for day in days for request in requested(schedule, at(day, hour))]
 
-    assert keys == [str(day + timedelta(days=1)) for day in days]
+    assert [r.partition_key for r in requests] == [str(day + timedelta(days=1)) for day in days]
+    # The tick carries the job's config: a run launched by hand without it gets the defaults.
+    config = requests[0].run_config["ops"][omie_day_ahead_prices.op.name]["config"]
+    assert config["trailing_days"] == 7
 
 
 def test_the_omie_jobs_reingest_seven_days_and_only_the_evening_one_requires_publication() -> None:
