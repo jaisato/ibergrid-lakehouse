@@ -403,6 +403,35 @@ def test_a_foreign_write_after_an_interrupted_checkpoint_still_conflicts(
     assert "stream.offsets" not in loaded.properties
 
 
+def test_a_straggler_write_is_not_taken_for_the_runs_checkpoint(loaded: Table) -> None:
+    """Same run id and parent as a checkpoint, but no marker: it was never audited."""
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    wap.write(loaded, audit, rows(("2026-01-09", 9)))  # a straggler, after the empty audit
+    main_before = loaded.metadata.refs["main"].snapshot_id
+
+    with pytest.raises(wap.PublishConflict, match="since its audit"):
+        wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+    loaded.refresh()
+    assert loaded.metadata.refs["main"].snapshot_id == main_before
+    assert "stream.offsets" not in loaded.properties
+
+
+def test_a_marked_snapshot_that_adds_data_is_not_resumed(loaded: Table, other: Table) -> None:
+    """The checkpoint marker is a claim: a marked snapshot that adds a file is refused."""
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    forged = {wap.RUN_ID_PROPERTY: "idle", wap.CHECKPOINT_PROPERTY: "true"}
+    other.append(rows(("2026-01-09", 7)), snapshot_properties=forged, branch=audit.name)
+    main_before = loaded.metadata.refs["main"].snapshot_id
+
+    with pytest.raises(wap.PublishConflict, match="since its audit"):
+        wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+    loaded.refresh()
+    assert loaded.metadata.refs["main"].snapshot_id == main_before
+    assert "stream.offsets" not in loaded.properties
+
+
 def test_a_checkpoint_needs_live_data_in_main(loaded: Table) -> None:
     """After a published delete-everything run, main holds no data file: an empty append on it
     would have an empty manifest list, which DuckDB cannot read."""

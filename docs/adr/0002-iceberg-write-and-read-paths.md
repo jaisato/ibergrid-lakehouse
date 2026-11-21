@@ -199,8 +199,9 @@ sequenceDiagram
    everything deleted), an empty append there is the empty-manifest trap, so a checkpoint needs
    data (`WapError`). If the publish commit fails after the checkpoint append (a lost answer, a
    crash), the next `publish` with the same arguments finds the run's own checkpoint on the
-   branch (on top of `expected_head`, carrying the run id and the marker) and publishes it;
-   anything else on the branch still conflicts.
+   branch (on top of `expected_head`, carrying the run id and the marker, and adding or deleting
+   no file) and publishes it; anything else on the branch still conflicts. The marker is only a
+   claim: a marked snapshot that changes a file was never audited and is refused.
 5. Publishing again is safe: when the branch is gone and `expected_head` is in `main`'s history
    since the base (for a checkpoint run, a snapshot with its run id), `publish` returns it; a
    discarded run raises `WapError`. An empty run without properties changes nothing, so publishing

@@ -347,7 +347,18 @@ def _own_checkpoint(
         and snapshot.parent_snapshot_id == parent
         and summary[RUN_ID_PROPERTY] == audit.run_id
         and summary[CHECKPOINT_PROPERTY] == "true"
+        # The marker is only a claim: a checkpoint changes no file, so anything that does was
+        # never audited and must not be resumed.
+        and all(summary[key] in (None, "0") for key in _FILE_CHANGES)
     )
+
+
+_FILE_CHANGES = (
+    "added-data-files",
+    "deleted-data-files",
+    "added-delete-files",
+    "removed-delete-files",
+)
 
 
 def _ref(table: Table, ref: str) -> int | None:
