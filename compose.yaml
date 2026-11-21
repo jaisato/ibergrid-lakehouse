@@ -204,7 +204,7 @@ services:
 
   # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...`. REData is
   # on the public internet (these networks have egress). A month of five-minute demand (35,760
-  # rows) peaks at 195 MiB of cgroup memory (ADR 0003), hence its own limit.
+  # rows) peaks at 238 MiB of cgroup memory (ADR 0003), hence its own limit.
   ingest:
     <<: *app
     scale: 0

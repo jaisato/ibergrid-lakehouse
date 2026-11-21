@@ -64,7 +64,7 @@ Then create the lake's tables and ingest a day of REData, from inside the compos
 
 ```bash
 docker compose run --rm --no-deps doctor lake init
-docker compose run --rm --no-deps doctor ingest redata --dataset demand_hourly \
+docker compose run --rm --no-deps ingest redata --dataset demand_hourly \
   --start 2026-11-20 --end 2026-11-20
 ```
 
@@ -114,33 +114,43 @@ API limits and the decisions.
 
 | Dataset | REData widget | Points | Electric systems |
 |---|---|---|---|
-| `demand_realtime` | `demanda/demanda-tiempo-real` | 5 minutes: real, forecast, scheduled | peninsular |
-| `demand_hourly` | `demanda/evolucion` | hourly demand | peninsular, canarias, baleares, ceuta, melilla |
+| `demand_realtime` | `demanda/demanda-tiempo-real` | 5 minutes: real, forecast, scheduled | national (the widget's own scope; above the five systems' sum) |
+| `demand_hourly` | `demanda/evolucion` | hourly demand | peninsular, canarias, baleares, ceuta, melilla (Canarias' timestamps: see below) |
 | `generation_daily` | `generacion/estructura-generacion` | daily generation by technology (REData has no hourly view) | national and the five systems |
 | `market_prices` | `mercados/precios-mercados-tiempo-real` | spot price (15 minutes since 2025) and PVPC (hourly) | peninsular |
 
 ```bash
-docker compose run --rm --no-deps doctor ingest redata --dataset demand_realtime \
+docker compose run --rm --no-deps ingest redata --dataset demand_realtime \
   --start 2026-10-01 --end 2026-10-31            # --system <name> (repeatable) narrows it
 ```
 
 ```text
-redata: demand_realtime peninsular 2026-10-01..2026-10-31: 35760 rows, 35760/35760 points (100.0 %), snapshot 5304562848972194780
+redata: demand_realtime national 2026-10-01..2026-10-31: 35760 rows, 35760/35760 points (100.0 %), snapshot 435293640119925785
 redata: 1 chunk(s) published
 ```
 
 - **Chunks.** Local (Madrid) days, one request and one Write-Audit-Publish run per calendar month
-  (per calendar year for daily generation), at most one request a second with bounded retries.
+  (per calendar year for daily generation, ending at the last full month: REData answers a long
+  daily window that ends mid-month up to the month's end), at most one request a second per
+  process, with bounded retries.
 - **Idempotent.** Each chunk replaces exactly its dataset, system and UTC window, so a rerun or a
   backfill leaves the same rows. The first failed chunk exits 1; earlier chunks stay published.
-- **Validated, completeness measured.** A malformed answer, a repeated key, a point outside the
-  window or an implausible value (demand <= 0, prices outside -500..4000 EUR/MWh) refuses the
-  chunk before anything is written. Missing points do not: each line reports expected against
-  received points (DST-aware) and names incomplete days, which also go to the snapshot summary
-  (`ibergrid.redata.*`). Today's partial data shows up as an incomplete day.
+- **Checked, not gated.** A structural problem refuses the chunk before anything is written:
+  another widget scope than expected, a malformed answer, a value that is not a finite number, a
+  repeated key, a point outside the window. Everything else is measured and kept, as Bronze
+  should: each line reports expected against received points (DST-aware) with the incomplete
+  days, the points that break the dataset's value rule (demand <= 0, prices outside
+  -500..4000 EUR/MWh, a share outside 0..1) and the series that were in the window before but
+  are missing now; the snapshot summary records the same (`ibergrid.redata.*`). Quality gates
+  are phase 4.
 - **Raw answers.** Each response body lands at
-  `s3://<bucket>/landing/redata/<dataset>/<system>/<YYYY>/<MM>/<start>_<end>.json`, outside the
-  warehouse; every row carries that path and the body's SHA-256.
+  `s3://<bucket>/landing/redata/<dataset>/<system>/<YYYY>/<MM>/<start>_<end>-<sha256[:12]>.json`,
+  outside the warehouse: one object per window and answer. Every row carries that path and the
+  body's SHA-256.
+- **Canarias' timestamps are as delivered.** REData stamps every system with peninsular offsets;
+  Canarias' load shape suggests Canarian wall-clock times instead, which would put its `ts_utc`
+  one hour early. Not verified, so joining Canarias to other systems on `ts_utc` is unsafe for
+  now ([ADR 0003](docs/adr/0003-redata-ingestion.md)).
 - **Library.** `ibergrid.sources.redata.ingest.ingest(settings, dataset, start, end, systems,
   run_id_prefix)` is what the CLI calls and what the Dagster assets will call.
 
@@ -163,7 +173,8 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | Iceberg REST catalog and management API | [28181](http://127.0.0.1:28181/health) |
 | `catalog-init` | app image (`ibergrid catalog bootstrap`) | One-shot: bootstraps the catalog and creates the warehouse, idempotently | |
 | `broker` | `redpandadata/redpanda:v26.2.2` | Kafka API, single node | 29092 Kafka, 29644 admin |
-| `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` and `ingest` commands | |
+| `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
+| `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...` (384 MiB limit) | |
 
 Every third-party image is pinned by tag and digest in [compose.yaml](compose.yaml).
 

@@ -39,7 +39,7 @@ C4Container
   Person(analyst, "Data engineer / analyst")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake and ingest commands")
+    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(broker, "broker", "Redpanda 26.2", "Kafka API for streaming ingestion (topics from phase 2)")
@@ -70,7 +70,8 @@ C4Container
 | `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | `lakekeeper serve`: Iceberg REST catalog and management API | catalog-db, catalog, storage | 28181 |
 | `catalog-init` | `ibergrid-app` (this repository) | One-shot: `ibergrid catalog bootstrap` | catalog | |
 | `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node, dev-container mode | broker | 29092 (Kafka), 29644 (admin) |
-| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` and `ibergrid ingest ...` | storage, catalog, broker | |
+| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
+| `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
 
 Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
 healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `docker compose up
@@ -99,11 +100,12 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   `IBERGRID_S3_*` endpoint and keys: the same code runs in containers and from the host. The app
   image bakes DuckDB's extensions at build time and never downloads them at runtime.
 - **Ingestion ([ADR 0003](adr/0003-redata-ingestion.md)).** `ibergrid ingest redata` runs in
-  the `doctor` one-shot, whose networks have egress to the public API. Per chunk (a dataset, a
-  system and a calendar month or year of local days) it fetches, validates, lands the raw answer
-  under `landing/` in the bucket (outside the warehouse prefix) and publishes the rows to
-  `bronze.redata_observations` through Write-Audit-Publish, replacing exactly that window. The app
-  one-shots have a 384 MiB memory limit: a month of five-minute demand peaks at 195 MiB.
+  the `ingest` one-shot, whose networks have egress to the public API. Per chunk (a dataset, a
+  system and a calendar month or year of local days) it fetches, checks the structure, lands the
+  raw answer under `landing/` in the bucket (outside the warehouse prefix) and publishes the rows
+  to `bronze.redata_observations` through Write-Audit-Publish, replacing exactly that window. It
+  has a 384 MiB memory limit, since a month of five-minute demand peaks at 238 MiB; the other app
+  one-shots keep 192 MiB.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.
