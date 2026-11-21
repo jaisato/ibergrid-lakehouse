@@ -4,12 +4,14 @@ The stack runs the storage, catalog and broker layers and the CLI that wires the
 lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, the phase-1 connectors
 (`ibergrid.sources.redata` and `ibergrid.sources.omie`) ingest REData and OMIE into Bronze
 through it, and Dagster (`ibergrid.orchestration`) runs the connectors as partitioned assets on
-schedules and backfills. Streaming builds on these next. The decisions behind the stack are in
+schedules and backfills; the streaming lane (`ibergrid.stream`) carries REData's five-minute
+demand through Redpanda into Bronze, exactly once. The decisions behind the stack are in
 [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
 Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
 ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
 [ADR 0004](adr/0004-omie-ingestion.md); how both are orchestrated, in
-[ADR 0005](adr/0005-dagster-orchestration.md).
+[ADR 0005](adr/0005-dagster-orchestration.md); the streaming lane and the broker's security, in
+[ADR 0006](adr/0006-streaming-lane.md).
 
 ## System context (C4 level 1)
 
@@ -37,7 +39,7 @@ C4Context
 
 ```mermaid
 C4Container
-  title IberGrid Lakehouse - containers (C4 level 2, phase 1)
+  title IberGrid Lakehouse - containers (C4 level 2, phase 2)
 
   Person(analyst, "Data engineer / analyst")
 
@@ -49,7 +51,10 @@ C4Container
     Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
-    Container(broker, "broker", "Redpanda 26.2", "Kafka API for streaming ingestion (topics from phase 2)")
+    Container(producer, "stream-producer", "Python 3.12, confluent-kafka, app image", "Polls the REData real-time demand every 5 min; emits changed points")
+    Container(consumer, "stream-consumer", "Python 3.12, confluent-kafka, PyIceberg, app image", "Validates, deduplicates, dead-letters; WAP micro-batches with the offsets in the publish")
+    Container(broker, "broker", "Redpanda 26.2", "Kafka API with SASL/SCRAM and ACLs: redata.demand.realtime.v1 and its DLQ")
+    Container(brokerinit, "broker-init", "Redpanda 26.2 (rpk), one-shot", "Authentication, topics, users and ACLs")
     ContainerDb(storage, "storage", "RustFS 1.0.6", "S3-compatible bucket, local profile only")
   }
 
@@ -73,6 +78,12 @@ C4Container
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
   Rel(app, storage, "Table data and landed raw answers and files, with its own keys; HeadBucket", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
+  Rel(producer, ree, "demanda-tiempo-real, every 5 min, at most 1 request/s", "HTTPS")
+  Rel(producer, broker, "Produces events as ibergrid-producer", "Kafka, SASL/SCRAM")
+  Rel(consumer, broker, "Consumes; dead letters; group offsets for lag", "Kafka, SASL/SCRAM")
+  Rel(consumer, catalog, "Iceberg REST (WAP, offsets as table properties)", "HTTP")
+  Rel(consumer, storage, "Table data", "S3 API")
+  Rel(brokerinit, broker, "Admin API and Kafka as the superuser", "HTTP, Kafka")
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
   Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
   Rel(catalog, r2, "Same role in production", "S3 API")
@@ -88,9 +99,12 @@ C4Container
 | `catalog-migrate` | `quay.io/lakekeeper/catalog:v0.15.1` | One-shot: `lakekeeper migrate` | catalog-db | |
 | `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | `lakekeeper serve`: Iceberg REST catalog and management API | catalog-db, catalog, storage | 28181 |
 | `catalog-init` | `ibergrid-app` (this repository) | One-shot: `ibergrid catalog bootstrap` | catalog | |
-| `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node, dev-container mode | broker | 29092 (Kafka), 29644 (admin) |
+| `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node; dev-container mode locally, production mode in `compose.prod.yaml`; SASL/SCRAM and ACLs | broker | 29092 (Kafka, SASL/SCRAM) |
+| `broker-init` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | One-shot: SCRAM users, authentication, cluster policy, topics and ACLs (idempotent) | broker | |
 | `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
 | `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
+| `stream-producer` | `ibergrid-app` (this repository) | `ibergrid stream produce` (`stream` profile locally); no lake keys; 256 MiB | broker | |
+| `stream-consumer` | `ibergrid-app` (this repository) | `ibergrid stream consume` (`stream` profile locally); 384 MiB | broker, catalog, storage | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs and schedules | orchestration-db (internal) | |
 | `orchestration-migrate` | `ibergrid-orchestration` (this repository) | One-shot: `dagster instance migrate` | orchestration-db | |
 | `dagster-code` | `ibergrid-orchestration` (this repository) | `dagster code-server start`: the definitions; runs execute here (1.5 GiB limit) | orchestration, orchestration-db, storage, catalog | |
@@ -100,8 +114,9 @@ C4Container
 Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
 healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`; `orchestration-db`
 healthy, then `orchestration-migrate`; both one-shots done, then `dagster-code` healthy; then
-`dagster-webserver` and `dagster-daemon`. `docker compose up --wait` returns once every
-long-running service is healthy and every one-shot has exited 0.
+`dagster-webserver` and `dagster-daemon`; `broker` healthy, then `broker-init`, which `doctor`
+and the stream services wait for (the consumer also for `catalog-init`). `docker compose up
+--wait` returns once every long-running service is healthy and every one-shot has exited 0.
 
 ## Design notes
 
@@ -111,7 +126,8 @@ long-running service is healthy and every one-shot has exited 0.
   Postgres and gRPC networks are internal too; only `dagster-code`, where runs execute, joins
   `storage` and `catalog` (and so has egress to the sources) and holds the lake's keys. Locally the
   webserver also joins `orchestration-ui`, because Docker publishes no port through an internal
-  network.
+  network. The stream producer joins only `broker` (which has egress, for REData) and holds no
+  lake keys; the consumer joins `broker`, `catalog` and `storage`.
 - **Hardening.** Every container, one-shots included, runs with `no-new-privileges`, all
   capabilities dropped, a memory limit and a non-root user: RustFS as `rustfs` (10001), the AWS
   CLI as `nobody` (65534), Postgres as `postgres` (70), Lakekeeper as distroless `nonroot`
@@ -147,12 +163,27 @@ long-running service is healthy and every one-shot has exited 0.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.
-- **No authentication yet (catalog and broker).** Lakekeeper runs without an identity provider, so
-  its management API is open to whoever reaches port 8181. Redpanda runs in dev-container mode
-  with unauthenticated Kafka and admin APIs. Locally both listen on 127.0.0.1 only; in production
-  no port is published. Phase 2 hardens the broker, and authentication is a prerequisite for the
-  public endpoints of phase 6.
-- **Two images, one Dockerfile.** `catalog-init`, `doctor` and `ingest` run the app image; the
+- **No authentication on the catalog yet.** Lakekeeper runs without an identity provider, so its
+  management API is open to whoever reaches port 8181; locally it listens on 127.0.0.1 only, and
+  in production no port is published. Authentication is a prerequisite for the public endpoints
+  of phase 6.
+- **Broker security ([ADR 0006](adr/0006-streaming-lane.md)).** SASL/SCRAM on every Kafka
+  listener in every environment; one user per service with least-privilege ACLs
+  (`ibergrid-producer` writes the data topic; `ibergrid-consumer` reads it, writes the DLQ and
+  commits its group); the superuser `ibergrid-admin` is used by `broker-init` only; the admin API
+  requires it and is not published; the unauthenticated HTTP Proxy (8082) and Schema Registry
+  (8081) do not start; topics are never created on demand. No TLS yet: plaintext on the Docker
+  networks.
+- **Streaming ([ADR 0006](adr/0006-streaming-lane.md)).** The consumer writes WAP micro-batches
+  whose publish commits the checkpoint (the topic's id and the next offsets) as a table property,
+  and resumes from that property: exactly once into `bronze.redata_demand_stream` without Kafka
+  transactions; it refuses a topic that changed under the checkpoint until `ibergrid stream
+  reset`, and expires its table's snapshots daily. Both stream services beat a heartbeat file with
+  their failure streak; their healthchecks run `python -m ibergrid.stream.health` (standard
+  library only) because the full CLI costs 133 MiB per start inside the service's own memory
+  limit, and a watchdog ends a process whose loop is stuck so that its restart policy recovers it.
+- **Two images, one Dockerfile.** `catalog-init`, `doctor`, `ingest` and the stream services run
+  the app image (confluent-kafka is a runtime dependency: 23 MB of 813); the
   Dagster services run the orchestration image (`--target orchestration`: the same environment
   plus Dagster, `dagster.yaml` and `workspace.yaml`). In production both are pulled from GHCR by
   the digests the release job recorded: the images that job built, ran once (`ibergrid version`;
@@ -181,6 +212,8 @@ long-running service is healthy and every one-shot has exited 0.
 | App image | Built from source (`compose.override.yaml`) | `ghcr.io/jaisato/ibergrid-lakehouse@sha256:...`, digest in `release.env` |
 | Orchestration image | Built from source (`--target orchestration`) | `ghcr.io/jaisato/ibergrid-lakehouse-orchestration@sha256:...`, digest in `release.env` |
 | Dagster schedules | Stopped (start them in the UI) | Running (`IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING`) |
+| Streaming lane | `stream` profile, started by `make stream-up` | Running |
+| Broker mode | Dev-container (fsync bypassed); SASL/SCRAM and ACLs | Production mode (fsync, startup checks); SASL/SCRAM and ACLs |
 | Env files | `.env` | `.env` (secrets, never written by the deploy) and `release.env` |
 | Host ports | 127.0.0.1, 28xxx-29xxx (Dagster UI 28300) | None |
 | Restart policy | `on-failure` | `unless-stopped` |

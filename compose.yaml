@@ -3,6 +3,9 @@
 #               compose.override.yaml is loaded automatically: build from source, 127.0.0.1 ports.
 #   Production: docker compose -f compose.yaml -f compose.prod.yaml up -d --wait
 #               Object storage is Cloudflare R2, so the local-storage profile stays off.
+#   Stream:     the stream-producer and stream-consumer services are in the `stream` profile locally
+#               (make stream-up), so a local stack never calls REData on its own; production
+#               runs them.
 # Secrets come from .env (make env) with no defaults: compose refuses to start without them.
 name: ibergrid
 
@@ -38,7 +41,26 @@ x-app-env: &app-env
   IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
   IBERGRID_LOG_FORMAT: json
 
-# The ibergrid app image (catalog-init, doctor, ingest).
+# The streaming lane's names (ADR 0006), defined once for broker-init and both stream services.
+x-stream-names: &stream-names
+  IBERGRID_STREAM_TOPIC: redata.demand.realtime.v1
+  IBERGRID_STREAM_DLQ_TOPIC: redata.demand.realtime.dlq.v1
+  IBERGRID_STREAM_GROUP_ID: redata-demand-to-bronze
+
+# What the stream services read besides their broker user: cadences, bounds, the watchdog.
+x-stream-env: &stream-env
+  <<: *stream-names
+  IBERGRID_STREAM_POLL_INTERVAL: ${IBERGRID_STREAM_POLL_INTERVAL:-300}
+  IBERGRID_STREAM_MIDNIGHT_GRACE: ${IBERGRID_STREAM_MIDNIGHT_GRACE:-7200}
+  IBERGRID_STREAM_FLUSH_RECORDS: ${IBERGRID_STREAM_FLUSH_RECORDS:-10000}
+  IBERGRID_STREAM_FLUSH_AGE: ${IBERGRID_STREAM_FLUSH_AGE:-60}
+  IBERGRID_STREAM_CHECKPOINT_INTERVAL: ${IBERGRID_STREAM_CHECKPOINT_INTERVAL:-900}
+  IBERGRID_STREAM_DEDUP_DAYS: ${IBERGRID_STREAM_DEDUP_DAYS:-3}
+  IBERGRID_STREAM_STALE_BRANCH_AGE: ${IBERGRID_STREAM_STALE_BRANCH_AGE:-900}
+  IBERGRID_STREAM_SNAPSHOT_RETENTION_DAYS: ${IBERGRID_STREAM_SNAPSHOT_RETENTION_DAYS:-3}
+  IBERGRID_STREAM_WATCHDOG_TIMEOUT: ${IBERGRID_STREAM_WATCHDOG_TIMEOUT:-900}
+
+# The ibergrid app image (catalog-init, doctor, ingest, stream-producer, stream-consumer).
 x-app: &app
   <<: *hardened
   image: ibergrid-app:local
@@ -174,12 +196,19 @@ services:
         required: false
     networks: [catalog]
 
-  # --- Broker: Redpanda (Kafka API), single node -------------------------------------------------
+  # --- Broker: Redpanda (Kafka API), single node (ADR 0006) ---------------------------------------
+  # Dev-container mode locally (fsync bypassed, startup checks off); compose.prod.yaml runs it in
+  # production mode. broker-init turns SASL/SCRAM and ACLs on in both, so clients authenticate in
+  # every environment; the admin API (9644) is published nowhere. The image's configuration also
+  # starts the HTTP Proxy (8082) and the Schema Registry (8081), both without authentication and
+  # unused here: the entrypoint deletes their sections first, so neither listens.
   broker:
     <<: *hardened
     image: docker.redpanda.com/redpandadata/redpanda:v26.2.2@sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96
     restart: on-failure
     mem_limit: 1536m
+    entrypoint:
+      ["/bin/bash", "-c", "sed -i '/^pandaproxy:/d; /^schema_registry:/d' /etc/redpanda/redpanda.yaml && exec /entrypoint.sh \"$$@\"", "broker"]
     command:
       - redpanda
       - start
@@ -196,10 +225,100 @@ services:
       - broker-data:/var/lib/redpanda/data
     networks: [broker]
     healthcheck:
+      # The health overview answers without authentication, also once broker-init requires it.
       test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy:[[:space:]]+true'"]
       interval: 5s
       timeout: 5s
       retries: 12
+
+  # One-shot, idempotent: the SCRAM users, authentication on the Kafka and admin APIs, the topics
+  # and the ACLs (ADR 0006). The superuser exists for this job only; each service gets its own
+  # least-privilege user. On a new cluster the admin API needs no authentication until step 2
+  # requires it, so the first run creates the superuser anonymously and every later run
+  # authenticates as it. A user whose password changed in .env gets it here (rotation); the
+  # superuser's own password cannot rotate this way (ADR 0006). No password is ever on a command
+  # line: rpk reads its credentials from RPK_*, and the users are created through the admin API
+  # by curl, from files that bash's printf (a builtin, so no process) writes and the job deletes.
+  broker-init:
+    <<: *hardened
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2@sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96
+    restart: "no"
+    mem_limit: 256m
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      <<: *stream-names
+      RPK_BROKERS: broker:9092
+      RPK_ADMIN_HOSTS: broker:9644
+      RPK_USER: ibergrid-admin
+      RPK_PASS: ${REDPANDA_ADMIN_PASSWORD:?set REDPANDA_ADMIN_PASSWORD in .env (make env)}
+      RPK_SASL_MECHANISM: SCRAM-SHA-256
+      PRODUCER_PASSWORD: ${REDPANDA_PRODUCER_PASSWORD:?set REDPANDA_PRODUCER_PASSWORD in .env (make env)}
+      CONSUMER_PASSWORD: ${REDPANDA_CONSUMER_PASSWORD:?set REDPANDA_CONSUMER_PASSWORD in .env (make env)}
+    entrypoint: ["/bin/bash", "-euo", "pipefail", "-c"]
+    command:
+      - |
+        umask 077
+        netrc=/tmp/broker-init.netrc body=/tmp/broker-init.json answer=/tmp/broker-init.answer
+        trap 'rm -f "$$netrc" "$$body" "$$answer"' EXIT
+        # The passwords go into a netrc and a JSON body unescaped: make env writes hex.
+        for password in "$$RPK_PASS" "$$PRODUCER_PASSWORD" "$$CONSUMER_PASSWORD"; do
+          if [[ ! "$$password" =~ ^[A-Za-z0-9._~-]+$$ ]]; then
+            echo "a REDPANDA_*_PASSWORD holds characters other than A-Z a-z 0-9 . _ ~ -" >&2
+            exit 1
+          fi
+        done
+        printf 'machine broker login %s password %s\n' "$$RPK_USER" "$$RPK_PASS" > "$$netrc"
+        # Create a SCRAM user, or set its password when it exists with another (rotation).
+        scram_user() {
+          printf '{"username":"%s","password":"%s","algorithm":"SCRAM-SHA-256"}' "$$1" "$$2" > "$$body"
+          for method in POST PUT; do
+            url=http://broker:9644/v1/security/users
+            [ "$$method" = PUT ] && url="$$url/$$1"
+            status="$$(curl -sS --max-time 30 --netrc-file "$$netrc" -o "$$answer" -w '%{http_code}' \
+              -X "$$method" -H 'Content-Type: application/json' --data "@$$body" "$$url")"
+            [ "$$status" = 200 ] && return 0
+            [ "$$status" = 401 ] && break
+          done
+          echo "user $$1: HTTP $$status $$(cat "$$answer")" >&2
+          if [ "$$status" = 401 ]; then
+            echo "REDPANDA_ADMIN_PASSWORD does not open this broker (ADR 0006)" >&2
+          fi
+          return 1
+        }
+        # 1. The superuser: on a new cluster the admin API takes it anonymously.
+        scram_user "$$RPK_USER" "$$RPK_PASS"
+        # 2. Authentication everywhere, then cluster-wide policy: topics only from here, and
+        #    durable writes (in production mode; dev-container mode bypasses fsync anyway).
+        for setting in "superusers=[\"$$RPK_USER\"]" admin_api_require_auth=true enable_sasl=true \
+            auto_create_topics_enabled=false write_caching_default=false; do
+          rpk cluster config set "$$setting" > /dev/null
+        done
+        # 3. One user per service.
+        scram_user ibergrid-producer "$$PRODUCER_PASSWORD"
+        scram_user ibergrid-consumer "$$CONSUMER_PASSWORD"
+        # 4. The topics: key-ordered data in 3 partitions kept 7 days, dead letters 30 days.
+        #    Segments roll daily, so retention removes data within a day of its limit (with the
+        #    default 14-day segments this volume would stay up to 21 days).
+        for spec in "$$IBERGRID_STREAM_TOPIC:3:604800000" "$$IBERGRID_STREAM_DLQ_TOPIC:1:2592000000"; do
+          IFS=: read -r topic partitions retention <<< "$$spec"
+          if rpk topic describe "$$topic" > /dev/null 2>&1; then
+            rpk topic alter-config "$$topic" --set retention.ms="$$retention" \
+              --set segment.ms=86400000 --set cleanup.policy=delete > /dev/null
+          else
+            rpk topic create "$$topic" --partitions "$$partitions" --replicas 1 \
+              -c retention.ms="$$retention" -c segment.ms=86400000 -c cleanup.policy=delete > /dev/null
+          fi
+        done
+        # 5. Least privilege: the producer writes the data topic; the consumer reads it, writes
+        #    dead letters and commits its group's offsets (lag visibility). Nothing else.
+        rpk security acl create --allow-principal User:ibergrid-producer --operation write,describe --topic "$$IBERGRID_STREAM_TOPIC" > /dev/null
+        rpk security acl create --allow-principal User:ibergrid-consumer --operation read,describe --topic "$$IBERGRID_STREAM_TOPIC" > /dev/null
+        rpk security acl create --allow-principal User:ibergrid-consumer --operation write,describe --topic "$$IBERGRID_STREAM_DLQ_TOPIC" > /dev/null
+        rpk security acl create --allow-principal User:ibergrid-consumer --operation read,describe --group "$$IBERGRID_STREAM_GROUP_ID" > /dev/null
+        rpk security acl list
+    networks: [broker]
 
   # --- Orchestration: Dagster (ADR 0005) on Postgres ---------------------------------------------
   orchestration-db:
@@ -326,6 +445,8 @@ services:
     depends_on:
       catalog-init:
         condition: service_completed_successfully
+      broker-init:
+        condition: service_completed_successfully
     networks: [storage, catalog, broker]
 
   # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...` or
@@ -339,6 +460,71 @@ services:
     entrypoint: ["ibergrid", "ingest"]
     command: ["--help"]
     networks: [storage, catalog]
+
+  # --- Streaming lane (ADR 0006) -----------------------------------------------------------------
+  # REData's five-minute national demand into redata.demand.realtime.v1. The broker's network has
+  # egress for REData; no storage or catalog keys, no other network.
+  stream-producer:
+    <<: *app
+    profiles: [stream]
+    restart: on-failure
+    mem_limit: 256m
+    command: ["stream", "produce"]
+    environment:
+      IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
+      IBERGRID_BROKER_USERNAME: ibergrid-producer
+      IBERGRID_BROKER_PASSWORD: ${REDPANDA_PRODUCER_PASSWORD:?set REDPANDA_PRODUCER_PASSWORD in .env (make env)}
+      IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
+      IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
+      IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
+      IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
+      IBERGRID_LOG_FORMAT: json
+      <<: *stream-env
+    depends_on:
+      broker-init:
+        condition: service_completed_successfully
+    networks: [broker]
+    # The heartbeat module, not the CLI: the check runs in this container's memory limit. A poll
+    # can take four REData attempts of up to 60 s each, hence the producer's longer limit; failing
+    # polls (REData or the broker) for 15 minutes make it unhealthy.
+    healthcheck:
+      test: ["CMD", "python", "-m", "ibergrid.stream.health", "--max-age", "330", "--max-failing", "900"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+
+  # The topic into bronze.redata_demand_stream: WAP micro-batches whose publish commits the
+  # checkpoint. On SIGTERM it flushes what it buffered, hence the grace period.
+  stream-consumer:
+    <<: *app
+    profiles: [stream]
+    restart: on-failure
+    mem_limit: 384m
+    stop_grace_period: 60s
+    command: ["stream", "consume"]
+    environment:
+      <<: [*app-env, *stream-env]
+      IBERGRID_BROKER_USERNAME: ibergrid-consumer
+      IBERGRID_BROKER_PASSWORD: ${REDPANDA_CONSUMER_PASSWORD:?set REDPANDA_CONSUMER_PASSWORD in .env (make env)}
+    depends_on:
+      broker-init:
+        condition: service_completed_successfully
+      catalog-init:
+        condition: service_completed_successfully
+    networks: [broker, catalog, storage]
+    # Unhealthy at once when it refuses to start (a topic changed under its checkpoint), and after
+    # 10 minutes of failing iterations: the catalog, refused dead letters, or a broker that a probe
+    # every minute finds unreachable or refusing the password. A loop stuck for
+    # IBERGRID_STREAM_WATCHDOG_TIMEOUT ends the process, and the restart policy recovers it.
+    healthcheck:
+      test: ["CMD", "python", "-m", "ibergrid.stream.health", "--max-age", "120", "--max-failing", "600"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
 
 networks:
   storage:
