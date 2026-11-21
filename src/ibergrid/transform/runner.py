@@ -40,6 +40,7 @@ from pyiceberg.table.refs import MAIN_BRANCH
 from ibergrid.lake import registry, wap
 from ibergrid.lake.catalog import rest_catalog
 from ibergrid.lake.tables import TableSpec
+from ibergrid.lineage import LineageAssertion, LineageEmitter, build_dataset
 from ibergrid.settings import Settings
 
 log = structlog.get_logger(__name__)
@@ -152,39 +153,76 @@ def run_medallion(
     lake_catalog = catalog if catalog is not None else rest_catalog(settings)
     expected_bases = _capture_target_heads(lake_catalog, targets, target_namespace=target_namespace)
 
-    with tempfile.TemporaryDirectory(prefix="ibergrid-dbt-") as tmp:
-        work = Path(tmp)
-        staging_db = work / "staging.duckdb"
-        target_path = work / "target"
-        log_path = work / "logs"
+    emitter = LineageEmitter.from_settings(settings)
+    lineage_job = "medallion_transform"
+    emitter.emit("START", job_name=lineage_job, run_id=prefix)
 
-        dbt_started = time.monotonic()
-        models_built, tests_passed = _run_dbt_build(
-            dbt_runner_cls,
-            close_dbt_connections,
-            plugin_module,
-            context,
-            project_dir=project_dir,
-            staging_db=staging_db,
-            target_path=target_path,
-            log_path=log_path,
-            targets=targets,
-            full_project=not select,
-            threads=settings.transform.threads,
-        )
-        dbt_seconds = round(time.monotonic() - dbt_started, 3)
+    try:
+        with tempfile.TemporaryDirectory(prefix="ibergrid-dbt-") as tmp:
+            work = Path(tmp)
+            staging_db = work / "staging.duckdb"
+            target_path = work / "target"
+            log_path = work / "logs"
 
-        reports = _publish_all(
-            staging_db,
-            lake_catalog,
-            targets,
-            expected_bases=expected_bases,
-            target_namespace=target_namespace,
-            run_id_prefix=prefix,
-            bronze_snapshots=dict(context.bronze_snapshots),
-            dbt_tests_passed=tests_passed,
-            on_table=on_table,
+            dbt_started = time.monotonic()
+            models_built, tests_passed = _run_dbt_build(
+                dbt_runner_cls,
+                close_dbt_connections,
+                plugin_module,
+                context,
+                project_dir=project_dir,
+                staging_db=staging_db,
+                target_path=target_path,
+                log_path=log_path,
+                targets=targets,
+                full_project=not select,
+                threads=settings.transform.threads,
+            )
+            dbt_seconds = round(time.monotonic() - dbt_started, 3)
+
+            reports = _publish_all(
+                staging_db,
+                lake_catalog,
+                targets,
+                expected_bases=expected_bases,
+                target_namespace=target_namespace,
+                run_id_prefix=prefix,
+                bronze_snapshots=dict(context.bronze_snapshots),
+                dbt_tests_passed=tests_passed,
+                on_table=on_table,
+            )
+    except Exception as exc:
+        emitter.emit("FAIL", job_name=lineage_job, run_id=prefix, error_message=str(exc))
+        raise
+
+    spec_by_name = {spec.name: spec for spec in targets}
+    input_datasets = [
+        build_dataset(
+            spec,
+            warehouse_uri=emitter.warehouse_uri,
+            snapshot_id=context.bronze_snapshots.get(spec.name),
+            namespace_override=source_ns,
         )
+        for spec in registry.BRONZE_TABLES
+    ]
+    output_datasets = [
+        build_dataset(
+            spec_by_name[report.name],
+            warehouse_uri=emitter.warehouse_uri,
+            snapshot_id=report.snapshot_id,
+            row_count=report.rows,
+            assertions=(LineageAssertion(assertion="dbt_tests_passed", success=True),),
+            namespace_override=report.namespace,
+        )
+        for report in reports
+    ]
+    emitter.emit(
+        "COMPLETE",
+        job_name=lineage_job,
+        run_id=prefix,
+        inputs=input_datasets,
+        outputs=output_datasets,
+    )
 
     total_seconds = round(time.monotonic() - started, 3)
     log.info(

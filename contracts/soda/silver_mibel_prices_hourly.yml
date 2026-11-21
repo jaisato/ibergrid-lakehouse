@@ -1,0 +1,131 @@
+# Declarative Soda v4 data-quality contract for silver.mibel_prices_hourly (ADR 0004, ADR 0008).
+# Includes the cross-source OMIE ES vs REData peninsular spot reconciliation gate that detects
+# ES/PT column swaps immediately on decoupled hours (e.g. 2025-04-28 Iberian blackout).
+dataset: ibergrid/audit/silver_mibel_prices_hourly
+columns:
+  - name: hour_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: delivery_date
+    data_type: date
+    checks:
+      - missing:
+          must_be: 0
+  - name: madrid_hour
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 0
+          valid_max: 23
+          must_be: 0
+  - name: contract_version
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [1, 2]
+          must_be: 0
+  - name: periods_in_hour
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [1, 4]
+          must_be: 0
+  - name: price_es_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: price_es_min_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+  - name: price_es_max_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+  - name: price_pt_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: spread_es_minus_pt_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+  - name: is_decoupled
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: is_zero_or_negative_es
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: pvpc_eur_mwh
+    data_type: double
+  - name: redata_spot_eur_mwh
+    data_type: double
+  - name: omie_redata_diff_eur_mwh
+    data_type: double
+checks:
+  - schema: {}
+  - duplicate:
+      columns: [hour_utc]
+      must_be: 0
+  - failed_rows:
+      qualifier: dst_hourly_continuity
+      name: dst_hourly_continuity
+      query: |
+        SELECT
+            delivery_date,
+            count(*) AS observed_hours,
+            CAST(
+                epoch(
+                    timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                    - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+                ) / 3600 AS INTEGER
+            ) AS expected_hours
+        FROM audit.silver_mibel_prices_hourly
+        GROUP BY delivery_date
+        HAVING count(*) <> CAST(
+            epoch(
+                timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+            ) / 3600 AS INTEGER
+        )
+      must_be: 0
+  - failed_rows:
+      qualifier: cross_source_omie_redata_spot_reconciliation
+      name: cross_source_omie_redata_spot_reconciliation
+      query: |
+        SELECT
+            hour_utc,
+            delivery_date,
+            price_es_eur_mwh,
+            price_pt_eur_mwh,
+            redata_spot_eur_mwh,
+            abs(price_es_eur_mwh - redata_spot_eur_mwh) AS abs_diff_eur_mwh
+        FROM audit.silver_mibel_prices_hourly
+        WHERE redata_spot_eur_mwh IS NOT NULL
+          AND abs(price_es_eur_mwh - redata_spot_eur_mwh) > 0.02
+      must_be: 0

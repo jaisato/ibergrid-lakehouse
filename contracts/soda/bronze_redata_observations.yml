@@ -1,0 +1,100 @@
+# Declarative Soda v4 data-quality contract for bronze.redata_observations (ADR 0003, ADR 0008).
+dataset: ibergrid/audit/bronze_redata_observations
+columns:
+  - name: dataset
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: widget
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: electric_system
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [national, peninsular, baleares, canarias, ceuta, melilla]
+          must_be: 0
+  - name: series_id
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: series_type
+    data_type: varchar
+  - name: series_title
+    data_type: varchar
+  - name: granularity
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [5min, 15min, hour, day]
+          must_be: 0
+  - name: ts_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: ts_local
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: value
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+  - name: percentage
+    data_type: double
+  - name: series_last_update
+    data_type: timestamp_tz
+  - name: fetched_at
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: run_id
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: landing_path
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: payload_sha256
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+checks:
+  - schema: {}
+  - duplicate:
+      columns: [dataset, electric_system, series_id, ts_utc]
+      must_be: 0
+  - failed_rows:
+      qualifier: positive_demand_values
+      name: positive_demand_values
+      query: |
+        SELECT dataset, electric_system, series_id, ts_utc, value
+        FROM audit.bronze_redata_observations
+        WHERE dataset IN ('demand_realtime', 'demand_hourly')
+          AND value <= 0
+      must_be: 0
+  - failed_rows:
+      qualifier: mibel_price_bounds_on_market_prices
+      name: mibel_price_bounds_on_market_prices
+      query: |
+        SELECT dataset, electric_system, series_id, ts_utc, value
+        FROM audit.bronze_redata_observations
+        WHERE dataset = 'market_prices'
+          AND (value < -500.0 OR value > 4000.0)
+      must_be: 0

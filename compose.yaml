@@ -39,6 +39,12 @@ x-app-env: &app-env
   IBERGRID_OMIE_TIMEOUT: ${IBERGRID_OMIE_TIMEOUT:-30}
   IBERGRID_OMIE_MAX_RPS: ${IBERGRID_OMIE_MAX_RPS:-1}
   IBERGRID_TRANSFORM_THREADS: ${IBERGRID_TRANSFORM_THREADS:-1}
+  IBERGRID_MAINTENANCE_SNAPSHOT_RETENTION_DAYS: ${IBERGRID_MAINTENANCE_SNAPSHOT_RETENTION_DAYS:-7}
+  IBERGRID_MAINTENANCE_RETAIN_LAST_SNAPSHOTS: ${IBERGRID_MAINTENANCE_RETAIN_LAST_SNAPSHOTS:-5}
+  IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS: ${IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS:-48}
+  IBERGRID_LINEAGE_NAMESPACE: ${IBERGRID_LINEAGE_NAMESPACE:-ibergrid}
+  IBERGRID_LINEAGE_ENDPOINT_URL: ${IBERGRID_LINEAGE_ENDPOINT_URL:-}
+  IBERGRID_LINEAGE_SINK_PATH: ${IBERGRID_LINEAGE_SINK_PATH:-}
   IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
   IBERGRID_LOG_FORMAT: json
 
@@ -470,6 +476,19 @@ services:
     restart: "no"
     mem_limit: 1280m
     entrypoint: ["ibergrid", "transform"]
+    command: ["--help"]
+    environment: *app-env
+    networks: [storage, catalog]
+
+  # Quality gates and maintenance, on demand: `docker compose run --rm --no-deps quality check`
+  # (make quality-check). Runs from the orchestration image, which carries soda-core, soda-duckdb
+  # and /opt/ibergrid/contracts/soda (ADR 0008).
+  quality:
+    <<: *orchestration
+    scale: 0
+    restart: "no"
+    mem_limit: 1024m
+    entrypoint: ["ibergrid", "quality"]
     command: ["--help"]
     environment: *app-env
     networks: [storage, catalog]

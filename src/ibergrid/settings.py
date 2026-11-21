@@ -150,6 +150,48 @@ class TransformSettings(BaseSettings):
     threads: int = Field(default=1, ge=1, le=8)
 
 
+class QualitySettings(BaseSettings):
+    """Declarative Soda quality gates and zero-scan metadata checks (ADR 0008)."""
+
+    model_config = _config("IBERGRID_QUALITY_")
+
+    # Baked at /opt/ibergrid/contracts/soda in the orchestration image; auto-discovered locally.
+    contracts_dir: str | None = None
+    # Max EUR/MWh difference allowed between OMIE Spain day-ahead and REData peninsular spot.
+    reconciliation_tolerance_eur_mwh: float = Field(default=0.02, ge=0.0)
+
+
+class MaintenanceSettings(BaseSettings):
+    """Automated Iceberg compaction, snapshot expiry and orphan-file cleanup (ADR 0008)."""
+
+    model_config = _config("IBERGRID_MAINTENANCE_")
+
+    snapshot_retention_days: int = Field(default=7, ge=1)
+    retain_last_snapshots: int = Field(default=5, ge=1)
+    # Mandatory safety grace window before an unreferenced object can be deleted (hours).
+    orphan_grace_hours: float = Field(default=48.0, ge=0.0)
+
+
+class LineageSettings(BaseSettings):
+    """OpenLineage v2 event emission (ADR 0008): structlog + optional JSONL sink or HTTP URL."""
+
+    model_config = _config("IBERGRID_LINEAGE_")
+
+    namespace: str = Field(default="ibergrid", min_length=1)
+    # Optional OpenLineage HTTP endpoint (e.g. Marquez); unset means zero extra containers needed.
+    endpoint_url: HttpUrl | None = None
+    # Optional local JSONL file where every emitted OpenLineage RunEvent is appended.
+    sink_path: str | None = None
+    timeout: float = Field(default=5.0, gt=0)
+
+    @field_validator("endpoint_url", "sink_path", mode="before")
+    @classmethod
+    def _empty_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
 class OrchestrationSettings(BaseSettings):
     """Dagster's code server (ADR 0005). Not part of ``Settings``: loading the definitions must
     not need the storage keys."""
@@ -188,6 +230,9 @@ class Settings(BaseModel):
     omie: OmieSettings = Field(default_factory=OmieSettings)
     stream: StreamSettings = Field(default_factory=StreamSettings)
     transform: TransformSettings = Field(default_factory=TransformSettings)
+    quality: QualitySettings = Field(default_factory=QualitySettings)
+    maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
+    lineage: LineageSettings = Field(default_factory=LineageSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -207,6 +252,9 @@ def describe_validation_error(exc: ValidationError) -> str:
         OmieSettings,
         StreamSettings,
         TransformSettings,
+        QualitySettings,
+        MaintenanceSettings,
+        LineageSettings,
         LogSettings,
     )
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}

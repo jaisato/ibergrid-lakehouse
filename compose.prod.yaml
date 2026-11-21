@@ -82,6 +82,11 @@ services:
     environment:
       IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
       IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
+  quality:
+    <<: *orchestration
+    environment:
+      IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
+      IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
   dagster-code:
     <<: *orchestration-long-running
     environment:

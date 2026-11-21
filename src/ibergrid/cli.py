@@ -1,5 +1,6 @@
 """The ``ibergrid`` command line: the entrypoint of the app image."""
 
+import json
 import signal
 import threading
 from collections.abc import Callable
@@ -26,9 +27,11 @@ from ibergrid.catalog_admin import (
 from ibergrid.doctor import run_checks
 from ibergrid.lake import duck, registry
 from ibergrid.lake.catalog import rest_catalog
+from ibergrid.lake.maintenance import maintain_table
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
 from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
+from ibergrid.quality import check_tables
 from ibergrid.settings import (
     BrokerSettings,
     LogSettings,
@@ -94,6 +97,11 @@ transform_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(transform_app, name="transform")
+quality_app = typer.Typer(
+    help="Zero-scan Iceberg metadata audits and Soda v4 quality gates (ADR 0008).",
+    no_args_is_help=True,
+)
+app.add_typer(quality_app, name="quality")
 
 
 def _load[T](factory: Callable[[], T]) -> T:
@@ -196,6 +204,105 @@ def lake_describe(
     typer.echo(f"snapshot:   {snapshot}")
     typer.echo(f"refs:       {refs or 'none'}")
     typer.echo(f"data files: {info.data_files} ({info.data_bytes} bytes)")
+
+
+@lake_app.command("maintain")
+def lake_maintain(
+    table: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Table <namespace>.<table>; repeat for several. Default: all registered."
+        ),
+    ] = None,
+    compact: Annotated[
+        bool, typer.Option("--compact/--no-compact", help="Compact small Parquet files via DuckDB.")
+    ] = True,
+    expire_days: Annotated[
+        int | None,
+        typer.Option(min=1, help="Expire snapshots older than N days (default: settings)."),
+    ] = None,
+    retain_last: Annotated[
+        int | None,
+        typer.Option(min=1, help="Minimum snapshots to retain on main (default: settings)."),
+    ] = None,
+    clean_orphans: Annotated[
+        bool,
+        typer.Option(
+            "--clean-orphans/--no-clean-orphans",
+            help="Scan and remove unreferenced objects older than the grace window.",
+        ),
+    ] = True,
+    orphan_grace_hours: Annotated[
+        float | None,
+        typer.Option(min=0.0, help="Safety grace window before deleting orphan files (hours)."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report planned orphan cleanup without mutating tables."),
+    ] = False,
+) -> None:
+    """Compact small files, expire old snapshots and clean orphan objects (ADR 0008)."""
+    settings = _load_settings()
+    mcfg = settings.maintenance
+    resolved_expire = mcfg.snapshot_retention_days if expire_days is None else expire_days
+    resolved_retain = mcfg.retain_last_snapshots if retain_last is None else retain_last
+    resolved_grace = mcfg.orphan_grace_hours if orphan_grace_hours is None else orphan_grace_hours
+    targets = (
+        [duck.table_name(t).removeprefix(f"{duck.CATALOG}.") for t in table]
+        if table
+        else [f"{spec.namespace}.{spec.name}" for spec in registry.TABLES]
+    )
+
+    try:
+        catalog = rest_catalog(settings)
+        con = duck.connect(settings) if (compact and not dry_run) else None
+    except (ValueError, OSError, RESTError, duckdb.Error) as exc:
+        _fail(exc)
+
+    try:
+        for qualified in targets:
+            ns, _, name = qualified.partition(".")
+            try:
+                iceberg_table = catalog.load_table((ns, name))
+            except NoSuchTableError:
+                typer.echo(f"maintain: {qualified}: not found (skipped)")
+                continue
+            report = maintain_table(
+                iceberg_table,
+                table_name=qualified,
+                duck_table_name=duck.table_name(qualified) if con is not None else None,
+                con=con,
+                compact=compact,
+                expire_days=resolved_expire,
+                retain_last=resolved_retain,
+                clean_orphans=clean_orphans,
+                orphan_grace_hours=resolved_grace,
+                dry_run=dry_run,
+            )
+            compact_str = (
+                f"compacted {report.compaction.rewritten_files}->{report.compaction.added_files}"
+                if report.compaction is not None
+                else f"compact skipped ({report.compaction_skipped_reason or 'disabled'})"
+            )
+            orphan_str = (
+                "orphans disabled"
+                if report.orphans is None
+                else (
+                    f"orphans={len(report.orphans.orphan_files)} "
+                    f"deleted={report.orphans.deleted_files} "
+                    f"reclaimed={report.orphans.reclaimed_bytes}B"
+                )
+            )
+            typer.echo(
+                f"maintain: {qualified}: {compact_str}; "
+                f"expired={len(report.expired_snapshots)}; {orphan_str}"
+                + (" [dry-run]" if dry_run else "")
+            )
+    except (ValueError, OSError, RESTError, duckdb.Error) as exc:
+        _fail(exc)
+    finally:
+        if con is not None:
+            con.close()
 
 
 @ingest_app.command("redata")
@@ -488,6 +595,90 @@ def _print_transform_table(report: TableReport) -> None:
         f"transform: {report.qualified}: {report.rows} rows, "
         f"snapshot {snapshot} ({report.seconds:.2f} s)"
     )
+
+
+@quality_app.command("check")
+def quality_check(
+    table: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Table <namespace>.<table>; repeat for several. Default: all contracted tables."
+        ),
+    ] = None,
+    metadata_only: Annotated[
+        bool,
+        typer.Option(
+            "--metadata-only",
+            help="Run zero-scan Iceberg metadata checks only (0 Parquet data bytes scanned).",
+        ),
+    ] = False,
+    quarantine: Annotated[
+        bool,
+        typer.Option(
+            "--quarantine",
+            help="Write any detected violations into quarantine.rejected_records via WAP.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON output."),
+    ] = False,
+) -> None:
+    """Run zero-scan Iceberg metadata audits and Soda v4 quality contracts (ADR 0008)."""
+    settings = _load_settings()
+    try:
+        reports = check_tables(
+            settings,
+            tables=table or (),
+            metadata_only=metadata_only,
+            quarantine=quarantine,
+        )
+    except (RuntimeError, ValueError, OSError, RESTError, duckdb.Error) as exc:
+        _fail(exc)
+
+    if as_json:
+        payload = [
+            {
+                "table": r.table,
+                "passed": r.passed,
+                "snapshot_id": r.snapshot_id,
+                "checks_passed": r.checks_passed,
+                "checks_failed": r.checks_failed,
+                "data_bytes_scanned": (
+                    r.metadata_result.summary.data_bytes_scanned
+                    if r.metadata_result is not None
+                    else 0
+                ),
+                "total_records": (
+                    r.metadata_result.summary.total_records if r.metadata_result is not None else 0
+                ),
+                "decoupled_periods_verified": r.decoupled_periods_verified,
+                "elapsed_ms": r.elapsed_ms,
+                "violations": [
+                    {"rule": v.rule_name, "severity": v.severity, "reason": v.reason}
+                    for v in r.violations
+                ],
+            }
+            for r in reports
+        ]
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        for r in reports:
+            status = "ok  " if r.passed else "FAIL"
+            extra = (
+                f", decoupled_verified={r.decoupled_periods_verified}"
+                if r.decoupled_periods_verified is not None
+                else ""
+            )
+            typer.echo(
+                f"{status} {r.table}: passed={r.checks_passed} failed={r.checks_failed}"
+                f"{extra} ({r.elapsed_ms:.1f} ms)"
+            )
+            for v in r.violations:
+                typer.echo(f"     - {v.rule_name}: {v.reason}")
+
+    if any(not r.passed for r in reports):
+        raise typer.Exit(1)
 
 
 def _stream_clients(settings: Settings, client_id: str) -> tuple[Consumer, AdminClient]:

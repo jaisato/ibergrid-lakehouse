@@ -372,6 +372,32 @@ GOLD_OPTIMAL_CONSUMPTION_WINDOWS = TableSpec(
     ),
 )
 
+# --- Quarantine table (ADR 0008) -----------------------------------------------------------------
+
+# Every batch/record rejected by a WAP quality gate before publish, stored in Iceberg via WAP so
+# quality incidents are ACID, partitioned by month and queryable in DuckDB.
+QUARANTINE_REJECTED_RECORDS = TableSpec(
+    namespace="quarantine",
+    name="rejected_records",
+    schema=Schema(
+        NestedField(1, "rejected_at_utc", TimestamptzType(), required=True),
+        NestedField(2, "run_id", StringType(), required=True),
+        NestedField(3, "source_table", StringType(), required=True),
+        NestedField(4, "rule_name", StringType(), required=True),
+        NestedField(5, "severity", StringType(), required=True, doc="error or warning"),
+        NestedField(6, "reason", StringType(), required=True),
+        NestedField(7, "record_key", StringType(), required=False),
+        NestedField(8, "payload_json", StringType(), required=False),
+        NestedField(9, "audit_branch", StringType(), required=False),
+        NestedField(10, "snapshot_id", LongType(), required=False),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="rejected_at_utc_month"
+        ),
+    ),
+)
+
 BRONZE_TABLES: tuple[TableSpec, ...] = (
     REDATA_OBSERVATIONS,
     OMIE_DAY_AHEAD_PRICES,
@@ -390,5 +416,11 @@ GOLD_TABLES: tuple[TableSpec, ...] = (
     GOLD_SYSTEM_DEMAND_DAILY,
     GOLD_OPTIMAL_CONSUMPTION_WINDOWS,
 )
+QUARANTINE_TABLES: tuple[TableSpec, ...] = (QUARANTINE_REJECTED_RECORDS,)
 MEDALLION_TABLES: tuple[TableSpec, ...] = (*SILVER_TABLES, *GOLD_TABLES)
-TABLES: tuple[TableSpec, ...] = (*BRONZE_TABLES, *SILVER_TABLES, *GOLD_TABLES)
+TABLES: tuple[TableSpec, ...] = (
+    *BRONZE_TABLES,
+    *SILVER_TABLES,
+    *GOLD_TABLES,
+    *QUARANTINE_TABLES,
+)

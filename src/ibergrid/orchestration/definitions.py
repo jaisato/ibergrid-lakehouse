@@ -15,6 +15,7 @@ from ibergrid.orchestration.assets import (
     medallion_models,
     omie_day_ahead_prices,
 )
+from ibergrid.orchestration.maintenance import lake_maintenance
 from ibergrid.orchestration.resources import Lake
 from ibergrid.orchestration.sweeper import sweep_audit_branches
 from ibergrid.settings import OrchestrationSettings
@@ -83,9 +84,18 @@ defs = dg.Definitions(
         omie_afternoon,
         omie_evening,
         medallion_transform,
+        lake_maintenance,
         sweep_audit_branches,
     ],
     schedules=[
+        # Daily Iceberg maintenance (compaction, snapshot expiry, orphan cleanup) at 04:00 Madrid,
+        # outside the 02:00-03:00 DST boundary and before daily ingestion windows (ADR 0008).
+        dg.ScheduleDefinition(
+            job=lake_maintenance,
+            cron_schedule="0 4 * * *",
+            execution_timezone=TIMEZONE,
+            default_status=STATUS,
+        ),
         # Yesterday: on 2026-11-21 every dataset's D-1 was complete at 08:50 and 09:46, REData's
         # last update of hourly demand and daily generation having been at 06:47 (ADR 0005).
         dg.build_schedule_from_partitioned_job(
