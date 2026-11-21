@@ -31,7 +31,7 @@ from ibergrid.lake.maintenance import maintain_table
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
 from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
-from ibergrid.quality import check_tables
+from ibergrid.quality import QualityGateError, check_tables
 from ibergrid.settings import (
     BrokerSettings,
     LogSettings,
@@ -581,7 +581,7 @@ def transform_run(
     settings = _load_settings()
     try:
         report = run_medallion(settings, select=select or (), on_table=_print_transform_table)
-    except (TransformError, WapError, ValueError, OSError, RESTError) as exc:
+    except (TransformError, QualityGateError, WapError, ValueError, OSError, RESTError) as exc:
         _fail(exc)
     typer.echo(
         f"transform: {len(report.tables)} table(s) published, "

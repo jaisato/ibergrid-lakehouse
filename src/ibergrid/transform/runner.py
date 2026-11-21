@@ -37,10 +37,15 @@ from pyiceberg.expressions import AlwaysTrue
 from pyiceberg.table import Table
 from pyiceberg.table.refs import MAIN_BRANCH
 
-from ibergrid.lake import registry, wap
+from ibergrid.lake import duck, registry, wap
 from ibergrid.lake.catalog import rest_catalog
 from ibergrid.lake.tables import TableSpec
 from ibergrid.lineage import LineageAssertion, LineageEmitter, build_dataset
+from ibergrid.quality import (
+    GateReport,
+    audit_branch_and_quarantine,
+    find_contracts_dir,
+)
 from ibergrid.settings import Settings
 
 log = structlog.get_logger(__name__)
@@ -69,6 +74,7 @@ class TableReport:
     snapshot_id: int | None
     run_id: str
     seconds: float
+    quality_checks_passed: int = 0
 
     @property
     def qualified(self) -> str:
@@ -137,12 +143,14 @@ def run_medallion(
     target_namespace: str | None = None,
     catalog: Catalog | None = None,
     on_table: Callable[[TableReport], None] | None = None,
+    quality_gates: bool = True,
 ) -> TransformReport:
     """Run ``dbt build`` in a staging DuckDB and publish the tested tables to Iceberg via WAP."""
     started = time.monotonic()
     targets = resolve_selection(select)
     dbt_runner_cls, close_dbt_connections, plugin_module = _load_dbt()
     project_dir = find_dbt_project(settings)
+    contracts_dir = find_contracts_dir(settings) if quality_gates else None
 
     prefix = run_id_prefix or f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:4]}"
     source_ns = bronze_namespace or "bronze"
@@ -184,11 +192,13 @@ def run_medallion(
                 staging_db,
                 lake_catalog,
                 targets,
+                settings=settings,
                 expected_bases=expected_bases,
                 target_namespace=target_namespace,
                 run_id_prefix=prefix,
                 bronze_snapshots=dict(context.bronze_snapshots),
                 dbt_tests_passed=tests_passed,
+                contracts_dir=contracts_dir,
                 on_table=on_table,
             )
     except Exception as exc:
@@ -211,7 +221,14 @@ def run_medallion(
             warehouse_uri=emitter.warehouse_uri,
             snapshot_id=report.snapshot_id,
             row_count=report.rows,
-            assertions=(LineageAssertion(assertion="dbt_tests_passed", success=True),),
+            assertions=(
+                LineageAssertion(assertion="dbt_tests_passed", success=True),
+                *(
+                    (LineageAssertion(assertion="wap_quality_gates_passed", success=True),)
+                    if report.quality_checks_passed > 0
+                    else ()
+                ),
+            ),
             namespace_override=report.namespace,
         )
         for report in reports
@@ -377,16 +394,19 @@ def _publish_all(
     catalog: Catalog,
     targets: tuple[TableSpec, ...],
     *,
+    settings: Settings,
     expected_bases: dict[tuple[str, str], int | None],
     target_namespace: str | None,
     run_id_prefix: str,
     bronze_snapshots: dict[str, int | None],
     dbt_tests_passed: int,
+    contracts_dir: Path | None,
     on_table: Callable[[TableReport], None] | None,
 ) -> list[TableReport]:
-    """Read each built table from the staging DuckDB and publish it via WAP."""
+    """Read each built table from the staging DuckDB, gate its audit branch and publish via WAP."""
     reports: list[TableReport] = []
     con = duckdb.connect(str(staging_db), read_only=True)
+    gate_con: duckdb.DuckDBPyConnection | None = None
     try:
         con.execute("SET TimeZone = 'UTC'")
         for spec in targets:
@@ -396,7 +416,10 @@ def _publish_all(
             ).to_arrow_table()
             aligned = _align_to_schema(raw_arrow, spec)
             identifier = (target_namespace or spec.namespace, spec.name)
-            snapshot_id, run_id = _publish_table(
+            logical_name = f"{spec.namespace}.{spec.name}"
+            if contracts_dir is not None and gate_con is None:
+                gate_con = _open_gate_connection(catalog, identifier, settings)
+            snapshot_id, run_id, gate_report = _publish_table(
                 catalog,
                 identifier,
                 aligned,
@@ -404,7 +427,12 @@ def _publish_all(
                 run_id_prefix=run_id_prefix,
                 bronze_snapshots=bronze_snapshots,
                 dbt_tests_passed=dbt_tests_passed,
+                logical_table_name=logical_name,
+                gate_con=gate_con,
+                contracts_dir=contracts_dir,
+                quarantine_namespace=target_namespace,
             )
+            checks_passed = 0 if gate_report is None else gate_report.checks_passed
             report = TableReport(
                 namespace=identifier[0],
                 name=identifier[1],
@@ -412,6 +440,7 @@ def _publish_all(
                 snapshot_id=snapshot_id,
                 run_id=run_id,
                 seconds=round(time.monotonic() - table_started, 3),
+                quality_checks_passed=checks_passed,
             )
             log.info(
                 "transform.table.published",
@@ -419,6 +448,7 @@ def _publish_all(
                 rows=report.rows,
                 snapshot_id=report.snapshot_id,
                 run_id=report.run_id,
+                quality_checks_passed=checks_passed,
                 seconds=report.seconds,
             )
             reports.append(report)
@@ -426,7 +456,28 @@ def _publish_all(
                 on_table(report)
     finally:
         con.close()
+        if gate_con is not None:
+            gate_con.close()
     return reports
+
+
+def _open_gate_connection(
+    catalog: Catalog,
+    sample_identifier: tuple[str, str],
+    settings: Settings,
+) -> duckdb.DuckDBPyConnection:
+    """Open a DuckDB connection for WAP branch auditing (Lakekeeper S3 or local SqlCatalog)."""
+    sample = catalog.load_table(sample_identifier)
+    if sample.metadata_location.startswith("s3://"):
+        gate_con = duck.connect(settings)
+    else:
+        gate_con = duckdb.connect(config=duck.connection_config(settings))
+        if settings.duckdb.extension_directory is None:
+            gate_con.install_extension("iceberg")
+        gate_con.load_extension("iceberg")
+    gate_con.execute("SET GLOBAL TimeZone = 'UTC'")
+    gate_con.execute("SET TimeZone = 'UTC'")
+    return gate_con
 
 
 def _align_to_schema(table: pa.Table, spec: TableSpec) -> pa.Table:
@@ -462,8 +513,16 @@ def _publish_table(
     run_id_prefix: str,
     bronze_snapshots: dict[str, int | None],
     dbt_tests_passed: int,
-) -> tuple[int | None, str]:
+    logical_table_name: str | None = None,
+    gate_con: duckdb.DuckDBPyConnection | None = None,
+    contracts_dir: Path | None = None,
+    quarantine_namespace: str | None = None,
+) -> tuple[int | None, str, GateReport | None]:
     """Full-refresh overwrite of one Silver/Gold table through WAP, fenced on ``expected_base``.
+
+    When ``gate_con`` and ``contracts_dir`` are provided, audits the staged branch with zero-scan
+    Iceberg metadata checks and any declarative Soda v4 contract BEFORE ``wap.publish``, writing
+    violations to ``quarantine.rejected_records`` and discarding the branch on failure.
 
     Never retries with stale rows on ``PublishConflict``: if another writer moved ``main`` during
     the dbt build or WAP write, the audit branch is discarded and ``PublishConflict`` propagates
@@ -496,7 +555,7 @@ def _publish_table(
         # branch leaves nothing to audit or publish, and DuckDB cannot read an empty root.
         if rows.num_rows == 0 and audit.base_snapshot_id is None:
             wap.discard(table, audit)
-            return None, run_id
+            return None, run_id, None
         wap.write(
             table,
             audit,
@@ -520,8 +579,27 @@ def _publish_table(
                 f"{'.'.join(identifier)} audit mismatch: branch has {actual_rows} "
                 f"row(s), expected {rows.num_rows}"
             )
+        gate_report: GateReport | None = None
+        if gate_con is not None and contracts_dir is not None and rows.num_rows > 0:
+            qualified = ".".join(identifier)
+            table_ref = (
+                duck.table_name(qualified)
+                if table.metadata_location.startswith("s3://")
+                else table.metadata_location
+            )
+            gate_report = audit_branch_and_quarantine(
+                catalog,
+                table,
+                audit,
+                table_name=logical_table_name or qualified,
+                con=gate_con,
+                table_ref=table_ref,
+                contracts_dir=contracts_dir,
+                run_id=run_id,
+                quarantine_namespace=quarantine_namespace,
+            )
         published = wap.publish(table, audit, audited)
-        return published, run_id
+        return published, run_id, gate_report
     except Exception:
         wap.discard(table, audit)
         raise

@@ -71,11 +71,15 @@ Silver/Gold medallion (ADR 0007) live across 3.9 years of Iberian electricity da
   - `gold_mibel_hourly_market.yml`: strict 20-column schema, MIBEL bounds, duplicate `hour_utc`,
     DST hourly continuity, positive peninsular demand and required REE/OMIE source attribution.
 - **ACID quarantine (`quarantine.rejected_records`):** registered in `ibergrid.lake.registry`
-  (partitioned by `month(rejected_at_utc)`). Whenever `audit_branch_and_quarantine` fails on a WAP
-  audit branch, violations and up to 20 sampled offending rows (`record_key` + `payload_json`) are
-  appended to `quarantine.rejected_records` via `ibergrid.lake.wap` (retrying append-only
-  `PublishConflict`), the audit branch is discarded via `wap.discard`, and `QualityGateError` is
-  raised before `wap.publish` is ever reached.
+  (partitioned by `month(rejected_at_utc)`). `ibergrid.transform.runner._publish_table` invokes
+  `audit_branch_and_quarantine` directly on every staged Silver and Gold WAP audit branch before
+  `wap.publish` (Bronze remains "checked, not gated" per ADRs 0003 and 0004 so raw source anomalies
+  stay preserved in Bronze). A missing YAML contract for any table in `CONTRACT_MAP` fails closed
+  (`FileNotFoundError`) and discards the audit branch rather than publishing with reduced checks.
+  Whenever a gate fails, violations and up to 20 sampled offending rows (`record_key` +
+  `payload_json`) are appended to `quarantine.rejected_records` via `ibergrid.lake.wap` (retrying
+  append-only `PublishConflict`), the audit branch is discarded via `wap.discard`, and
+  `QualityGateError` is raised before `wap.publish` is ever reached.
 
 ### 3. S3 orphan-file cleanup and automated maintenance (`ibergrid.lake.maintenance`)
 
@@ -103,10 +107,11 @@ Silver/Gold medallion (ADR 0007) live across 3.9 years of Iberian electricity da
 - Emits spec-compliant OpenLineage 2-0-2 JSON `START`, `COMPLETE` and `FAIL` RunEvents carrying
   `schema`, `dataSource`, `outputStatistics`, `dataQualityAssertions`, `ibergridSnapshot` and
   `errorMessage` facets.
-- Always logs structured events via `structlog`, optionally appends compact JSONL to
-  `IBERGRID_LINEAGE_SINK_PATH`, and optionally POSTs to `IBERGRID_LINEAGE_ENDPOINT_URL/api/v1/lineage`
-  (e.g. Marquez) with non-fatal error handling so an observability outage never aborts a data
-  commit. Zero extra containers are required by default.
+- Always logs the complete OpenLineage v2 RunEvent payload (`openlineage_event`) via `structlog`
+  so default log-only deployments preserve full dataset, snapshot, assertion and error provenance;
+  optionally appends compact JSONL to `IBERGRID_LINEAGE_SINK_PATH`, and optionally POSTs to
+  `IBERGRID_LINEAGE_ENDPOINT_URL/api/v1/lineage` (e.g. Marquez) with non-fatal error handling so an
+  observability outage never aborts a data commit. Zero extra containers are required by default.
 - Wired into `ibergrid.transform.runner.run_medallion` and `ibergrid.orchestration.maintenance`.
 
 ## Measured results (2026-11-21)

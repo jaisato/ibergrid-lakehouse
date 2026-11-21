@@ -219,6 +219,7 @@ class LineageEmitter:
             run_id=event["run"]["runId"],
             inputs=len(inputs),
             outputs=len(outputs),
+            openlineage_event=event,
         )
         payload = json.dumps(event, separators=(",", ":"), sort_keys=True)
 

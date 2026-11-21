@@ -585,3 +585,44 @@ def test_check_tables_metadata_only_and_full_mode(
         assert full_reports[0].checks_passed >= 10
     finally:
         con.close()
+
+
+def test_missing_mapped_contract_file_fails_closed_and_discards_branch(
+    catalog: SqlCatalog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> None:
+    ensure_table(catalog, registry.OMIE_DAY_AHEAD_PRICES)
+    table = catalog.load_table(registry.OMIE_DAY_AHEAD_PRICES.identifier)
+    rows = _omie_rows([date(2025, 4, 28)])
+    empty_dir = tmp_path / "empty-contracts"
+    empty_dir.mkdir()
+    con = _duck_con()
+    try:
+        audit = wap.start(table, "missing-contract")
+        wap.write(table, audit, rows)
+        with pytest.raises(FileNotFoundError, match="missing required Soda contract"):
+            audit_branch_and_quarantine(
+                catalog,
+                table,
+                audit,
+                table_name="bronze.omie_day_ahead_prices",
+                con=con,
+                table_ref=table.metadata_location,
+                contracts_dir=empty_dir,
+                run_id="missing-contract",
+            )
+        assert wap.audit_branches(table) == []
+
+        # Also fails closed in check_tables when the contracts directory lacks a mapped YAML.
+        table.append(rows)
+        monkeypatch.setenv("IBERGRID_QUALITY_CONTRACTS_DIR", str(empty_dir))
+        monkeypatch.setattr(duck, "table_name", lambda _name: table.metadata_location)
+        with pytest.raises(FileNotFoundError, match="missing required Soda contract"):
+            check_tables(
+                Settings(),
+                tables=("bronze.omie_day_ahead_prices",),
+                metadata_only=False,
+                con=con,
+                catalog=catalog,
+            )
+    finally:
+        con.close()

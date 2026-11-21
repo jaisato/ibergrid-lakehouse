@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pyarrow as pa
 import pytest
 from pyarrow import fs
@@ -483,7 +484,7 @@ def test_align_to_schema_and_publish_table_edge_cases(
         schema=spec.schema.as_arrow(),
     )
     # Publish succeeds when main is still at expected_base (None on empty table).
-    first_snap, _ = _publish_table(
+    first_snap, _, _ = _publish_table(
         catalog,
         spec.identifier,
         one_row,
@@ -494,6 +495,46 @@ def test_align_to_schema_and_publish_table_edge_cases(
     )
     assert first_snap is not None
     assert wap.audit_branches(catalog.load_table(spec.identifier)) == []
+
+    # Production WAP quality gate blocks corrupt rows before wap.publish and quarantines them!
+    ensure_table(catalog, registry.QUARANTINE_REJECTED_RECORDS)
+    gate_con = duckdb.connect()
+    gate_con.load_extension("iceberg")
+    try:
+        from ibergrid.quality import QualityGateError, find_contracts_dir
+
+        bad_price_idx = one_row.schema.get_field_index("price_es_mean_eur_mwh")
+        corrupt_row = one_row.set_column(
+            bad_price_idx,
+            one_row.schema.field(bad_price_idx),
+            pa.array([9999.0], pa.float64()),
+        )
+        with pytest.raises(QualityGateError, match=r"metadata\.bounds\.price_es_mean_eur_mwh"):
+            _publish_table(
+                catalog,
+                spec.identifier,
+                corrupt_row,
+                expected_base=first_snap,
+                run_id_prefix="bad-gate",
+                bronze_snapshots={},
+                dbt_tests_passed=1,
+                logical_table_name="gold.mibel_daily_summary",
+                gate_con=gate_con,
+                contracts_dir=find_contracts_dir(),
+            )
+    finally:
+        gate_con.close()
+    table = catalog.load_table(spec.identifier)
+    assert table.metadata.current_snapshot_id == first_snap
+    assert wap.audit_branches(table) == []
+    q_rows = (
+        catalog.load_table(registry.QUARANTINE_REJECTED_RECORDS.identifier)
+        .scan()
+        .to_arrow()
+        .to_pylist()
+    )
+    assert len(q_rows) >= 1
+    assert q_rows[0]["source_table"] == "gold.mibel_daily_summary"
 
     # Concurrent publish during dbt build (expected_base is stale): refused without overwriting!
     price_idx = one_row.schema.get_field_index("price_es_mean_eur_mwh")

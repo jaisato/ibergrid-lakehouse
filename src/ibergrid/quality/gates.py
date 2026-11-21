@@ -248,10 +248,18 @@ def audit_branch_and_quarantine(
                 )
 
     contract_file = CONTRACT_MAP.get(table_name)
-    contract_path = (contracts_dir / contract_file) if contract_file else None
+    contract_path: Path | None = None
+    if contract_file is not None:
+        contract_path = contracts_dir / contract_file
+        if not contract_path.is_file():
+            if discard_on_failure:
+                wap.discard(table, audit)
+            raise FileNotFoundError(
+                f"missing required Soda contract for {table_name}: {contract_path}"
+            )
     decoupled_verified: int | None = None
 
-    if contract_path is not None and contract_path.is_file() and snapshot_id is not None:
+    if contract_path is not None and snapshot_id is not None:
         view_name = contract_path.stem
         quoted_ref = _quote(table_ref)
         relation_sql = (
@@ -372,6 +380,10 @@ def check_tables(
                 and meta_result.summary.total_records > 0
             ):
                 contract_path = contracts_dir / CONTRACT_MAP[name]
+                if not contract_path.is_file():
+                    raise FileNotFoundError(
+                        f"missing required Soda contract for {name}: {contract_path}"
+                    )
                 quoted_ref = _quote(table_ref)
                 snap_id = meta_result.summary.snapshot_id
                 soda_report = run_soda_contract(

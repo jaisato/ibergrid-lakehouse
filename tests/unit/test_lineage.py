@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from ibergrid.lake import registry
 from ibergrid.lineage import (
@@ -111,8 +112,28 @@ def test_emitter_writes_jsonl_posts_http_and_tolerates_transport_errors(
     monkeypatch.setenv("IBERGRID_LINEAGE_ENDPOINT_URL", server.url)
 
     emitter = LineageEmitter.from_settings(Settings())
-    emitter.emit("START", job_name="medallion_transform", run_id="run-1")
-    emitter.emit("COMPLETE", job_name="medallion_transform", run_id="run-1")
+    with structlog.testing.capture_logs() as captured:
+        emitter.emit("START", job_name="medallion_transform", run_id="run-1")
+        emitter.emit(
+            "COMPLETE",
+            job_name="medallion_transform",
+            run_id="run-1",
+            outputs=[
+                build_dataset(
+                    registry.GOLD_MIBEL_HOURLY_MARKET,
+                    warehouse_uri=emitter.warehouse_uri,
+                    snapshot_id=77,
+                    row_count=24,
+                )
+            ],
+        )
+
+    lineage_logs = [entry for entry in captured if entry.get("event") == "lineage.event"]
+    assert len(lineage_logs) == 2
+    logged_complete = lineage_logs[1]["openlineage_event"]
+    assert logged_complete["eventType"] == "COMPLETE"
+    assert logged_complete["outputs"][0]["name"] == "gold.mibel_hourly_market"
+    assert logged_complete["outputs"][0]["facets"]["ibergridSnapshot"]["snapshotId"] == "77"
 
     lines = [json.loads(line) for line in sink.read_text(encoding="utf-8").splitlines()]
     assert [e["eventType"] for e in lines] == ["START", "COMPLETE"]
