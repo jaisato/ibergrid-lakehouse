@@ -5,6 +5,8 @@
 #   release.env);
 # - the Dagster schedules run (locally they start stopped);
 # - nothing is published on host ports (phase 6 adds a reverse proxy for public endpoints);
+# - the broker runs in production mode (fsync on, startup checks on), and the streaming lane runs
+#   (locally its services are in the `stream` profile);
 # - long-running services restart unless stopped and every log rotates.
 x-logging: &logging
   driver: json-file
@@ -31,15 +33,48 @@ x-orchestration-long-running: &orchestration-long-running
   <<: *orchestration
   restart: unless-stopped
 
+# The stream services: the app image, out of the `stream` profile, restarted unless stopped.
+x-stream: &stream
+  image: ${IBERGRID_IMAGE:-ghcr.io/jaisato/ibergrid-lakehouse}@${IBERGRID_APP_DIGEST:?set IBERGRID_APP_DIGEST (sha256:...) in release.env; the deploy job writes it}
+  profiles: !reset []
+  restart: unless-stopped
+  logging: *logging
+
 services:
   catalog-db: *long-running
   catalog: *long-running
-  broker: *long-running
+  broker:
+    <<: *long-running
+    # Production mode instead of dev-container: no --unsafe-bypass-fsync, and Redpanda's startup
+    # checks run. The image's redpanda.yaml sets developer_mode, which `rpk redpanda mode
+    # production` turns off first; as in compose.yaml, the unauthenticated HTTP Proxy and Schema
+    # Registry sections go too. --reserve-memory=0M: the container's limit is the reserve.
+    entrypoint:
+      ["/bin/bash", "-c", "rpk redpanda mode production > /dev/null && sed -i '/^pandaproxy:/d; /^schema_registry:/d' /etc/redpanda/redpanda.yaml && exec /entrypoint.sh \"$$@\"", "broker"]
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://broker:9092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=broker:33145
+  broker-init:
+    logging: *logging
   catalog-migrate:
     logging: *logging
   catalog-init: *app
   doctor: *app
   ingest: *app
+  stream-producer: *stream
+  stream-consumer:
+    <<: *stream
+    environment:
+      IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
+      IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
   orchestration-db: *long-running
   orchestration-migrate: *orchestration
   dagster-code:

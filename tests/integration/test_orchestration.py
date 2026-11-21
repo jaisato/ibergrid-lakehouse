@@ -286,7 +286,12 @@ def test_a_run_through_the_webserver_materializes_partitions_with_their_measurem
     tables = {spec.name: catalog.load_table((sandbox.namespace, spec.name)) for spec in TABLES}
     assert len(tables[REDATA_OBSERVATIONS.name].scan().to_arrow()) == 1152
     assert len(tables[OMIE_DAY_AHEAD_PRICES.name].scan().to_arrow()) == 96
-    assert all(set(table.metadata.refs) == {"main"} for table in tables.values())
+    # No audit branch left anywhere; the two tables the runs wrote have their main.
+    assert all(set(table.metadata.refs) <= {"main"} for table in tables.values())
+    assert all(
+        "main" in tables[spec.name].metadata.refs
+        for spec in (REDATA_OBSERVATIONS, OMIE_DAY_AHEAD_PRICES)
+    )
 
 
 def test_a_partition_range_is_one_run_and_one_request_per_chunk(

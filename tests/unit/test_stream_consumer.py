@@ -1,0 +1,1273 @@
+"""The consumer on a real Iceberg catalog (sqlite + local files) through the real WAP path, with an
+in-memory broker: checkpoints, duplicates and revisions, dead letters, the buffer policy, failures
+and recovery."""
+
+import json
+import threading
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, cast
+
+import pyarrow as pa
+import pytest
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
+from confluent_kafka.admin import AdminClient
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.exceptions import CommitStateUnknownException
+from pyiceberg.table import Table
+from pyiceberg.table.update import SetPropertiesUpdate
+from structlog.testing import capture_logs
+
+from ibergrid.lake import wap
+from ibergrid.lake.registry import REDATA_DEMAND_STREAM
+from ibergrid.lake.tables import ensure_table
+from ibergrid.settings import StreamSettings
+from ibergrid.stream import consumer as consumer_module
+from ibergrid.stream import health
+from ibergrid.stream.consumer import (
+    AuditFailed,
+    ConsumerError,
+    DeadLetterFailed,
+    StreamConsumer,
+    describe_status,
+    read_checkpoint,
+    reset_checkpoint,
+)
+from ibergrid.stream.contract import DemandEvent, ProducerInfo, content_sha256
+
+from .conftest import FakeBroker, FakeMessage
+
+TOPIC = "redata.demand.realtime.v1"
+DLQ = "redata.demand.realtime.dlq.v1"
+GROUP = "redata-demand-to-bronze"
+PROPERTY = f"ibergrid.stream.checkpoint.{GROUP}"
+NOW = datetime(2026, 11, 18, 12, tzinfo=UTC)
+
+
+def offsets(table: Table) -> dict[int, int]:
+    table.refresh()
+    checkpoint = read_checkpoint(table, GROUP)
+    return {} if checkpoint is None else checkpoint.offsets
+
+
+class Held(Exception):
+    """Stands in for the SIGKILL that ends a held consumer."""
+
+
+def event(series: str = "2037", minute: int = 0, value: float = 27_000.0) -> DemandEvent:
+    ts = datetime(2026, 11, 18, 10, tzinfo=UTC) + timedelta(minutes=minute)
+    return DemandEvent(
+        series_id=series,
+        series_title="Real",
+        electric_system="national",
+        ts_utc=ts,
+        ts_local=ts.astimezone().isoformat(),
+        value=value,
+        content_sha256=content_sha256(series, "national", ts, value),
+        producer=ProducerInfo(name="test", version="0", instance="host", emitted_at=NOW),
+    )
+
+
+def send(broker: FakeBroker, *events: DemandEvent) -> None:
+    for item in events:
+        broker.produce(TOPIC, value=item.model_dump_json().encode(), key=item.key.encode())
+
+
+def drain(stream: StreamConsumer) -> None:
+    for message in stream.kafka.consume(10_000, 0):
+        stream.handle(message)
+
+
+def rows(table: Table) -> list[dict[str, Any]]:
+    table.refresh()
+    if table.current_snapshot() is None:
+        return []
+    return cast(list[dict[str, Any]], table.scan().to_arrow().to_pylist())
+
+
+def fail_publishes(
+    table: Table, monkeypatch: pytest.MonkeyPatch, *failures: Exception
+) -> list[object]:
+    """The catalog refuses the next publish commits (the ones setting table properties) with
+    ``failures``, in order; every other commit goes through. Returns the publishes it saw."""
+    commit, seen, pending = table.catalog.commit_table, [], list(failures)
+
+    def refusing(target: Table, requirements: Any, updates: Any) -> Any:
+        if any(isinstance(update, SetPropertiesUpdate) for update in updates):
+            seen.append(updates)
+            if pending:
+                raise pending.pop(0)
+        return commit(target, requirements, updates)
+
+    monkeypatch.setattr(table.catalog, "commit_table", refusing)
+    return seen
+
+
+@pytest.fixture
+def table(catalog: SqlCatalog) -> Table:
+    ensure_table(catalog, REDATA_DEMAND_STREAM)
+    return catalog.load_table(REDATA_DEMAND_STREAM.identifier)
+
+
+@pytest.fixture
+def broker() -> FakeBroker:
+    return FakeBroker({TOPIC: 3, DLQ: 1})
+
+
+@pytest.fixture
+def make(table: Table, broker: FakeBroker, tmp_path: Path) -> Callable[..., StreamConsumer]:
+    def build(
+        sleep: Callable[[float], None] = lambda _: None,
+        clock: Callable[[], datetime] = lambda: NOW,
+        hold_at: str | None = None,
+        allow_other_checkpoints: bool = False,
+        **changes: Any,
+    ) -> StreamConsumer:
+        settings = StreamSettings(heartbeat_path=str(tmp_path / "heartbeat"), **changes)
+        return StreamConsumer(
+            table,
+            cast(Consumer, broker),
+            cast(Producer, broker),
+            cast(AdminClient, broker),
+            settings,
+            clock=clock,
+            sleep=sleep,
+            hold_at=hold_at,
+            allow_other_checkpoints=allow_other_checkpoints,
+        )
+
+    return build
+
+
+@pytest.fixture
+def started(make: Callable[..., StreamConsumer]) -> StreamConsumer:
+    stream = make()
+    stream.start()
+    return stream
+
+
+def test_a_flush_writes_the_rows_and_publishes_their_offsets_in_one_commit(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    send(broker, *(event(minute=5 * n) for n in range(5)))
+    drain(started)
+
+    report = started.flush()
+
+    written = rows(table)
+    assert report.rows == len(written) == 5
+    expected = {p: len(log) for p, log in enumerate(broker.logs[TOPIC]) if log}
+    assert report.offsets == expected == offsets(table)
+    assert broker.commits == [expected]  # the group gets them too, for lag visibility
+    assert report.lag == {p: 0 for p in expected}
+    assert {row["run_id"] for row in written} == {report.run_id}
+    assert {(row["kafka_partition"], row["kafka_offset"]) for row in written} == {
+        (m.partition(), m.offset()) for m in broker.messages(TOPIC)
+    }
+    summary = cast(Any, table.current_snapshot()).summary
+    assert summary["ibergrid.stream.rows"] == "5"
+    assert summary["ibergrid.stream.checkpoint"] == table.properties[PROPERTY]
+    assert {row["kafka_topic_id"] for row in written} == {broker.topic_ids[TOPIC]}
+    assert wap.audit_branches(table) == []
+
+
+def test_a_restart_seeks_to_the_tables_checkpoint_not_the_groups(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer]
+) -> None:
+    send(broker, event(minute=0), event(minute=5))
+    drain(started)
+    started.flush()
+    broker.commits.clear()  # whatever the group says, the table decides
+    send(broker, event(minute=10))
+
+    again = make()
+    again.start()
+    drain(again)
+
+    assert broker.assignments[-1] == {
+        p: cast(Any, started.checkpointed).offsets.get(p, 0) for p in range(len(broker.logs[TOPIC]))
+    }
+    assert [item.event.ts_utc.minute for item in again.buffer] == [10]
+
+
+def test_exact_duplicates_are_dropped_and_revisions_kept_also_after_a_restart(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    originals = [event(minute=5 * n) for n in range(4)]
+    send(broker, *originals, originals[0])  # a repeat within the batch
+    drain(started)
+    assert started.batch["duplicates"] == 1
+    started.flush()
+
+    again = make()  # the producer restarted too and re-emits its window
+    again.start()
+    send(broker, *originals, event(minute=0, value=1.0), event(minute=20))
+    drain(again)
+    report = again.flush()
+
+    assert (report.rows, report.duplicates, report.revisions) == (2, 4, 1)
+    written = rows(table)
+    assert len(written) == 6
+    assert sorted(row["value"] for row in written if row["ts_utc"].minute == 0) == [1.0, 27_000.0]
+
+
+def test_invalid_messages_go_to_the_dead_letter_topic_with_their_reason(
+    started: StreamConsumer, broker: FakeBroker
+) -> None:
+    good = event()
+    off_grid = json.loads(good.model_dump_json()) | {"ts_utc": "2026-11-18T10:01:00Z"}
+    broker.produce(TOPIC, value=b"{not json", key=b"k")
+    broker.produce(TOPIC, value=json.dumps(off_grid).encode(), key=good.key.encode())
+    broker.produce(TOPIC, value=good.model_dump_json().encode(), key=b"2037|elsewhere")
+    broker.produce(TOPIC, value=None, key=good.key.encode())
+
+    drain(started)
+
+    letters = broker.messages(DLQ)
+    reasons = [dict(headers)["ibergrid.dlq.reason"] for headers in broker.headers[-4:]]
+    assert sorted(reasons) == ["contract", "contract", "key", "no-value"]
+    assert {m.value() for m in letters} == {
+        b"{not json",
+        json.dumps(off_grid).encode(),
+        good.model_dump_json().encode(),
+        None,
+    }
+    sources = {dict(headers)["ibergrid.dlq.source"] for headers in broker.headers[-4:]}
+    assert all(source.startswith(f"{TOPIC}/") for source in sources)
+    assert started.buffer == []
+    assert started.batch["dead_letters"] == 4
+    assert sum(started.next_offsets.values()) == 4
+
+
+def test_progress_without_rows_is_checkpointed_at_a_bounded_cadence(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    send(broker, event())
+    drain(started)
+    first = started.flush()
+    send(broker, event())  # a duplicate: the offsets move, no row does
+    drain(started)
+
+    assert started.maybe_flush() is None  # within checkpoint_interval of the last checkpoint
+    started.last_checkpoint -= started.settings.checkpoint_interval
+    checkpoint = started.maybe_flush()
+
+    assert checkpoint is not None
+    assert checkpoint.rows == 0
+    assert checkpoint.snapshot_id != first.snapshot_id  # main moved: the publish was fenced
+    assert sum(offsets(table).values()) == 2
+    assert len(rows(table)) == 1
+    assert started.maybe_flush(final=True) is None  # nothing new since
+
+
+def test_a_checkpoint_waits_for_the_first_rows_on_an_empty_table(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    broker.produce(TOPIC, value=b"garbage", key=b"k")
+    drain(started)
+
+    with capture_logs() as logs:
+        assert started.maybe_flush(final=True) is None
+
+    assert PROPERTY not in table.properties
+    assert "stream.consumer.checkpoint_deferred" in [entry["event"] for entry in logs]
+
+
+def test_the_buffer_flushes_at_its_size_or_its_age(
+    make: Callable[..., StreamConsumer], broker: FakeBroker
+) -> None:
+    stream = make(flush_records=3, flush_age=60)
+    stream.start()
+    send(broker, event(minute=0), event(minute=5))
+    drain(stream)
+    assert stream.maybe_flush() is None
+
+    send(broker, event(minute=10))
+    drain(stream)
+    assert cast(Any, stream.maybe_flush()).rows == 3
+
+    send(broker, event(minute=15))
+    drain(stream)
+    assert stream.maybe_flush() is None
+    stream.first_buffered = time.monotonic() - 61
+    assert cast(Any, stream.maybe_flush()).rows == 1
+
+
+def test_a_failed_flush_leaves_main_and_the_offsets_untouched(
+    started: StreamConsumer, broker: FakeBroker, table: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    send(broker, event(minute=0))
+    drain(started)
+    started.flush()
+    head, checkpoint = table.current_snapshot(), table.properties[PROPERTY]
+    send(broker, event(minute=5))
+    drain(started)
+
+    fail_publishes(table, monkeypatch, OSError("catalog unreachable"))
+    with pytest.raises(OSError, match="unreachable"):
+        started.flush()
+
+    table.refresh()
+    assert table.current_snapshot() == head
+    assert table.properties[PROPERTY] == checkpoint
+    assert wap.audit_branches(table) == []  # the run was discarded
+    assert len(started.buffer) == 1  # the run loop starts again from the table
+
+
+def test_an_audit_that_finds_other_rows_refuses_the_batch(
+    started: StreamConsumer, broker: FakeBroker, table: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    send(broker, event(minute=0), event(minute=5))
+    drain(started)
+    original = wap.write
+
+    def write_one_row_twice(target: Table, audit: wap.AuditBranch, data: Any, **kw: Any) -> Any:
+        return original(target, audit, data.take([0, 0]), **kw)
+
+    monkeypatch.setattr(wap, "write", write_one_row_twice)  # a faulty write, not a catalog fault
+
+    with pytest.raises(AuditFailed, match="2 rows \\(1 distinct messages\\)"):
+        started.flush()
+    assert rows(table) == []
+
+
+def test_a_lost_publish_answer_is_published_again_with_the_same_arguments(
+    started: StreamConsumer, broker: FakeBroker, table: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    send(broker, event(minute=0))
+    drain(started)
+    started.flush()
+    send(broker, event(minute=0))  # a duplicate: the next flush is a checkpoint
+    drain(started)
+    publishes = fail_publishes(table, monkeypatch, CommitStateUnknownException("502"))
+
+    with capture_logs() as logs:
+        report = started.flush()
+
+    assert len(publishes) == 2
+    assert "stream.consumer.publish_retry" in [entry["event"] for entry in logs]
+    assert sum(offsets(table).values()) == 2
+    checkpoints = [
+        s for s in table.snapshots() if s.summary is not None and s.summary["ibergrid.checkpoint"]
+    ]
+    assert len(checkpoints) == 1  # resumed from its own checkpoint snapshot, not a second one
+    assert report.snapshot_id == checkpoints[0].snapshot_id
+
+
+def test_a_second_writer_cannot_land_offsets_the_first_already_published(
+    make: Callable[..., StreamConsumer], broker: FakeBroker, table: Table
+) -> None:
+    send(broker, event(minute=0), event(minute=5))
+    first, second = make(), make()
+    first.start()
+    drain(first)
+    second.start()  # the fake broker has one position per partition: read everything again
+    drain(second)
+    assert len(first.buffer) == len(second.buffer) > 0
+    first.flush()
+
+    with pytest.raises(wap.PublishConflict, match="the checkpoint moved"):
+        second.flush()
+
+    second.start()
+    drain(second)
+    assert second.buffer == []
+    assert len(rows(table)) == 2
+
+
+def test_a_publish_that_lands_during_the_run_is_fenced_by_main(
+    make: Callable[..., StreamConsumer],
+    broker: FakeBroker,
+    table: Table,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send(broker, event(minute=0))
+    first, second = make(), make()
+    first.start()
+    drain(first)
+    second.start()  # the fake broker has one position per partition: read everything again
+    drain(second)
+    assert len(first.buffer) == len(second.buffer) > 0
+    commit, raced = table.catalog.commit_table, list[bool]()
+
+    def first_publishes_meanwhile(target: Table, requirements: Any, updates: Any) -> Any:
+        if not raced and any(isinstance(update, SetPropertiesUpdate) for update in updates):
+            raced.append(True)
+            first.flush()  # lands between the second's audit and its publish commit
+        return commit(target, requirements, updates)
+
+    monkeypatch.setattr(table.catalog, "commit_table", first_publishes_meanwhile)
+
+    with pytest.raises(wap.PublishConflict, match="moved while publishing"):
+        second.flush()
+    assert len(rows(table)) == 1
+
+
+@pytest.mark.parametrize("point", ["after-write", "after-publish"])
+def test_a_held_flush_stops_exactly_where_the_chaos_test_kills_it(
+    make: Callable[..., StreamConsumer], broker: FakeBroker, table: Table, point: str
+) -> None:
+    observed: list[tuple[int, list[str], str | None]] = []
+
+    def kill(_seconds: float) -> None:
+        table.refresh()
+        observed.append(
+            (len(rows(table)), wap.audit_branches(table), table.properties.get(PROPERTY))
+        )
+        raise Held
+
+    stream = make(sleep=kill, hold_at=point)
+    stream.start()
+    send(broker, event())
+    drain(stream)
+
+    with pytest.raises(Held):
+        stream.flush()
+
+    [(count, branches, checkpoint)] = observed
+    if point == "after-write":
+        assert (count, checkpoint) == (0, None)
+        assert len(branches) == 1  # written, audited later, never published
+    else:
+        assert (count, branches) == (1, [])
+        assert checkpoint is not None
+        assert broker.commits == []  # the group never heard of it
+
+
+def test_only_this_lanes_dead_branches_are_swept(
+    make: Callable[..., StreamConsumer], table: Table
+) -> None:
+    for run_id in (
+        "stream-20261118T100000000000Z-aaaaaa",  # two hours old: a dead run's
+        "stream-20261118T115500000000Z-bbbbbb",  # five minutes old: maybe alive
+        "another-lane-run",
+    ):
+        wap.start(table, run_id)
+
+    removed = make(stale_branch_age=900).sweep_stale_branches()
+
+    assert removed == ["audit-stream-20261118T100000000000Z-aaaaaa"]
+    assert wap.audit_branches(table) == [
+        "audit-another-lane-run",
+        "audit-stream-20261118T115500000000Z-bbbbbb",
+    ]
+
+
+class NoWait(threading.Event):
+    """A stop event whose waits return at once: backoffs without sleeping."""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.is_set()
+
+
+def test_the_loop_starts_again_from_the_table_after_a_failure_and_flushes_on_stop(
+    make: Callable[..., StreamConsumer],
+    broker: FakeBroker,
+    table: Table,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = make(flush_records=3)
+    send(broker, *(event(minute=5 * n) for n in range(4)))
+    stop = NoWait()
+    fail_publishes(table, monkeypatch, OSError("catalog unreachable"))
+    consume, calls = broker.consume, []
+
+    def one_at_a_time(num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        calls.append(1)
+        if len(calls) == 7:
+            stop.set()
+        return consume(1, timeout)
+
+    monkeypatch.setattr(broker, "consume", one_at_a_time)
+
+    with capture_logs() as logs:
+        stream.run(stop)
+
+    # Calls 1-3 fill the buffer and the flush fails; 4-6 read the same messages again from the
+    # table's (empty) checkpoint and flush; 7 reads the last one, flushed on stop.
+    events = [entry["event"] for entry in logs]
+    assert "stream.consumer.failed" in events
+    assert events.count("stream.consumer.started") == 2
+    written = rows(table)
+    assert sorted((r["kafka_partition"], r["kafka_offset"]) for r in written) == sorted(
+        (m.partition(), m.offset()) for m in broker.messages(TOPIC)
+    )
+    assert stream.totals["flushes"] == 2
+
+
+def test_the_loop_flushes_what_is_buffered_when_stopped(
+    make: Callable[..., StreamConsumer],
+    broker: FakeBroker,
+    table: Table,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = make()
+    send(broker, event(minute=0), event(minute=5))
+    stop = threading.Event()
+    consume = broker.consume
+
+    def consume_then_stop(num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        stop.set()
+        return consume(num_messages, timeout)
+
+    monkeypatch.setattr(broker, "consume", consume_then_stop)
+    stream.run(stop)
+
+    assert len(rows(table)) == 2
+    assert json.loads((tmp_path / "heartbeat").read_text())["consumed"] == 2
+
+
+def test_kafka_errors_are_logged_unless_fatal(started: StreamConsumer) -> None:
+    transport = FakeMessage(TOPIC, 0, 0, None, None, error_=KafkaError(KafkaError._TRANSPORT))
+    fatal = FakeMessage(TOPIC, 0, 0, None, None, error_=KafkaError(KafkaError._FATAL, fatal=True))
+
+    with capture_logs() as logs:
+        started.handle(cast(Any, transport))
+    assert logs[0]["event"] == "stream.consumer.kafka_error"
+    with pytest.raises(KafkaException):
+        started.handle(cast(Any, fatal))
+
+
+def test_a_fatal_kafka_error_stops_the_loop(
+    make: Callable[..., StreamConsumer], broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = make()
+    fatal = FakeMessage(TOPIC, 0, 0, None, None, error_=KafkaError(KafkaError._FATAL, fatal=True))
+    monkeypatch.setattr(broker, "consume", lambda *_args: [fatal])
+
+    with pytest.raises(KafkaException):
+        stream.run(threading.Event())
+
+
+def test_dead_letters_the_broker_refuses_fail_the_flush(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    send(broker, event())
+    broker.produce(TOPIC, value=b"garbage", key=b"k")
+    broker.refuse = KafkaError(KafkaError.TOPIC_AUTHORIZATION_FAILED)
+    drain(started)
+
+    with pytest.raises(DeadLetterFailed, match="1 refused"):
+        started.flush()
+    assert rows(table) == []
+
+
+def test_status_shows_the_checkpoint_the_lag_and_the_dead_letters(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    send(broker, event(minute=0), event(minute=5))
+    broker.produce(TOPIC, value=b"garbage", key=b"k")
+    drain(started)
+    started.flush()
+    send(broker, event(minute=10))
+
+    lines = describe_status(
+        table, cast(Consumer, broker), cast(AdminClient, broker), started.settings
+    )
+
+    assert lines[0].startswith("table:        bronze.redata_demand_stream: 2 rows, snapshot ")
+    assert lines[1] == f"checkpoint:   {PROPERTY} = {table.properties[PROPERTY]}"
+    assert lines[2] == f"topic:        {TOPIC} {broker.topic_ids[TOPIC]}"
+    assert lines[-2] == f"lag:          1 message(s) behind {TOPIC}"
+    assert lines[-1] == f"dead letters: 1 retained in {DLQ}"
+
+
+def test_a_checkpoint_property_that_is_not_a_checkpoint_is_refused(table: Table) -> None:
+    for raw, message in (
+        ('{"0": 5}', "not a checkpoint"),
+        ('{"topic": "t", "topic_id": "x", "offsets": {"0": -1}}', "negative"),
+    ):
+        with table.transaction() as tx:
+            tx.set_properties({PROPERTY: raw})
+        with pytest.raises(ConsumerError, match=message):
+            offsets(table)
+
+
+def test_a_missing_topic_is_reported(make: Callable[..., StreamConsumer]) -> None:
+    with pytest.raises(ConsumerError, match="broker-init creates it"):
+        make(topic="redata.demand.realtime.v2").start()
+
+
+def flushed_twice(stream: StreamConsumer, broker: FakeBroker) -> dict[int, int]:
+    """Five events on partition-spread keys, flushed: the table's checkpoint afterwards."""
+    send(broker, *(event(minute=5 * n) for n in range(5)))
+    drain(stream)
+    return stream.flush().offsets
+
+
+def test_a_recreated_topic_is_refused_until_a_deliberate_reset(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """R2: deleted, recreated and refilled past the checkpoint; its offsets name other messages."""
+    flushed_twice(started, broker)
+    broker.recreate(TOPIC)
+    send(broker, *(event(minute=5 * n, value=1_000.0 + n) for n in range(8)))
+
+    with pytest.raises(ConsumerError, match="deleted and recreated"):
+        make().start()
+    assert len(rows(table)) == 5
+
+    checkpoint = reset_checkpoint(
+        table, cast(Consumer, broker), cast(AdminClient, broker), started.settings, "earliest"
+    )
+    assert checkpoint.topic_id == broker.topic_ids[TOPIC]
+    assert set(checkpoint.offsets.values()) == {0}
+    again = make()
+    again.start()
+    drain(again)
+    again.flush()
+    incarnations = {row["kafka_topic_id"] for row in rows(table)}
+    assert len(rows(table)) == 13
+    assert incarnations == {started.topic_id, broker.topic_ids[TOPIC]}
+
+
+def test_a_log_shorter_than_the_checkpoint_is_refused(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """R1: the broker lost the tail of a partition (dev-container mode bypasses fsync): the same
+    topic, offsets the checkpoint covers handed out again."""
+    checkpoint = flushed_twice(started, broker)
+    partition = max(checkpoint, key=lambda p: checkpoint[p])
+    broker.truncate(TOPIC, partition, 1)
+
+    with pytest.raises(ConsumerError, match="past its end"):
+        make().start()
+
+    reset_checkpoint(
+        table, cast(Consumer, broker), cast(AdminClient, broker), started.settings, "latest"
+    )
+    again = make()
+    again.start()
+    drain(again)
+    assert again.buffer == []  # the end: nothing the old checkpoint covered is read again
+
+
+def test_a_retention_gap_starts_at_the_earliest_message_left_and_says_so(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    checkpoint = flushed_twice(started, broker)
+    [partition] = [p for p in checkpoint][:1]
+    send(broker, *(event(minute=200 + 5 * n) for n in range(30)))
+    end = len(broker.logs[TOPIC][partition])
+    broker.retain_from(TOPIC, partition, end - 1)
+
+    stream = make(checkpoint_interval=1)
+    with capture_logs() as logs:
+        stream.start()
+    [gap] = [entry for entry in logs if entry["event"] == "stream.consumer.retention_gap"]
+    assert (gap["checkpoint"], gap["earliest"]) == (checkpoint[partition], end - 1)
+    assert broker.assignments[-1][partition] == end - 1
+
+
+def test_an_offset_out_of_range_while_reading_starts_again_from_the_table(
+    started: StreamConsumer,
+) -> None:
+    reset = FakeMessage(TOPIC, 0, 0, None, None, error_=KafkaError(KafkaError._AUTO_OFFSET_RESET))
+
+    with pytest.raises(ConsumerError, match="starting again"):
+        started.handle(cast(Any, reset))
+
+
+def test_another_groups_checkpoint_on_the_table_is_refused_unless_allowed(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    flushed_twice(started, broker)
+    other = make(group_id="another-group")
+
+    with pytest.raises(ConsumerError, match="another consumer group writes this table"):
+        other.start()
+    migrating = make(group_id="another-group", allow_other_checkpoints=True)
+    migrating.start()
+    assert broker.assignments[-1] == {p: 0 for p in range(3)}
+
+
+def test_the_duplicate_check_reaches_back_dedup_days_of_this_topic_only(
+    broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """With the default three days: a repeat of a point inside the window is dropped, one just
+    outside it is stored again; the latest version is the highest offset, across flushes."""
+    first = make(clock=lambda: NOW)
+    first.start()
+    inside = event(minute=0)  # 2026-11-18 10:00
+    send(broker, inside, event(minute=0, value=1.0), event(minute=0, value=2.0))
+    drain(first)
+    first.flush()
+    send(broker, event(minute=0, value=3.0))
+    drain(first)
+    first.flush()
+
+    later = make(clock=lambda: NOW + timedelta(days=3, hours=-2, minutes=-1))  # 10:00 + 2 d 23:59
+    later.start()
+    assert later.latest == {(inside.series_id, inside.ts_utc): event(value=3.0).content_sha256}
+    expired = make(clock=lambda: NOW + timedelta(days=3, hours=-1))  # 10:00 is 3 d 1 h ago
+    expired.start()
+    assert expired.latest == {}
+
+
+def test_the_loop_sweeps_dead_branches_with_the_default_age(
+    make: Callable[..., StreamConsumer], broker: FakeBroker, table: Table
+) -> None:
+    """A prompt restart after a kill: the dead run's branch is younger than 900 s at start, and
+    the loop removes it once it is older."""
+    now = [NOW]
+    stream = make(clock=lambda: now[0])
+    wap.start(table, "stream-20261118T115500000000Z-aaaaaa")  # killed 5 minutes ago
+    stop = NoWait()
+    calls = [0]
+
+    def consume(num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        calls[0] += 1
+        if calls[0] == 1:
+            assert wap.audit_branches(table) == ["audit-stream-20261118T115500000000Z-aaaaaa"]
+            now[0] = NOW + timedelta(minutes=16)  # the branch is 21 minutes old now
+        else:
+            stop.set()
+        return []
+
+    broker.consume = consume  # type: ignore[method-assign]
+    stream.run(stop)
+
+    assert wap.audit_branches(table) == []
+
+
+def test_snapshots_older_than_the_retention_expire_and_the_checkpoint_stays(
+    started: StreamConsumer,
+    broker: FakeBroker,
+    table: Table,
+    make: Callable[..., StreamConsumer],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for n in range(4):
+        send(broker, event(minute=5 * n))
+        drain(started)
+        started.flush()
+    table.refresh()
+    before, checkpoint = len(table.metadata.snapshots), table.properties[PROPERTY]
+    monkeypatch.setattr(consumer_module, "RETAIN_SNAPSHOTS", 2)
+
+    assert make(clock=lambda: NOW).expire_snapshots() == []  # all younger than three days
+    expired = make(clock=lambda: datetime.now(UTC) + timedelta(days=4)).expire_snapshots()
+
+    table.refresh()
+    assert len(expired) == before - 2 > 0  # main's last two stay
+    assert len(table.metadata.snapshots) == 2
+    assert table.properties[PROPERTY] == checkpoint
+    assert len(rows(table)) == 4
+
+
+def test_the_heartbeat_reports_a_streak_of_failures_until_the_loop_recovers(
+    make: Callable[..., StreamConsumer],
+    broker: FakeBroker,
+    table: Table,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stream = make(flush_records=1)
+    send(broker, event())
+    fail_publishes(table, monkeypatch, OSError("down"), OSError("down"))
+    stop, beats, calls = NoWait(), [], [0]
+    consume = broker.consume
+
+    def watch(num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        calls[0] += 1
+        beats.append((stream.failures, stream.failing_since))
+        if calls[0] == 5:
+            stop.set()
+        return consume(num_messages, timeout)
+
+    monkeypatch.setattr(broker, "consume", watch)
+    monkeypatch.setattr(consumer_module, "BEAT_EVERY", 0.0)
+    stream.run(stop)
+
+    assert [failures for failures, _ in beats] == [0, 1, 2, 0, 0]
+    assert beats[1][1] is not None
+    assert beats[2][1] == beats[1][1]  # the streak's first failure
+    heartbeat = json.loads((tmp_path / "heartbeat").read_text())
+    assert (heartbeat["failures"], heartbeat["failing_since"]) == (0, None)
+    assert heartbeat["last_flush_at"] is not None
+
+
+def test_group_commit_and_lag_failures_only_cost_visibility(
+    started: StreamConsumer, broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_args: object, **_kwargs: object) -> Any:
+        raise KafkaException(KafkaError(KafkaError._TRANSPORT))
+
+    send(broker, event())
+    drain(started)
+    monkeypatch.setattr(broker, "commit", broken)
+    monkeypatch.setattr(broker, "get_watermark_offsets", broken)
+
+    with capture_logs() as logs:
+        report = started.flush()
+
+    assert report.rows == 1
+    assert report.lag == {}
+    events = [entry["event"] for entry in logs]
+    assert "stream.consumer.group_commit_failed" in events
+    assert "stream.consumer.lag_unknown" in events
+
+
+def test_a_topic_recreated_under_a_running_consumer_is_never_published(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    """Refilled past this consumer's position, the new topic gives no out-of-range error; the
+    check before the publish refuses it, and the next start does too."""
+    checkpoint = flushed_twice(started, broker)
+    broker.recreate(TOPIC)
+    for partition, position in checkpoint.items():
+        broker.logs[TOPIC][partition] = [
+            FakeMessage(TOPIC, partition, n, None, b"x") for n in range(position)
+        ]
+    send(broker, *(event(minute=300 + 5 * n) for n in range(6)))
+    drain(started)
+    assert started.buffer  # read as if the old topic went on
+
+    with pytest.raises(consumer_module.Refused, match="deleted and recreated while"):
+        started.flush()
+    assert len(rows(table)) == 5
+    assert offsets(table) == checkpoint
+
+
+def test_a_probe_fails_the_loop_while_the_broker_does_not_answer(
+    started: StreamConsumer, broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(consumer_module, "PROBE_EVERY", 0.0)
+    broker.unreachable = True
+    with pytest.raises(ConsumerError, match="cannot be described"):
+        started._housekeeping()
+
+    broker.unreachable = False
+    broker.recreate(TOPIC)
+    with pytest.raises(consumer_module.Refused, match="deleted and recreated while"):
+        started._housekeeping()
+
+
+def test_a_log_rewritten_under_the_same_topic_id_is_refused(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer]
+) -> None:
+    """N3: the tail was lost and grew back past the checkpoint before the next start; the message
+    before the checkpoint is another one (another timestamp)."""
+    checkpoint = flushed_twice(started, broker)
+    partition = max(checkpoint, key=lambda p: checkpoint[p])
+    broker.truncate(TOPIC, partition, 1)
+    while len(broker.logs[TOPIC][partition]) < checkpoint[partition] + 2:
+        send(broker, event(minute=5 * (200 + len(broker.messages(TOPIC)))))
+
+    with pytest.raises(
+        consumer_module.Refused, match=r"rewritten under the same topic id.*--force"
+    ):
+        make().start()
+
+
+def test_after_a_reset_reused_offsets_order_after_the_older_ones(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """Codex P2: a reset on a truncated topic (same id) hands out offsets again; the newer value
+    at the lower offset still wins the rebuilt duplicate check, by its epoch."""
+    key_event = event(minute=0, value=1.0)
+    send(broker, *(event(minute=5 * n) for n in range(1, 30)), key_event)
+    drain(started)
+    started.flush()
+    [partition] = {
+        m.partition() for m in broker.messages(TOPIC) if m.key() == key_event.key.encode()
+    }
+    broker.truncate(TOPIC, partition, 0)
+    reset_checkpoint(
+        table, cast(Consumer, broker), cast(AdminClient, broker), started.settings, "latest"
+    )
+    newer = event(minute=0, value=2.0)
+    resumed = make()
+    resumed.start()
+    send(broker, newer)
+    drain(resumed)
+    resumed.flush()
+    assert {row["stream_epoch"] for row in rows(table)} == {0, 1}
+
+    rebuilt = make()
+    rebuilt.start()
+    assert rebuilt.latest[(newer.series_id, newer.ts_utc)] == newer.content_sha256
+
+
+def test_the_latest_version_within_one_flush_is_the_highest_offset(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer]
+) -> None:
+    send(broker, event(value=1.0), event(value=2.0), event(value=3.0))
+    drain(started)
+    started.flush()
+
+    rebuilt = make()
+    rebuilt.start()
+
+    assert rebuilt.latest == {(event().series_id, event().ts_utc): event(value=3.0).content_sha256}
+
+
+def test_a_reset_refuses_a_checkpoint_that_still_fits_unless_forced(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    flushed_twice(started, broker)
+    clients = (table, cast(Consumer, broker), cast(AdminClient, broker), started.settings)
+
+    with pytest.raises(ConsumerError, match="nothing to reset"):
+        reset_checkpoint(*clients, "latest")
+    forced = reset_checkpoint(*clients, "earliest", force=True)
+
+    assert forced.epoch == 1
+    assert set(forced.offsets.values()) == {0}
+
+
+def test_drop_property_removes_another_groups_checkpoint_through_the_fence(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    flushed_twice(started, broker)
+    make(group_id="old-group", allow_other_checkpoints=True).start()
+    with table.transaction() as tx:
+        tx.set_properties({"ibergrid.stream.checkpoint.old-group": "{}"})
+    head = cast(Any, table.current_snapshot()).snapshot_id
+    with pytest.raises(consumer_module.Refused):
+        make().start()
+
+    for name, message in (
+        ("write.target-file-size-bytes", "not a stream property"),
+        (PROPERTY, "this consumer's checkpoint"),
+        ("ibergrid.stream.checkpoint.nobody", "has no property"),
+    ):
+        with pytest.raises(ConsumerError, match=message):
+            consumer_module.drop_property(table, started.settings, name)
+    consumer_module.drop_property(table, started.settings, "ibergrid.stream.checkpoint.old-group")
+
+    table.refresh()
+    assert "ibergrid.stream.checkpoint.old-group" not in table.properties
+    assert cast(Any, table.current_snapshot()).snapshot_id != head  # main moved: fenced
+    make().start()
+
+
+def test_a_refused_start_is_unhealthy_at_once_and_says_why(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer], tmp_path: Path
+) -> None:
+    flushed_twice(started, broker)
+    broker.recreate(TOPIC)
+    stream, stop = make(), NoWait()
+    calls = [0]
+
+    def wait_twice(timeout: float | None = None) -> bool:
+        calls[0] += 1
+        if calls[0] == 2:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = wait_twice  # type: ignore[method-assign]
+    with capture_logs():
+        stream.run(stop)
+
+    heartbeat = tmp_path / "heartbeat"
+    assert "deleted and recreated" in json.loads(heartbeat.read_text())["refused"]
+    ok, detail = health.check(heartbeat, max_age=60, max_failing=3600)
+    assert not ok
+    assert detail.startswith("refused to start")
+
+
+def test_a_configured_topic_other_than_the_checkpoints_is_named_as_such(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer]
+) -> None:
+    flushed_twice(started, broker)
+    broker.logs["redata.demand.realtime.v2"] = [[]]
+    broker.topic_ids["redata.demand.realtime.v2"] = "other"
+
+    with pytest.raises(
+        consumer_module.Refused, match=r"configured for redata\.demand\.realtime\.v2"
+    ):
+        make(topic="redata.demand.realtime.v2").start()
+
+
+def test_a_retention_gap_jump_is_recorded_by_the_next_checkpoint(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    checkpoint = flushed_twice(started, broker)
+    partition = next(iter(checkpoint))
+    send(broker, *(event(minute=400 + 5 * n) for n in range(30)))
+    low = len(broker.logs[TOPIC][partition]) - 1
+    broker.retain_from(TOPIC, partition, low)
+    stream = make()
+    stream.start()
+
+    report = stream.maybe_flush(final=True)
+
+    assert report is not None
+    assert report.rows == 0
+    assert offsets(table)[partition] == low
+
+
+def test_the_loop_touches_the_watchdog_expires_and_keeps_a_streak_while_rows_wait(
+    make: Callable[..., StreamConsumer],
+    broker: FakeBroker,
+    table: Table,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Rows waiting for a flush that keeps failing keep the failure streak open even through
+    iterations that succeed; the heartbeat carries it; the loop expires snapshots."""
+    stream = make(flush_records=2)
+    send(broker, *(event(minute=5 * n) for n in range(4)))
+    fail_publishes(table, monkeypatch, OSError("down"), OSError("down"))
+    monkeypatch.setattr(consumer_module, "BEAT_EVERY", 0.0)
+    expiries: list[int] = []
+
+    def expire() -> list[int]:
+        expiries.append(1)
+        return []
+
+    monkeypatch.setattr(stream, "expire_snapshots", expire)
+    stop, beats, calls = NoWait(), [], [0]
+    consume = broker.consume
+
+    def one_at_a_time(num_messages: int = 1, timeout: float = -1) -> list[FakeMessage]:
+        calls[0] += 1
+        if calls[0] > 1:
+            beats.append(json.loads((tmp_path / "heartbeat").read_text()))
+        if calls[0] == 8:
+            stop.set()
+        return consume(1, timeout)
+
+    class Dog:
+        touched = 0
+
+        def touch(self) -> None:
+            self.touched += 1
+
+    dog = Dog()
+    monkeypatch.setattr(broker, "consume", one_at_a_time)
+    stream.run(stop, cast(Any, dog))
+
+    streaks = [beat["failing_since"] for beat in beats]
+    assert streaks[0] is None
+    first = next(s for s in streaks if s is not None)
+    # From the first failure until a flush lands, one streak (rows were waiting in between).
+    assert streaks[streaks.index(first) : streaks.index(first) + 3] == [first] * 3
+    assert dog.touched >= 8
+    assert expiries
+
+
+def test_within_one_file_a_later_epoch_beats_a_higher_offset(
+    broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """A compacted file holds versions of several epochs: (epoch, offset) orders them inside it
+    too."""
+    older, newer = event(value=1.0), event(value=2.0)
+    table.append(
+        pa.Table.from_pylist(
+            [
+                {**row(older), "kafka_offset": 100, "stream_epoch": 0},
+                {**row(newer), "kafka_offset": 40, "stream_epoch": 1},
+            ],
+            schema=consumer_module.ARROW_SCHEMA,
+        )
+    )
+    stream = make()
+    stream.start()
+
+    assert stream.latest == {(newer.series_id, newer.ts_utc): newer.content_sha256}
+
+
+def test_replacing_a_checkpoint_or_migrating_groups_preserves_the_epoch_order(
+    started: StreamConsumer, broker: FakeBroker, table: Table, make: Callable[..., StreamConsumer]
+) -> None:
+    """After a reset (epoch 1), dropping the checkpoint or migrating consumer groups derives the
+    next epoch from the table instead of restarting at 0, so newer rows still beat older ones."""
+    v1, v2, v3, v4 = (event(value=float(n)) for n in (1, 2, 3, 4))
+    send(broker, v1)
+    drain(started)
+    started.flush()
+    reset_checkpoint(
+        table,
+        cast(Consumer, broker),
+        cast(AdminClient, broker),
+        started.settings,
+        "latest",
+        force=True,
+    )
+    after_reset = make()
+    after_reset.start()
+    send(broker, v2)
+    drain(after_reset)
+    after_reset.flush()
+
+    # Force-drop this group's checkpoint (reviewer M1): the next start picks epoch 2.
+    consumer_module.drop_property(table, started.settings, PROPERTY, force=True)
+    replaced = make()
+    replaced.start()
+    assert replaced.epoch == 2
+    send(broker, v3)
+    drain(replaced)
+    replaced.flush()
+    rebuilt = make()
+    rebuilt.start()
+    assert rebuilt.latest[(v3.series_id, v3.ts_utc)] == v3.content_sha256
+    send(broker, v3)
+    drain(rebuilt)
+    assert rebuilt.batch["duplicates"] == 1
+    assert rebuilt.buffer == []
+
+    # Group migration with --allow-other-checkpoints (Codex P2): picks epoch 3 (even alongside a
+    # garbled leftover checkpoint property).
+    with table.transaction() as tx:
+        tx.set_properties({"ibergrid.stream.checkpoint.garbled": "{not json"})
+    migrated = make(group_id="migrated-group", allow_other_checkpoints=True)
+    migrated.start()
+    assert migrated.epoch == 3
+    send(broker, v4)
+    drain(migrated)
+    migrated.flush()
+    rebuilt_migrated = make(group_id="migrated-group", allow_other_checkpoints=True)
+    rebuilt_migrated.start()
+    assert rebuilt_migrated.latest[(v4.series_id, v4.ts_utc)] == v4.content_sha256
+    top = max(rows(table), key=lambda r: (r["stream_epoch"], r["kafka_offset"]))
+    assert (top["stream_epoch"], top["value"]) == (3, 4.0)
+
+    # Reset without an own checkpoint still advances past the table's highest epoch.
+    consumer_module.drop_property(
+        table,
+        migrated.settings,
+        f"ibergrid.stream.checkpoint.{migrated.settings.group_id}",
+        force=True,
+    )
+    reset = reset_checkpoint(
+        table, cast(Consumer, broker), cast(AdminClient, broker), migrated.settings, "latest"
+    )
+    assert reset.epoch == 4
+
+
+def test_a_log_rewritten_under_a_running_consumer_is_never_published(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    """Codex P2: if the broker loses a partition's tail and refills past the consumer's position
+    while it runs (same topic id), the pre-publish read-back refuses instead of advancing past
+    the replacement messages."""
+    checkpoint = flushed_twice(started, broker)
+    partition = max(checkpoint, key=lambda p: checkpoint[p])
+    broker.truncate(TOPIC, partition, 0)
+    while len(broker.logs[TOPIC][partition]) < checkpoint[partition] + 3:
+        send(broker, event(minute=5 * (200 + len(broker.messages(TOPIC)))))
+    drain(started)
+    assert started.buffer
+
+    with pytest.raises(
+        consumer_module.Refused, match=r"rewritten under the same topic id.*--force"
+    ):
+        started.flush()
+    assert len(rows(table)) == 5
+    assert offsets(table) == checkpoint
+    assert wap.audit_branches(table) == []
+
+
+def test_a_log_truncated_below_checkpoint_under_a_running_consumer_is_refused(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    checkpoint = flushed_twice(started, broker)
+    partitions = sorted(checkpoint)
+    truncated, other = partitions[0], partitions[-1]
+    broker.truncate(TOPIC, truncated, 0)
+    # Trigger a flush from a message landing on a non-truncated partition.
+    for n in range(100, 140):
+        candidate = event(minute=5 * n)
+        if sum(candidate.key.encode()) % len(broker.logs[TOPIC]) == other:
+            send(broker, candidate)
+            break
+    drain(started)
+    assert started.buffer
+
+    with pytest.raises(consumer_module.Refused, match="past its end"):
+        started.flush()
+    assert len(rows(table)) == 5
+    assert offsets(table) == checkpoint
+
+
+def test_pre_publish_verification_restores_the_cursor_and_skips_trimmed_partitions(
+    started: StreamConsumer, broker: FakeBroker, table: Table
+) -> None:
+    """Normal multi-flush continuation verifies the previous checkpoint and restores every
+    partition's cursor; retention trimming the previous message skips read-back without failing."""
+    checkpoint = flushed_twice(started, broker)
+    batch2 = [event(minute=100 + 5 * n) for n in range(4)]
+    batch3 = [event(minute=200 + 5 * n) for n in range(4)]
+    send(broker, *batch2)
+    drain(started)
+    send(broker, *batch3)  # already in the broker, unread when batch2 flushes
+
+    report2 = started.flush()
+    assert report2.rows == 4
+    drain(started)
+    # Trim retention past batch2's checkpoint on every partition before batch3 flushes.
+    for partition, pos in report2.offsets.items():
+        broker.retain_from(TOPIC, partition, pos)
+    report3 = started.flush()
+
+    assert report3.rows == 4
+    assert len(rows(table)) == 5 + 4 + 4
+    assert offsets(table) == {p: len(log) for p, log in enumerate(broker.logs[TOPIC]) if log}
+    assert set(checkpoint).issubset(offsets(table))
+
+
+def test_verify_positions_skips_when_a_compacted_topic_returns_a_later_offset(
+    started: StreamConsumer, broker: FakeBroker, make: Callable[..., StreamConsumer]
+) -> None:
+    checkpoint = flushed_twice(started, broker)
+    partition = max(checkpoint, key=lambda p: checkpoint[p])
+    want = checkpoint[partition] - 1
+    original = broker.logs[TOPIC][partition][want]
+    broker.logs[TOPIC][partition][want] = FakeMessage(
+        TOPIC, partition, want + 1, original.key(), original.value(), timestamp_=(1, 999)
+    )
+
+    with capture_logs() as logs:
+        make().start()
+    skipped = [entry for entry in logs if entry["event"] == "stream.consumer.verify_offset_skipped"]
+    assert skipped == [
+        {
+            "event": "stream.consumer.verify_offset_skipped",
+            "log_level": "warning",
+            "partition": partition,
+            "expected_offset": want,
+            "actual_offset": want + 1,
+        }
+    ]
+
+
+def test_topic_identity_wraps_timeout_as_consumer_error(
+    broker: FakeBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class TimedOut:
+        def result(self, timeout: float | None = None) -> Any:
+            raise TimeoutError
+
+    monkeypatch.setattr(broker, "describe_topics", lambda topics, **_kw: {TOPIC: TimedOut()})
+
+    with pytest.raises(ConsumerError, match=r"cannot be described \(TimeoutError\)"):
+        consumer_module.topic_identity(cast(AdminClient, broker), TOPIC)
+
+
+def row(item: DemandEvent) -> dict[str, Any]:
+    return {
+        "series_id": item.series_id,
+        "series_title": item.series_title,
+        "electric_system": item.electric_system,
+        "ts_utc": item.ts_utc,
+        "ts_local": item.ts_local,
+        "value": item.value,
+        "series_last_update": None,
+        "content_sha256": item.content_sha256,
+        "producer_instance": "host",
+        "producer_version": "0",
+        "emitted_at": NOW,
+        "kafka_topic": TOPIC,
+        "kafka_partition": 0,
+        "kafka_offset": 0,
+        "kafka_timestamp": None,
+        "ingested_at": NOW,
+        "run_id": "compacted",
+        "kafka_topic_id": None,
+        "stream_epoch": None,
+    }

@@ -11,3 +11,4 @@ never edited to say something else, it is superseded by a new record.
 | [0003](0003-redata-ingestion.md) | REData ingestion into Bronze | Accepted |
 | [0004](0004-omie-ingestion.md) | OMIE day-ahead prices into Bronze | Accepted |
 | [0005](0005-dagster-orchestration.md) | Dagster asset-oriented orchestration of the batch lane | Accepted |
+| [0006](0006-streaming-lane.md) | Streaming lane: REData real-time demand through Redpanda into Iceberg, exactly once | Accepted |

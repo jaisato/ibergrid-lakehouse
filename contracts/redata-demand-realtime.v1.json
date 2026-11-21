@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ProducerInfo": {
+      "additionalProperties": false,
+      "description": "Who emitted the event, and when.",
+      "properties": {
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "instance": {
+          "description": "host name of the producer",
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Instance",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 50,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "instance",
+        "emitted_at"
+      ],
+      "title": "ProducerInfo",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One five-minute point of one series (Real, Forecasted, Scheduled, Total scheduled) of\nREData's national real-time demand (``demanda/demanda-tiempo-real``), in MW.",
+  "properties": {
+    "content_sha256": {
+      "description": "SHA-256 of the JSON {electric_system, series_id, ts_utc, value} with sorted keys, no spaces, ts_utc as YYYY-MM-DDTHH:MM:SSZ and value as a float (Python's repr)",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "electric_system": {
+      "const": "national",
+      "title": "Electric System",
+      "type": "string"
+    },
+    "producer": {
+      "$ref": "#/$defs/ProducerInfo"
+    },
+    "series_id": {
+      "description": "JSON:API id of the REData series",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "title": "Series Id",
+      "type": "string"
+    },
+    "series_last_update": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "REData's last-update of the series when it was fetched",
+      "title": "Series Last Update"
+    },
+    "series_title": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Series Title"
+    },
+    "ts_local": {
+      "description": "the datetime as REData delivered it, with its offset",
+      "maxLength": 40,
+      "title": "Ts Local",
+      "type": "string"
+    },
+    "ts_utc": {
+      "description": "start of the five minutes, UTC (offset +00:00)",
+      "format": "date-time",
+      "title": "Ts Utc",
+      "type": "string"
+    },
+    "value": {
+      "description": "MW; finite",
+      "title": "Value",
+      "type": "number"
+    }
+  },
+  "required": [
+    "series_id",
+    "electric_system",
+    "ts_utc",
+    "ts_local",
+    "value",
+    "content_sha256",
+    "producer"
+  ],
+  "title": "redata.demand.realtime.v1",
+  "type": "object"
+}

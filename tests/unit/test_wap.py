@@ -317,6 +317,21 @@ def test_publishing_twice_returns_the_published_snapshot(loaded: Table, other: T
     ]
 
 
+def test_removing_a_property_is_fenced_like_setting_one(loaded: Table, other: Table) -> None:
+    """A run that only removes a property still moves main, so a stale removal conflicts."""
+    setter = wap.start(loaded, "setter")
+    wap.publish(loaded, setter, wap.head(loaded, setter), set_properties={"stream.old": "p0:3"})
+    late, early = wap.start(loaded, "late"), wap.start(other, "early")
+
+    removed = wap.publish(other, early, wap.head(other, early), remove_properties=["stream.old"])
+    with pytest.raises(wap.PublishConflict, match="main moved"):
+        wap.publish(loaded, late, wap.head(loaded, late), remove_properties=["stream.old"])
+
+    loaded.refresh()
+    assert "stream.old" not in loaded.properties
+    assert loaded.metadata.current_snapshot_id == removed
+
+
 def test_an_empty_checkpoint_run_can_be_published_twice(loaded: Table) -> None:
     audit = wap.start(loaded, "idle")
     audited = wap.head(loaded, audit)
