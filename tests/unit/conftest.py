@@ -103,6 +103,11 @@ class FakeLakekeeper:
                 name = request.body["warehouse-name"]
                 self.warehouses[name] = request.body
                 return 201, {"name": name, "id": f"id-{name}"}
+            case "GET", path if path.startswith("/management/v1/warehouse/id-"):
+                name = path.removeprefix("/management/v1/warehouse/id-")
+                if name not in self.warehouses:
+                    return 404, error("WarehouseNotFound", f"no warehouse {name}", 404)
+                return 200, {"name": name, **self.warehouses[name]}
             case "POST", path if path.endswith("/storage"):
                 name = path.removeprefix("/management/v1/warehouse/id-").split("/")[0]
                 if name not in self.warehouses:

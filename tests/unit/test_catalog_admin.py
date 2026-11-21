@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 from pydantic import HttpUrl, SecretStr
+from structlog.testing import capture_logs
 
 from ibergrid.catalog_admin import (
     CatalogAdmin,
@@ -141,6 +142,26 @@ def test_update_credential_also_turns_remote_signing_off(serve: Serve) -> None:
     assert lakekeeper.warehouses["lakehouse"]["storage-profile"]["remote-signing-enabled"] is False
     [call] = [r for r in server.requests if r.path.endswith("/storage")]
     assert set(call.body) == {"storage-profile", "storage-credential"}
+
+
+def test_update_credential_keeps_the_profile_fields_it_does_not_own(serve: Serve) -> None:
+    lakekeeper = FakeLakekeeper()
+    server = serve(lakekeeper)
+    bootstrap_catalog(admin_for(server), CATALOG, STORAGE)
+    profile = lakekeeper.warehouses["lakehouse"]["storage-profile"]
+    profile |= {"remote-signing-url-style": "path", "push-s3-delete-disabled": False}
+    profile |= {"endpoint": "http://storage:9000/", "region": "eu-south-2"}
+
+    with capture_logs() as logs:
+        update_credential(admin_for(server), CATALOG, STORAGE)
+
+    assert logs[-1]["profile"] == ["region"]  # the endpoint only lost its trailing slash
+    profile = lakekeeper.warehouses["lakehouse"]["storage-profile"]
+    assert (profile["remote-signing-url-style"], profile["push-s3-delete-disabled"]) == (
+        "path",
+        False,
+    )
+    assert (profile["region"], profile["endpoint"]) == ("us-east-1", "http://storage:9000")
 
 
 def test_update_credential_needs_an_existing_warehouse(serve: Serve) -> None:
