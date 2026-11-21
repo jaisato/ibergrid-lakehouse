@@ -1,6 +1,23 @@
+# Local environment and secrets (the repository is public: only .env.example is tracked)
 .env
 .env.*
 !.env.example
+
+# Python
 .venv/
 __pycache__/
+*.egg-info/
+dist/
+build/
+
+# Tool caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Git worktrees
 .worktrees/

@@ -1,0 +1,165 @@
+# Publishes the app image to GHCR and, for version tags, deploys it.
+#   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse:main and :sha-<short>
+#   push v*.*.*    -> tag == v<pyproject version>, CI on the tagged commit, :vX.Y.Z, deploy job
+# Both build the image, run it once (`ibergrid version`) and only then push it.
+# The deploy job stays skipped until the repository variable DEPLOY_HOST is set (the server does
+# not exist yet); deploy/deploy.env.example lists everything it needs.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions: {}
+
+# A newer push to main supersedes an unfinished image build; a release is never cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  IMAGE: ghcr.io/jaisato/ibergrid-lakehouse
+
+jobs:
+  # Fail fast: a tag must name the version the package declares.
+  version:
+    name: Tag matches pyproject.toml
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the tag with the project version
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME, but pyproject.toml says $version (expected v$version)"
+            exit 1
+          fi
+
+  # Pull requests already passed CI before reaching main; a tag gets one more full run before shipping.
+  ci:
+    name: CI
+    needs: version
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    name: Image
+    needs: [version, ci]
+    # On main both are skipped; on a tag both must succeed. A job that hits its timeout reports
+    # `cancelled` without cancelling the run, so that result blocks the image too.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tags
+        id: tags
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            printf 'version=%s\ntags=%s\n' "$GITHUB_REF_NAME" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            printf 'version=%s\ntags=%s\n' "main-${GITHUB_SHA::7}" "main sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: printf '%s\n' "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.tags.outputs.version }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          args=()
+          for tag in $TAGS; do args+=(--tag "$IMAGE:$tag"); done
+          docker build --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA" "${args[@]}" .
+
+      # The exact image about to be pushed must start and run the CLI.
+      - name: Smoke test the image
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: docker run --rm "$IMAGE:${TAGS%% *}" version
+
+      - name: Push and record the digest
+        id: push
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          for tag in $TAGS; do docker push --quiet "$IMAGE:$tag"; done
+          first="${TAGS%% *}"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$first" --format '{{.Manifest.Digest}}')"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### App image"
+            echo
+            for tag in $TAGS; do echo "- \`$IMAGE:$tag\`"; done
+            echo "- digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  deploy:
+    name: Deploy
+    needs: image
+    # A repository variable, not an environment one: it has to be readable before the job starts.
+    if: ${{ github.ref_type == 'tag' && vars.DEPLOY_HOST != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    env:
+      DEPLOY_DIR: ibergrid-lakehouse
+      TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: SSH key and pinned host key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+
+      - name: Copy the compose files and run deploy/remote.sh on the server
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          ssh_opts=(-i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts")
+          ssh "${ssh_opts[@]}" "$TARGET" mkdir -p "$DEPLOY_DIR"
+          scp "${ssh_opts[@]}" compose.yaml compose.prod.yaml "$TARGET:$DEPLOY_DIR/"
+          ssh "${ssh_opts[@]}" "$TARGET" bash -s -- "$DEPLOY_DIR" "$DIGEST" < deploy/remote.sh
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"

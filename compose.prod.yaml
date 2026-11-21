@@ -1,0 +1,31 @@
+# Production overlay, as deploy/remote.sh runs it on the server:
+#   docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml <command>
+# - object storage is Cloudflare R2 (the local-storage profile stays off);
+# - the app image comes from GHCR pinned by digest (the deploy job writes release.env);
+# - nothing is published on host ports (phase 6 adds a reverse proxy for public endpoints);
+# - long-running services restart unless stopped and every log rotates.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-long-running: &long-running
+  restart: unless-stopped
+  logging: *logging
+
+x-app: &app
+  image: ${IBERGRID_IMAGE:-ghcr.io/jaisato/ibergrid-lakehouse}@${IBERGRID_APP_DIGEST:?set IBERGRID_APP_DIGEST (sha256:...) in release.env; the deploy job writes it}
+  logging: *logging
+  environment:
+    IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
+    IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
+
+services:
+  catalog-db: *long-running
+  catalog: *long-running
+  broker: *long-running
+  catalog-migrate:
+    logging: *logging
+  catalog-init: *app
+  doctor: *app

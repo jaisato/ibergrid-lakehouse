@@ -1,0 +1,54 @@
+# One monthly multi-ecosystem group: Python packages (uv), GitHub Actions and the container images
+# (Dockerfile and compose files, pinned by tag and digest) arrive together in a single PR, which
+# keeps CI runs, and Actions minutes, to one per month. The 7-day cooldown skips releases that are
+# only days old.
+version: 2
+
+multi-ecosystem-groups:
+  monthly:
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: build
+      include: scope
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: github-actions
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # FROM lines of the Dockerfile: the Python base image and the uv image.
+  - package-ecosystem: docker
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+    # pyproject.toml requires Python <3.13 and the image never downloads another interpreter:
+    # only patch updates of python:3.12-slim-trixie.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # image: lines of compose.yaml (RustFS, AWS CLI, Postgres, Lakekeeper, Redpanda).
+  - package-ecosystem: docker-compose
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+    # A new Postgres major does not start on the previous major's data directory: CI starts from an
+    # empty volume and would not notice, so majors are a planned migration (dump and restore).
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]

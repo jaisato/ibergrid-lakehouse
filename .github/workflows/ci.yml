@@ -1,0 +1,139 @@
+# Pull request checks; release.yml also calls this workflow before publishing a tagged release.
+# Three jobs in parallel: Quality (Python), Repository (files and history) and Integration (the
+# compose stack). Each step is a make target, so `make ci` and `make up test-integration`
+# reproduce it locally.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies (uv.lock)
+        run: uv sync --locked
+
+      - name: Lint (ruff check)
+        run: uv run ruff check --output-format=github .
+
+      - name: Format (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Types (mypy strict)
+        run: uv run mypy
+
+      - name: Unit tests with branch coverage (fails under 90 %)
+        id: tests
+        run: uv run pytest --cov --cov-report=term-missing
+
+      - name: Coverage summary
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: |
+          {
+            echo "### Coverage"
+            uv run --no-sync coverage report --format=markdown --fail-under=0
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Advisories newer than the lockfile must not block unrelated PRs: warn, then fix in a PR.
+      - name: Dependency audit (pip-audit, warns without blocking)
+        run: make audit || echo "::warning title=pip-audit::pip-audit did not pass (an advisory or a PyPI error); see the step log"
+
+  repository:
+    name: Repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # gitleaks scans the whole history of the branch
+
+      # uv runs the pinned actionlint and shellcheck wheels, as `make ci` does locally.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.12"
+
+      - name: Workflows (actionlint with shellcheck)
+        run: make actionlint
+
+      - name: Shell scripts (shellcheck)
+        run: make shellcheck
+
+      - name: Dockerfile (hadolint)
+        run: make hadolint
+
+      - name: Compose files, local and production (dummy values)
+        run: make compose-config
+
+      - name: Secrets in the branch history (gitleaks)
+        run: make gitleaks
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies (uv.lock)
+        run: uv sync --locked
+
+      - name: Throwaway .env with random secrets
+        run: make env
+
+      - name: Build the app image and start the stack (waits for health checks and one-shots)
+        run: make up
+
+      # Includes the smoke test: `ibergrid doctor` inside the network, as `make smoke` runs it.
+      - name: Integration tests
+        run: make test-integration
+
+      - name: Service status and logs
+        if: failure()
+        run: |
+          docker compose --profile '*' ps -a
+          docker compose --profile '*' logs --no-color --timestamps
+
+      - name: Tear down the stack
+        if: always()
+        run: make down-volumes
