@@ -63,6 +63,16 @@ class BrokerSettings(BaseSettings):
         return [(host, int(port)) for host, _, port in hosts_ports]
 
 
+class DuckDBSettings(BaseSettings):
+    """DuckDB, the analytical engine."""
+
+    model_config = _config("IBERGRID_DUCKDB_")
+
+    # The app image bakes the extensions here at build time; unset, DuckDB installs them into its
+    # default directory on first use (developer machines and CI).
+    extension_directory: str | None = None
+
+
 class LogSettings(BaseSettings):
     """structlog output: ``json`` in containers, ``console`` for humans."""
 
@@ -85,6 +95,7 @@ class Settings(BaseModel):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     catalog: CatalogSettings = Field(default_factory=CatalogSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    duckdb: DuckDBSettings = Field(default_factory=DuckDBSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -95,7 +106,7 @@ def base_url(url: HttpUrl) -> str:
 
 def describe_validation_error(exc: ValidationError) -> str:
     """One line per problem, named by environment variable and without the input values."""
-    groups = (StorageSettings, CatalogSettings, BrokerSettings, LogSettings)
+    groups = (StorageSettings, CatalogSettings, BrokerSettings, DuckDBSettings, LogSettings)
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}
     return "\n".join(
         f"  {prefix.get(exc.title, '')}{str(error['loc'][0]).upper()}: {error['msg']}"
