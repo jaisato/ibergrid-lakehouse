@@ -123,6 +123,10 @@ class StreamProducer:
             if self.seen.get(event.key, (None, None))[1] == event.content_sha256:
                 suppressed += 1
                 continue
+            # Forget any prior value for this key before handing the revision to the broker: if
+            # this delivery lands and a later one in the same poll fails, a reversion back to the
+            # old value on the next poll must still be emitted.
+            self.seen.pop(event.key, None)
             self.sink.produce(
                 self.topic,
                 value=event.model_dump_json().encode(),

@@ -136,6 +136,53 @@ def test_a_refused_or_undelivered_poll_raises_and_is_emitted_again(broker: FakeB
     assert stream.poll_once().emitted == POINTS
 
 
+def test_a_partial_delivery_failure_invalidates_suppression_for_attempted_keys(
+    broker: FakeBroker,
+) -> None:
+    """If a revision lands on the broker and a later event in the same poll fails delivery,
+    reverting the first key to its earlier value on the next poll must not be suppressed."""
+    answers = Answers()
+    stream = producer(broker, answers)
+    stream.poll_once()
+
+    def revise_two(body: dict[str, object]) -> None:
+        series = cast(list[dict[str, dict[str, list[dict[str, object]]]]], body["included"])
+        series[0]["attributes"]["values"][0]["value"] = 1.0
+        series[0]["attributes"]["values"][1]["value"] = 2.0
+
+    answers.edit = revise_two
+    original_produce = broker.produce
+    calls = 0
+
+    def fail_second(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            broker.refuse = KafkaError(KafkaError._MSG_TIMED_OUT)
+        original_produce(*args, **kwargs)  # type: ignore[arg-type]
+
+    broker.produce = fail_second  # type: ignore[method-assign]
+    with pytest.raises(DeliveryFailed, match="0 event\\(s\\) undelivered and 1 refused"):
+        stream.poll_once()
+    assert len(broker.messages(TOPIC)) == POINTS + 1  # the first revision landed on Kafka
+
+    # Next poll: REData reverts both points to their original values; both attempted keys go out
+    # again while untouched keys stay suppressed.
+    broker.produce = original_produce  # type: ignore[method-assign]
+    broker.refuse = None
+    answers.edit = None
+    report = stream.poll_once()
+    assert (report.emitted, report.suppressed) == (2, POINTS - 2)
+    events = [
+        DemandEvent.model_validate_json(cast(bytes, m.value())) for m in broker.messages(TOPIC)
+    ]
+    reverted_key = next(e.key for e in events if e.value == 1.0)
+    reverted_values = [e.value for e in events if e.key == reverted_key]
+    assert len(reverted_values) == 3
+    assert reverted_values[1] == 1.0
+    assert reverted_values[2] == reverted_values[0]
+
+
 def test_a_point_off_the_five_minute_grid_is_rejected_not_emitted(
     broker: FakeBroker,
 ) -> None:
