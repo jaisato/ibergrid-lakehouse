@@ -42,6 +42,14 @@ run_monitoring:
   cancel_timeout_seconds: 180
   max_runtime_seconds: 7200
 
+# A run that fails without a failed step (one that never started, for example) is queued again,
+# up to twice. Failed steps are retried by the scheduled jobs' own policy, 15 minutes apart
+# (ibergrid.orchestration.definitions); backfills are not, since a retry redoes the whole range.
+run_retries:
+  enabled: true
+  max_retries: 2
+  retry_on_asset_or_op_failure: false
+
 # Written by the run workers in dagster-code, read by the webserver: one shared volume.
 compute_logs:
   module: dagster._core.storage.local_compute_log_manager

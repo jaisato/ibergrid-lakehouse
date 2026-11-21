@@ -7,6 +7,7 @@ import threading
 import urllib.parse
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -192,6 +193,19 @@ class FakeRedata:
 
 def fixture(name: str) -> bytes:
     return (REDATA_FIXTURES / name).read_bytes()
+
+
+def restamped(name: str, *days: date) -> bytes:
+    """A recorded REData answer for 2026-11-18, its points repeated for each of ``days``."""
+    body = json.loads(fixture(name))
+    for series in body["included"]:
+        points = series["attributes"]["values"]
+        series["attributes"]["values"] = [
+            {**point, "datetime": point["datetime"].replace("2026-11-18", str(day))}
+            for day in days
+            for point in points
+        ]
+    return json.dumps(body).encode()
 
 
 OMIE_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "omie"

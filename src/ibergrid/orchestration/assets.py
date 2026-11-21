@@ -21,8 +21,10 @@ from ibergrid.sources.redata import ingest as redata
 from ibergrid.sources.redata.datasets import DATASETS, Dataset
 
 START = "2023-01-01"  # OMIE's first daily file; the project's history starts there for both
+FIRST_DAY = date.fromisoformat(START)
 TIMEZONE = "Europe/Madrid"  # both sources' days
-# The last partition is yesterday, the last complete Madrid day: REData answers 502 for today.
+# The last partition is yesterday, the last complete Madrid day: for today REData answers 502, or
+# provisional points once its morning update is out (ADR 0005).
 REDATA_PARTITIONS = dg.DailyPartitionsDefinition(start_date=START, timezone=TIMEZONE)
 # OMIE publishes delivery day D on D-1, so tomorrow is a partition (end_offset=1 ends at today).
 OMIE_PARTITIONS = dg.DailyPartitionsDefinition(start_date=START, timezone=TIMEZONE, end_offset=2)
@@ -35,9 +37,24 @@ REDATA_POOL = "redata"
 OMIE_POOL = "omie"
 
 
-def _days(context: dg.AssetExecutionContext) -> tuple[date, date]:
+class IngestConfig(dg.Config):
+    """An asset's run configuration: the schedules set it (ADR 0005), a backfill keeps the
+    defaults."""
+
+    # Also re-ingest this many days before the range, for late points and corrections (REE's
+    # revisions; OMIE's files rewritten up to D+2), never before the history starts.
+    trailing_days: int = Field(default=0, ge=0)
+
+
+class OmieConfig(IngestConfig):
+    # Days after today that OMIE has not published fail the run instead of ending it quietly.
+    require_published: bool = False
+
+
+def _days(context: dg.AssetExecutionContext, trailing_days: int) -> tuple[date, date]:
     keys = context.partition_key_range
-    return date.fromisoformat(keys.start), date.fromisoformat(keys.end)
+    start = date.fromisoformat(keys.start) - timedelta(days=trailing_days)
+    return max(start, FIRST_DAY), date.fromisoformat(keys.end)
 
 
 def redata_asset(dataset: Dataset) -> dg.AssetsDefinition:
@@ -56,12 +73,14 @@ def redata_asset(dataset: Dataset) -> dg.AssetsDefinition:
         pool=REDATA_POOL,
         output_required=False,
     )
-    def _asset(context: dg.AssetExecutionContext, lake: Lake) -> Iterator[dg.Output[None]]:
-        start, end = _days(context)
+    def _asset(
+        context: dg.AssetExecutionContext, config: IngestConfig, lake: Lake
+    ) -> Iterator[dg.Output[None]]:
+        start, end = _days(context, config.trailing_days)
         windows: dict[tuple[date, date], list[redata.ChunkReport]] = defaultdict(list)
 
         def on_chunk(report: redata.ChunkReport) -> None:
-            # Chunks run system by system: a day is done once every system's chunk holding it is.
+            # The plan goes window by window: a day is done once every system's chunk holding it is.
             reports = windows[(report.chunk.start, report.chunk.end)]
             reports.append(report)
             if len(reports) == len(dataset.systems):
@@ -121,15 +140,6 @@ def redata_metadata(day: date, reports: list[redata.ChunkReport]) -> dict[str, d
 REDATA_ASSETS = [redata_asset(dataset) for dataset in DATASETS.values()]
 
 
-class OmieConfig(dg.Config):
-    """The schedules set both fields (ADR 0005); a backfill keeps the defaults."""
-
-    # Also re-ingest this many delivery days before the range: OMIE rewrites files up to D+2.
-    trailing_days: int = Field(default=0, ge=0)
-    # Days after today that OMIE has not published fail the run instead of ending it quietly.
-    require_published: bool = False
-
-
 @dg.asset(
     key=dg.AssetKey(["bronze", "omie_day_ahead_prices"]),
     description=(
@@ -146,7 +156,8 @@ class OmieConfig(dg.Config):
 def omie_day_ahead_prices(
     context: dg.AssetExecutionContext, config: OmieConfig, lake: Lake
 ) -> Iterator[dg.Output[None]]:
-    start, end = _days(context)
+    first, end = _days(context, config.trailing_days)
+    start = date.fromisoformat(context.partition_key_range.start)
     today = omie.madrid_today()
     settings = lake.settings()
 
@@ -174,7 +185,6 @@ def omie_day_ahead_prices(
 
     # 1. Days up to today, with the trailing re-ingest window. Their files exist (a missing one is
     #    an error whatever the flag), so publication is not in question.
-    first = start - timedelta(days=config.trailing_days)
     if first <= min(end, today):
         ingest(first, min(end, today), require_published=False)
     # 2. Days after today (tomorrow) in a call of their own: `require_published` discards the

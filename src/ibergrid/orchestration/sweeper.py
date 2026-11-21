@@ -44,8 +44,14 @@ def discard_finished_runs_branches(context: dg.OpExecutionContext, lake: Lake) -
                 context.log.info(f"{name}: kept {branch} (no Dagster run of this instance)")
             elif run.status not in FINISHED:
                 context.log.info(f"{name}: kept {branch} (run {run.status.value})")
-            elif wap.discard_branch(table, branch):
-                context.log.info(f"{name}: removed {branch} (run {run.status.value})")
+            else:
+                try:
+                    removed = wap.discard_branch(table, branch)
+                except wap.WapError as exc:  # one branch that cannot go must not stop the sweep
+                    context.log.warning(f"{name}: could not remove {branch}: {exc}")
+                    continue
+                if removed:
+                    context.log.info(f"{name}: removed {branch} (run {run.status.value})")
 
 
 @dg.job(description="Daily: remove the audit branches of Dagster runs that are over (ADR 0005).")

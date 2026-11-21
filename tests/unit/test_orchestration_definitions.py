@@ -85,42 +85,61 @@ def test_no_schedule_fires_in_the_hour_dst_skips_or_repeats() -> None:
         assert int(hour) != 2, resolved.name
 
 
+def tick_config(request: dg.RunRequest, asset: dg.AssetsDefinition) -> dict[str, object]:
+    config: dict[str, object] = request.run_config["ops"][asset.op.name]["config"]
+    return config
+
+
 @pytest.mark.parametrize("dst", [SPRING, FALL])
 def test_redata_asks_for_yesterday_once_a_day_across_dst(dst: date) -> None:
     days = [dst + timedelta(days=n) for n in range(-2, 4)]
 
-    keys = [
-        request.partition_key
-        for day in days
-        for request in requested("redata_daily_schedule", at(day, 8))
-    ]
+    requests = [r for day in days for r in requested("redata_daily_schedule", at(day, 9))]
 
-    assert keys == [str(day - timedelta(days=1)) for day in days]  # the DST day itself once
+    assert [r.partition_key for r in requests] == [str(d - timedelta(days=1)) for d in days]
+    # Every dataset also ingests the 3 days before again (the tick carries the job's config).
+    assert {tick_config(requests[0], asset)["trailing_days"] for asset in REDATA_ASSETS} == {3}
 
 
-@pytest.mark.parametrize("schedule", ["omie_afternoon_schedule", "omie_evening_schedule"])
+@pytest.mark.parametrize(
+    ("schedule", "hour", "minute", "required"),
+    [("omie_afternoon_schedule", 16, 0, False), ("omie_evening_schedule", 21, 30, True)],
+)
 @pytest.mark.parametrize("dst", [SPRING, FALL])
-def test_omie_asks_for_tomorrow_once_a_day_across_dst(schedule: str, dst: date) -> None:
+def test_omie_asks_for_tomorrow_once_a_day_across_dst(
+    schedule: str, hour: int, minute: int, required: bool, dst: date
+) -> None:
     days = [dst + timedelta(days=n) for n in range(-3, 3)]
-    hour = 16 if schedule == "omie_afternoon_schedule" else 21
 
-    requests = [request for day in days for request in requested(schedule, at(day, hour))]
+    requests = [r for day in days for r in requested(schedule, at(day, hour, minute))]
 
-    assert [r.partition_key for r in requests] == [str(day + timedelta(days=1)) for day in days]
+    assert [r.partition_key for r in requests] == [str(d + timedelta(days=1)) for d in days]
     # The tick carries the job's config: a run launched by hand without it gets the defaults.
-    config = requests[0].run_config["ops"][omie_day_ahead_prices.op.name]["config"]
-    assert config["trailing_days"] == 7
+    assert tick_config(requests[0], omie_day_ahead_prices) == {
+        "trailing_days": 7,
+        "require_published": required,
+    }
 
 
-def test_the_omie_jobs_reingest_seven_days_and_only_the_evening_one_requires_publication() -> None:
-    def config(job: str) -> object:
-        partitioned = definitions.defs.resolve_job_def(job).partitioned_config
-        assert partitioned is not None
-        run_config = partitioned.get_run_config_for_partition_key("2026-11-22")
-        return run_config["ops"][omie_day_ahead_prices.op.name]["config"]
+def test_the_schedules_run_at_their_madrid_times() -> None:
+    times = {
+        s.name: str(definitions.defs.get_schedule_def(s.name).cron_schedule).split()[:2]
+        for s in definitions.defs.schedules or []
+    }
 
-    assert config("omie_afternoon") == {"trailing_days": 7, "require_published": False}
-    assert config("omie_evening") == {"trailing_days": 7, "require_published": True}
+    assert times == {
+        "redata_daily_schedule": ["0", "9"],
+        "omie_afternoon_schedule": ["0", "16"],
+        "omie_evening_schedule": ["30", "21"],
+        "sweep_audit_branches_schedule": ["30", "5"],
+    }
+
+
+def test_scheduled_jobs_retry_a_failed_step_twice_and_backfills_do_not() -> None:
+    for job in ("redata_daily", "omie_afternoon", "omie_evening"):
+        policy = definitions.defs.resolve_job_def(job).op_retry_policy
+        assert policy == dg.RetryPolicy(max_retries=2, delay=900), job
+    assert definitions.defs.resolve_implicit_global_asset_job_def().op_retry_policy is None
 
 
 @pytest.fixture
