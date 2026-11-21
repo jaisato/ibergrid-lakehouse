@@ -32,13 +32,15 @@ run_launcher:
   module: dagster._core.launcher
   class: DefaultRunLauncher
 
-# The default launcher cannot report a dead run worker, so a run whose code server restarted stays
-# "started" until the runtime limit cancels it; the sweeper then frees its audit branches.
+# The default launcher cannot report a dead run worker. A run whose worker was killed (dagster-code
+# stopped beyond its 5-minute grace period, an out-of-memory kill) stays "started", holding its
+# pool, until the runtime limit cancels it; the sweeper then frees its audit branches. 2 hours is
+# 4 times the full backfill (30 minutes); a longer run sets the dagster/max_runtime_seconds tag.
 run_monitoring:
   enabled: true
   start_timeout_seconds: 180
   cancel_timeout_seconds: 180
-  max_runtime_seconds: 43200
+  max_runtime_seconds: 7200
 
 # Written by the run workers in dagster-code, read by the webserver: one shared volume.
 compute_logs:

@@ -244,6 +244,9 @@ services:
       ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000",
        "-m", "ibergrid.orchestration.definitions"]
     mem_limit: 1536m
+    # On a stop (a deploy recreates it) the code server waits for its runs to end: Docker's default
+    # 10 s would kill them, leaving runs "started" that hold their pool until the runtime limit.
+    stop_grace_period: 5m
     environment:
       <<: *app-env
       DAGSTER_PG_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
