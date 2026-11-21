@@ -656,7 +656,6 @@ def test_measure_s3_bucket_footprint_and_live_suite_mocked(
         "silver.demand_national_5min": _seed_silver_demand_5min(catalog),
         "silver.demand_system_hourly": _seed_silver_demand_system(catalog),
     }
-    con = _duck_con()
     local_dir = tmp_path / "parq"
     local_dir.mkdir()
     created_files: dict[str, Path] = {}
@@ -717,7 +716,7 @@ def test_measure_s3_bucket_footprint_and_live_suite_mocked(
         "measure_isolated_query_rss_mib",
         lambda _s, *, query_id, engine, is_iceberg, source: 142.5 if engine == "duckdb" else 168.0,
     )
-    monkeypatch.setattr(duck, "connect", lambda _s: con)
+    monkeypatch.setattr(duck, "connect", lambda _s: _duck_con())
     monkeypatch.setattr(duck, "table_name", _fake_duck_table_name)
     monkeypatch.setattr(bench_runner, "rest_catalog", lambda _s: catalog)
     monkeypatch.setattr(bench_runner, "export_unpartitioned_parquet", _fake_export)
@@ -745,6 +744,12 @@ def test_measure_s3_bucket_footprint_and_live_suite_mocked(
     assert len(fake_fs.deleted_dirs) == 1
     assert not [ns for ns in catalog.list_namespaces() if ns[0].startswith("bench_")]
     assert len(progress_lines) > 5
+
+    # Verify an existing table that errors during Benchmark 2 propagates duckdb.Error (fail closed)
+    # rather than being silently omitted from verification.
+    ensure_table(catalog, registry.OMIE_DAY_AHEAD_PRICES)
+    with pytest.raises(duckdb.Error):
+        run_live_benchmark_suite(settings, warmup=0, iterations=1)
 
 
 def test_measure_isolated_query_rss_mib_and_compaction_fallback(

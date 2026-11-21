@@ -23,6 +23,7 @@ import duckdb
 import pyarrow.fs as pafs
 import structlog
 from pyiceberg.catalog import Catalog
+from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.table import Table
 
@@ -551,19 +552,21 @@ def run_live_benchmark_suite(
         # Benchmark 2: Zero-scan Iceberg metadata checks vs Full SQL scan
         meta_rows: list[MetadataVsScanRow] = []
         for logical_table, time_col, metric_col in METADATA_BENCHMARK_TARGETS:
-            progress(f"Running Benchmark 2 metadata vs full scan: {logical_table}")
+            ns, _, tbl_name = logical_table.partition(".")
             try:
-                row = benchmark_metadata_vs_full_scan(
-                    con,
-                    logical_table=logical_table,
-                    duck_table=duck.table_name(logical_table),
-                    time_col=time_col,
-                    metric_col=metric_col,
-                    warmup=warmup,
-                    iterations=iterations,
-                )
-            except duckdb.Error:
+                catalog.load_table((ns, tbl_name))
+            except NoSuchTableError:
                 continue
+            progress(f"Running Benchmark 2 metadata vs full scan: {logical_table}")
+            row = benchmark_metadata_vs_full_scan(
+                con,
+                logical_table=logical_table,
+                duck_table=duck.table_name(logical_table),
+                time_col=time_col,
+                metric_col=metric_col,
+                warmup=warmup,
+                iterations=iterations,
+            )
             if row is not None:
                 meta_rows.append(row)
 
