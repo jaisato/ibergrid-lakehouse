@@ -297,6 +297,95 @@ def consumed(table: Any, lane: StreamSettings) -> FlushReport | None:
         kafka.close()
 
 
+def recreate(topic: str) -> None:
+    """Delete the topic and create it again under the same name (another topic id)."""
+    admin = AdminClient(client_config(broker("admin"), "it-admin"))
+    settle(admin.delete_topics([topic]))
+    deadline = time.monotonic() + 30
+    while True:  # the deletion settles before the name can be created again
+        try:
+            settle(admin.create_topics([NewTopic(topic, 3, 1)]))
+            return
+        except KafkaException:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(1)
+
+
+def test_an_offset_out_of_range_is_an_error_not_a_jump(lane: StreamSettings) -> None:
+    """The shipped consumer configuration, assigned past the end of a partition: librdkafka
+    reports _AUTO_OFFSET_RESET and delivers nothing (with "earliest" it would read offset 0)."""
+    sink = Producer(producer_config(broker("producer"), "it-producer"))
+    for _ in range(3):
+        sink.produce(lane.topic, value=b"{}", key=b"k", partition=0)
+    assert sink.flush(30) == 0
+    kafka = Consumer(consumer_config(broker("consumer"), "it-consumer", lane.group_id))
+    try:
+        kafka.assign([TopicPartition(lane.topic, 0, 103)])
+        received: list[Any] = []
+        deadline = time.monotonic() + 20
+        while not received and time.monotonic() < deadline:
+            received = kafka.consume(10, 1.0)
+    finally:
+        kafka.close()
+
+    assert received
+    assert [m.error() is not None for m in received] == [True] * len(received)
+    assert received[0].error().code() == KafkaError._AUTO_OFFSET_RESET
+
+
+def test_a_topic_recreated_under_a_running_consumer_adds_nothing(
+    catalog: LakeCatalog, namespace: str, lane: StreamSettings
+) -> None:
+    """Deleted, created again and refilled past the running consumer's position: nothing of the
+    new topic is published, and the next start refuses it."""
+    spec = replace(REDATA_DEMAND_STREAM, namespace=namespace)
+    ensure_table(catalog, spec)
+    table = catalog.load_table(spec.identifier)
+    payload = FIXTURE.read_bytes()
+    chunk = replay_chunk(payload)
+    sink = Producer(producer_config(broker("producer"), "it-producer"))
+    StreamProducer(sink, lane.topic, lambda _c: payload).emit(payload, chunk)
+    kafka = Consumer(consumer_config(broker("consumer"), "it-consumer", lane.group_id))
+    stream = StreamConsumer(table, kafka, *lane_clients(), lane)
+    outcome: Exception | None = None
+    try:
+        stream.start()
+        drain(stream, kafka)
+        assert stream.maybe_flush(final=True) is not None
+        before = read_checkpoint(table, lane.group_id)
+        recreate(lane.topic)
+        for _ in range(2):  # twice the messages: past the consumer's position everywhere
+            StreamProducer(sink, lane.topic, lambda _c: payload).emit(payload, chunk)
+        try:
+            drain(stream, kafka)
+            stream.maybe_flush(final=True)
+        except ConsumerError as exc:  # an error while reading, or the check before the publish
+            outcome = exc
+    finally:
+        kafka.close()
+
+    assert outcome is not None
+    table.refresh()
+    assert table.scan().count() == len(json_points(payload))
+    assert read_checkpoint(table, lane.group_id) == before
+    with pytest.raises(ConsumerError, match="deleted and recreated"):
+        consumed(table, lane)
+
+
+def drain(stream: StreamConsumer, kafka: Consumer) -> None:
+    idle = 0
+    while idle < 5:
+        messages = kafka.consume(500, 1.0)
+        for message in messages:
+            stream.handle(message)
+        idle = 0 if messages else idle + 1
+
+
+def json_points(payload: bytes) -> list[object]:
+    return [p for s in json.loads(payload)["included"] for p in s["attributes"]["values"]]
+
+
 def test_a_recreated_topic_is_refused_until_a_deliberate_reset(
     catalog: LakeCatalog, namespace: str, lane: StreamSettings
 ) -> None:
@@ -312,17 +401,7 @@ def test_a_recreated_topic_is_refused_until_a_deliberate_reset(
     )
     assert consumed(table, lane) is not None
     before = read_checkpoint(table, lane.group_id)
-    admin = AdminClient(client_config(broker("admin"), "it-admin"))
-    settle(admin.delete_topics([lane.topic]))
-    deadline = time.monotonic() + 30
-    while True:  # the deletion settles before the name can be created again
-        try:
-            settle(admin.create_topics([NewTopic(lane.topic, 3, 1)]))
-            break
-        except KafkaException:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(1)
+    recreate(lane.topic)
     StreamProducer(sink, lane.topic, lambda _c: payload).emit(payload, replay_chunk(payload))
 
     with pytest.raises(ConsumerError, match="deleted and recreated"):
@@ -337,7 +416,10 @@ def test_a_recreated_topic_is_refused_until_a_deliberate_reset(
     assert before is not None
     assert after.topic_id != before.topic_id
     assert report is not None
-    assert report.rows == first.emitted  # the new incarnation, written again, its own rows
+    # The new incarnation from its start: repeats inside the duplicate window (three days back
+    # from now; the recorded day is 2026-11-18) are dropped, the rest written again.
+    assert report.rows + report.duplicates == first.emitted
+    assert report.rows > 0
     ids = catalog.load_table(spec.identifier).scan(selected_fields=("kafka_topic_id",)).to_arrow()
     assert set(ids["kafka_topic_id"].to_pylist()) == {before.topic_id, after.topic_id}
 
