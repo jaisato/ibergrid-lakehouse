@@ -20,14 +20,12 @@ what is deliberately out of scope?
 - Runs locally with `docker compose` and on one server; cost scales with data, not with clusters.
 - Batch and streaming ingestion into the same tables.
 - Every component maintained and pinnable by version and digest.
-- Different from the owner's other project, streamhouse, which already covers Spark, Delta Lake
-  and Airflow.
 
 ## Considered options
 
 - Apache Iceberg + Lakekeeper (REST catalog) + RustFS/R2 + DuckDB, Polars and PyIceberg +
   Dagster + Redpanda
-- Apache Spark + Delta Lake + Airflow
+- A Spark + Delta Lake + Airflow design
 - Apache Iceberg with Apache Polaris as the REST catalog
 - MinIO as the local object storage
 - Plain Parquet files with a naming convention, without a table format
@@ -56,8 +54,10 @@ and runs without a JVM.
 ### Consequences
 
 - Good: the tables are portable; adding an engine (Trino, Spark) later needs no data migration.
-- Good: the phase 0 stack idles at about 320 MB of memory (limits add up to 3.2 GB, mostly
-  Redpanda's 1 GB reservation) and starts in under a minute.
+- Good: the phase 0 stack starts in under a minute and idles at 318-414 MiB in total, or
+  287-332 MiB without RustFS, as in production. Measured with `docker stats --no-stream` after
+  3-4 idle minutes, in two runs on a WSL2 laptop: Redpanda 192-228 MiB, Postgres 68-71, RustFS
+  31-82, Lakekeeper 26-33. The memory limits add up to 3.2 GiB, almost half of it Redpanda's.
 - Good: production storage is pay-per-use object storage instead of a cluster.
 - Bad: single-node engines cap the data size and concurrency; fine for this data, not for large
   multi-tenant workloads.
@@ -70,11 +70,16 @@ and runs without a JVM.
 
 ## Pros and cons of the other options
 
-### Spark + Delta Lake + Airflow
+### A Spark + Delta Lake + Airflow design
 
-- Good: mature, the industry default for large lakehouses.
-- Bad: JVM services and a much larger footprint for sub-terabyte data.
-- Bad: the owner's streamhouse project already demonstrates this stack; repeating it adds little.
+- Good: mature and widely deployed for large lakehouses, with a large ecosystem.
+- Bad: Spark, its Delta integration and Airflow are JVM or multi-service deployments whose memory
+  and operational cost dwarf a sub-terabyte dataset on one server.
+- Bad: Iceberg's REST catalog specification is implemented by several catalogs and engines, while
+  Delta's catalog story is tied to Spark or Unity Catalog, which works against the multi-engine
+  goal.
+- Bad: Airflow schedules tasks rather than data assets; partitions, backfills and lineage per
+  table come built in with Dagster.
 
 ### Apache Polaris as the REST catalog
 

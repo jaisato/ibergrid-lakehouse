@@ -75,28 +75,39 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
 - **Least connectivity.** Each network groups the services that must talk to each other.
   Postgres sits on an `internal` network with no egress; only Lakekeeper reaches it. The catalog
   joins `storage` because it validates the warehouse location and manages files there.
-- **Hardening.** Every container runs with `no-new-privileges` and all capabilities dropped,
-  under a non-root user (Postgres as `postgres`, the AWS CLI as `nobody`, the app as uid 10001),
-  with a memory limit.
+- **Hardening.** Every container, one-shots included, runs with `no-new-privileges`, all
+  capabilities dropped, a memory limit and a non-root user: RustFS as `rustfs` (10001), the AWS
+  CLI as `nobody` (65534), Postgres as `postgres` (70), Lakekeeper as distroless `nonroot`
+  (65532, set in compose because the image declares no user), Redpanda as `redpanda` (101) and
+  the app as 10001.
 - **Secrets.** Compose reads them from `.env` with `${VAR:?}` and no defaults, so a missing secret
   stops `docker compose` before anything starts. The app keeps them as `SecretStr` and its
   validation errors never echo input values.
 - **Storage readiness.** `ibergrid doctor` sends a SigV4-signed `HEAD /<bucket>` instead of
   RustFS's anonymous `/health/ready`: the same check proves the endpoint, the keys and the bucket
   on RustFS and on Cloudflare R2, which has no health endpoint.
-- **Catalog without authentication (for now).** Lakekeeper runs without an identity provider, so
-  its management API is open to whoever reaches port 8181. Locally that is 127.0.0.1 only; in
-  production the port is not published at all. Authentication is a prerequisite for the public
-  endpoints of phase 6.
-- **One image for the CLI.** `catalog-init` and `doctor` run the same app image; in production it
-  is pulled from GHCR by digest, so what runs is exactly what CI built.
+- **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
+  advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
+  `http://catalog:8181/catalog` from containers.
+- **No authentication yet (catalog and broker).** Lakekeeper runs without an identity provider, so
+  its management API is open to whoever reaches port 8181. Redpanda runs in dev-container mode
+  with unauthenticated Kafka and admin APIs. Locally both listen on 127.0.0.1 only; in production
+  no port is published. Phase 2 hardens the broker, and authentication is a prerequisite for the
+  public endpoints of phase 6.
+- **One image for the CLI.** `catalog-init` and `doctor` run the same app image. In production it
+  is pulled from GHCR by the digest the release job recorded: the image that job built, ran once
+  (`ibergrid version`) and pushed. The server never builds anything.
+- **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
+  creates it and never updates them. After rotating `IBERGRID_S3_*`, run
+  `ibergrid catalog update-credential` (see `.env.example`).
 
 ## Environments
 
 | | Local (`make up`) | Production (`compose.prod.yaml`) |
 |---|---|---|
 | Object storage | RustFS container (`local-storage` profile) | Cloudflare R2, `https://<account-id>.r2.cloudflarestorage.com`, region `auto` |
-| App image | Built from source (`compose.override.yaml`) | `ghcr.io/jaisato/ibergrid-lakehouse@sha256:...` |
+| App image | Built from source (`compose.override.yaml`) | `ghcr.io/jaisato/ibergrid-lakehouse@sha256:...`, digest in `release.env` |
+| Env files | `.env` | `.env` (secrets, never written by the deploy) and `release.env` |
 | Host ports | 127.0.0.1, 28xxx-29xxx | None |
 | Restart policy | `on-failure` | `unless-stopped` |
 | Logs | Docker defaults | `json-file`, 3 x 10 MB per container |

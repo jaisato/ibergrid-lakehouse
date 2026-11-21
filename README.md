@@ -102,8 +102,9 @@ through [SECURITY.md](SECURITY.md).
 
 Pushes to `main` publish the app image to `ghcr.io/jaisato/ibergrid-lakehouse`. Tags `v*.*.*`
 rerun CI, publish the version and deploy it to a single server over SSH: the job copies
-[compose.yaml](compose.yaml) and [compose.prod.yaml](compose.prod.yaml), pins the image digest,
-runs `docker compose up -d --wait` and then `ibergrid doctor`
+[compose.yaml](compose.yaml) and [compose.prod.yaml](compose.prod.yaml), pins the image digest in
+`release.env` (the secrets in `.env` are never rewritten), runs `docker compose up -d --wait` and
+then `ibergrid doctor`
 ([deploy/remote.sh](deploy/remote.sh)). Production storage is Cloudflare R2. The deploy job stays
 skipped until the server's variables exist ([deploy/deploy.env.example](deploy/deploy.env.example)).
 
@@ -112,12 +113,14 @@ skipped until the server's variables exist ([deploy/deploy.env.example](deploy/d
 No data is downloaded in phase 0. When the connectors land they will record, for every dataset,
 its source and the update date the publisher reports.
 
-- **Red Eléctrica (REE), REData API** (`apidatos.ree.es`): Spanish electricity system data.
-  Source: Red Eléctrica, [ree.es](https://www.ree.es/en/apidatos). Used for informational,
-  non-commercial purposes with attribution to REE and the data's update date, as REE's usage notice
-  requires.
-- **OMIE**, day-ahead market result files: Iberian electricity market data. Source: OMIE,
-  [omie.es](https://www.omie.es). Attributed to OMIE wherever the data is shown.
+- **Red Eléctrica (REE), REData API** (`apidatos.ree.es`): Spanish electricity system data. REE's
+  [API page](https://www.ree.es/es/datos/apidatos) says the API lets third parties "retrieve data
+  from the REData widgets and use them for your own purposes"; no licence text for the API was
+  found. This project's practice: every dataset and every view of it carries "Source: Red
+  Eléctrica, REData" and the update date REE reports.
+- **OMIE**, day-ahead market result files: Iberian electricity market data, credited as "Source:
+  OMIE" with a link to [omie.es](https://www.omie.es). No licence terms are assumed beyond what
+  OMIE publishes on its site.
 
 This project is not affiliated with or endorsed by REE or OMIE.
 
