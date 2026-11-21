@@ -57,7 +57,7 @@ test: ## Unit tests with branch coverage (fails under 90 %)
 test-integration: ## Integration tests against the running stack (make up first)
 	$(UV) run pytest -m integration tests/integration
 
-test-live: ## Opt-in smoke test against the live REData API (one request per dataset)
+test-live: ## Opt-in smoke tests against REData and omie.es (a handful of requests)
 	$(UV) run pytest -m live tests/live
 
 audit: ## Known vulnerabilities in the locked dependencies (pip-audit)
