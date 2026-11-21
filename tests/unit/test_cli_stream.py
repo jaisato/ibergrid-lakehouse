@@ -256,3 +256,23 @@ def test_drop_property_and_a_guarded_reset_from_the_command_line(
     assert dropped.stdout == "stream: dropped ibergrid.stream.leftover\n"
     assert refused.exit_code == 1
     assert "has no property" in refused.stderr
+
+
+def test_status_and_reset_report_describe_timeout_in_one_line(
+    broker: FakeBroker, stream_table: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrong SCRAM password makes AdminClient.describe_topics().result() raise TimeoutError."""
+
+    class TimedOut:
+        def result(self, timeout: float | None = None) -> Any:
+            raise TimeoutError
+
+    monkeypatch.setattr(broker, "describe_topics", lambda _topics, **_kw: {TOPIC: TimedOut()})
+
+    for args in (["stream", "status"], ["stream", "reset", "--to", "latest"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 1, args
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert result.stderr == (
+            f"error: topic {TOPIC} cannot be described (TimeoutError): broker-init creates it\n"
+        )

@@ -194,10 +194,34 @@ def topic_identity(admin: AdminClient, topic: str) -> str:
     try:
         found = admin.describe_topics(TopicCollection([topic]), request_timeout=30)[topic]
         return str(found.result(timeout=30).topic_id)
-    except KafkaException as exc:
+    except (KafkaException, TimeoutError) as exc:
+        detail = str(exc) or type(exc).__name__
         raise ConsumerError(
-            f"topic {topic} cannot be described ({exc}): broker-init creates it"
+            f"topic {topic} cannot be described ({detail}): broker-init creates it"
         ) from exc
+
+
+def _highest_epoch(table: Table) -> int | None:
+    """The highest stream epoch in the table's checkpoints or rows (None when empty and none
+    recorded; rows written before epochs existed count as 0)."""
+    highest: int | None = None
+    for key, raw in table.properties.items():
+        if not key.startswith(CHECKPOINT_PREFIX):
+            continue
+        try:
+            epoch = int(json.loads(raw).get("epoch", 0))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        highest = epoch if highest is None else max(highest, epoch)
+    if table.current_snapshot() is None:
+        return highest
+    scan = table.scan(selected_fields=("stream_epoch",))
+    for batch in scan.to_arrow_batch_reader():
+        if not batch.num_rows:
+            continue
+        top = int(pc.max(pc.fill_null(batch.column("stream_epoch"), 0)).as_py())
+        highest = top if highest is None else max(highest, top)
+    return highest
 
 
 def topic_partitions(kafka: Consumer, topic: str) -> list[int]:
@@ -229,6 +253,7 @@ def reset_checkpoint(
     consumer conflicts instead of interleaving: stop it first. A checkpoint that still fits the
     topic (same id, offsets inside the log) is refused unless ``force``.
     """
+    table.refresh()
     topic = settings.topic
     before = read_checkpoint(table, settings.group_id)
     topic_id = topic_identity(admin, topic)
@@ -243,7 +268,8 @@ def reset_checkpoint(
             f"the checkpoint {cast(Checkpoint, before).to_json()} fits {topic} as it is: "
             "nothing to reset (--force to reset anyway)"
         )
-    epoch = (0 if before is None else before.epoch) + 1
+    highest = _highest_epoch(table)
+    epoch = (0 if highest is None else highest) + 1
     checkpoint = Checkpoint(topic, topic_id, offsets, epoch)
     _publish_properties(
         table, set_properties={checkpoint_property(settings.group_id): checkpoint.to_json()}
@@ -367,6 +393,7 @@ class StreamConsumer:
         self.next_timestamps: dict[int, int] = {}  # of the message before each next offset
         self.buffer: list[Buffered] = []
         self.latest: dict[tuple[str, datetime], str] = {}  # key -> latest accepted hash
+        self.assigned: dict[int, int] = {}  # current fetch position per partition
         self.next_offsets: dict[int, int] = {}
         self.batch: Counter[str] = Counter()  # since the last flush
         self.totals: Counter[str] = Counter()
@@ -445,8 +472,13 @@ class StreamConsumer:
                 start[partition] = position
         self._verify_positions(offsets, timestamps, lows)
         self.checkpointed, self.topic_id = checkpoint, topic_id
-        self.epoch = 0 if checkpoint is None else checkpoint.epoch
+        if checkpoint is not None:
+            self.epoch = checkpoint.epoch
+        else:
+            highest = _highest_epoch(self.table)
+            self.epoch = 0 if highest is None else highest + 1
         # Past a retention gap the next checkpoint records the jump.
+        self.assigned = dict(start)
         self.next_offsets = {p: start[p] for p in offsets if p in start}
         self.next_timestamps = {p: t for p, t in timestamps.items() if p in self.next_offsets}
         self.latest = self._recent_hashes()
@@ -478,25 +510,73 @@ class StreamConsumer:
         if not expected:
             return
         topic = self.settings.topic
-        self.kafka.assign([TopicPartition(topic, p, offsets[p] - 1) for p in expected])
-        found: dict[int, int] = {}
+        remaining = dict(expected)
+        self.kafka.assign([TopicPartition(topic, p, offsets[p] - 1) for p in remaining])
+        found: dict[int, tuple[int, int]] = {}
         deadline = time.monotonic() + VERIFY_TIMEOUT
-        while len(found) < len(expected) and time.monotonic() < deadline:
-            for message in self.kafka.consume(len(expected), 1.0):
+        while remaining and time.monotonic() < deadline:
+            got_any = False
+            for message in self.kafka.consume(len(remaining), 1.0):
                 partition = message.partition()
-                if message.error() is None and partition in expected and partition not in found:
-                    found[partition] = message.timestamp()[1]
-        missing = sorted(set(expected) - set(found))
+                if message.error() is None and partition in remaining:
+                    found[partition] = (cast(int, message.offset()), message.timestamp()[1])
+                    remaining.pop(partition)
+                    got_any = True
+            if got_any and remaining:
+                self.kafka.assign([TopicPartition(topic, p, offsets[p] - 1) for p in remaining])
+        missing = sorted(remaining)
         if missing:
             raise ConsumerError(f"could not read back the checkpoint of partitions {missing}")
         for partition, recorded in expected.items():
-            if found[partition] != recorded:
+            offset, timestamp = found[partition]
+            want = offsets[partition] - 1
+            if offset != want:
+                log.warning(
+                    "stream.consumer.verify_offset_skipped",
+                    partition=partition,
+                    expected_offset=want,
+                    actual_offset=offset,
+                )
+                continue
+            if timestamp != recorded:
                 raise Refused(
                     f"{topic} partition {partition}: the message before the checkpoint (offset "
-                    f"{offsets[partition] - 1}) has timestamp {found[partition]}, the checkpoint "
+                    f"{want}) has timestamp {timestamp}, the checkpoint "
                     f"recorded {recorded}: the log was rewritten under the same topic id. Reset "
-                    "deliberately: ibergrid stream reset --to earliest|latest"
+                    "deliberately: ibergrid stream reset --to earliest|latest --force"
                 )
+
+    def _verify_previous_checkpoint(self) -> None:
+        """Before advancing the checkpoint, verify the previous one's log fingerprint: a tail
+        lost and refilled past this consumer's position while it runs keeps the topic id and
+        gives no out-of-range error, so without this read-back the publish would move past the
+        rewritten messages."""
+        if self.checkpointed is None or not self.checkpointed.offsets:
+            return
+        topic = self.settings.topic
+        lows: dict[int, int] = {}
+        for partition, position in self.checkpointed.offsets.items():
+            low, high = self.kafka.get_watermark_offsets(
+                TopicPartition(topic, partition), timeout=10
+            )
+            if position > high:
+                raise Refused(
+                    f"the checkpoint of {topic} partition {partition} is at {position}, past its "
+                    f"end ({high}): messages it covers are gone (a broker that lost the tail of "
+                    "its log). Reset deliberately: ibergrid stream reset --to earliest|latest"
+                )
+            lows[partition] = low
+        expected = {
+            p: t
+            for p, t in self.checkpointed.timestamps.items()
+            if p in lows and self.checkpointed.offsets[p] - 1 >= lows[p]
+        }
+        if not expected:
+            return
+        try:
+            self._verify_positions(self.checkpointed.offsets, expected, lows)
+        finally:
+            self.kafka.assign([TopicPartition(topic, p, o) for p, o in self.assigned.items()])
 
     def sweep_stale_branches(self) -> list[str]:
         """Discard this lane's run branches that started longer ago than ``stale_branch_age``:
@@ -587,6 +667,7 @@ class StreamConsumer:
             log.warning("stream.consumer.kafka_error", error=str(error))
             return
         partition, offset = cast(int, message.partition()), cast(int, message.offset())
+        self.assigned[partition] = offset + 1
         self.next_offsets[partition] = offset + 1
         self.next_timestamps[partition] = message.timestamp()[1]
         self.totals["consumed"] += 1
@@ -706,9 +787,10 @@ class StreamConsumer:
                 self._audit(head, run_id, rows)
             else:
                 head = audit.base_snapshot_id
-            # A topic recreated and refilled past this consumer's position gives no out-of-range
-            # error: its messages are read as if they continued the old topic. Not published.
+            # A topic recreated or a log rewritten and refilled past this consumer's position
+            # gives no out-of-range error: its messages are read as if the old log went on.
             self._check_topic()
+            self._verify_previous_checkpoint()
             published = self._publish(audit, head, {self.property: checkpoint.to_json()})
         except BaseException:
             self._discard(audit)
