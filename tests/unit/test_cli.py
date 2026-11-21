@@ -1,13 +1,21 @@
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from importlib.metadata import version
 
+import pyarrow as pa
 import pytest
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import NestedField, StringType
 from typer.testing import CliRunner
 
+from ibergrid import cli
 from ibergrid.cli import app
+from ibergrid.lake import registry
+from ibergrid.lake.tables import ensure_table
 
-from .conftest import FakeLakekeeper, LocalServer, Responder
+from .conftest import FakeIcebergRest, FakeLakekeeper, LocalServer, Responder
 
 Serve = Callable[[Responder], LocalServer]
 runner = CliRunner()
@@ -126,3 +134,113 @@ def test_update_credential_exits_1_before_bootstrap() -> None:
 
     assert result.exit_code == 1
     assert "warehouse 'lakehouse' does not exist" in result.stderr
+
+
+@pytest.fixture
+def lake(catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None) -> SqlCatalog:
+    """``lake init`` against a real local catalog in place of the REST one."""
+    monkeypatch.setattr(cli, "rest_catalog", lambda _settings: catalog)
+    return catalog
+
+
+def test_lake_init_creates_the_registry_tables_once(lake: SqlCatalog) -> None:
+    first = runner.invoke(app, ["lake", "init"])
+    second = runner.invoke(app, ["lake", "init"])
+
+    assert first.exit_code == 0, first.output
+    assert first.stdout == "lake: ops.smoke created\n"
+    assert second.stdout == "lake: ops.smoke unchanged\n"
+    assert lake.table_exists(registry.SMOKE.identifier)
+
+
+def test_lake_init_reports_additive_changes(
+    lake: SqlCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert runner.invoke(app, ["lake", "init"]).exit_code == 0
+    grown = replace(
+        registry.SMOKE,
+        schema=Schema(*registry.SMOKE.schema.fields, NestedField(3, "note", StringType())),
+        properties={"write.metadata.previous-versions-max": "10"},
+    )
+    monkeypatch.setattr(registry, "TABLES", (grown,))
+
+    result = runner.invoke(app, ["lake", "init"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == (
+        "lake: ops.smoke added columns note; "
+        "updated properties write.metadata.previous-versions-max\n"
+    )
+
+
+def test_lake_init_exits_1_on_an_incompatible_change(
+    lake: SqlCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert runner.invoke(app, ["lake", "init"]).exit_code == 0
+    dropped = replace(registry.SMOKE, schema=Schema(registry.SMOKE.schema.fields[0]))
+    monkeypatch.setattr(registry, "TABLES", (dropped,))
+
+    result = runner.invoke(app, ["lake", "init"])
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: ops.smoke: column 'written_at' is missing")
+
+
+@pytest.mark.usefixtures("credentials")
+def test_lake_init_exits_1_when_the_catalog_does_not_answer(
+    monkeypatch: pytest.MonkeyPatch, closed_port: int
+) -> None:
+    monkeypatch.setenv("IBERGRID_CATALOG_URL", f"http://127.0.0.1:{closed_port}")
+
+    result = runner.invoke(app, ["lake", "init"])
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
+
+
+@pytest.fixture
+def rest(
+    serve: Serve, catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> SqlCatalog:
+    """A REST endpoint for DuckDB's ATTACH, serving the tables of a real local catalog."""
+    monkeypatch.setenv("IBERGRID_CATALOG_URL", serve(FakeIcebergRest(catalog)).url)
+    return catalog
+
+
+def test_lake_describe_shows_snapshot_refs_and_files(rest: SqlCatalog) -> None:
+    ensure_table(rest, registry.SMOKE)
+    table = rest.load_table(registry.SMOKE.identifier)
+    table.append(
+        pa.table({"run_id": ["r1"], "written_at": pa.array([None], pa.timestamp("us", "UTC"))})
+    )
+    head = table.metadata.current_snapshot_id
+
+    result = runner.invoke(app, ["lake", "describe", "ops.smoke"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == "table:      ops.smoke"
+    assert lines[1].startswith(f"snapshot:   {head} (append, ")
+    assert lines[2] == f"refs:       main -> {head} (branch)"
+    assert lines[3].startswith("data files: 1 (")
+
+
+def test_lake_describe_an_empty_table(rest: SqlCatalog) -> None:
+    ensure_table(rest, registry.SMOKE)
+
+    result = runner.invoke(app, ["lake", "describe", "ops.smoke"])
+
+    assert result.exit_code == 0, result.output
+    assert "snapshot:   none (the table has no snapshot yet)" in result.stdout
+    assert "refs:       none" in result.stdout
+    assert "data files: 0 (0 bytes)" in result.stdout
+
+
+@pytest.mark.usefixtures("rest")
+@pytest.mark.parametrize(("table", "message"), [("ops.missing", "error: "), ("smoke", "expected")])
+def test_lake_describe_exits_1_on_an_unknown_table(table: str, message: str) -> None:
+    result = runner.invoke(app, ["lake", "describe", table])
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
+    assert message in result.stderr
