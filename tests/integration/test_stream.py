@@ -11,6 +11,7 @@ topics and a throwaway group that the superuser creates, grants the same ACLs on
 import json
 import os
 import socket
+import subprocess
 import time
 import uuid
 from collections.abc import Iterator
@@ -42,7 +43,13 @@ from ibergrid.lake.catalog import LakeCatalog
 from ibergrid.lake.registry import REDATA_DEMAND_STREAM
 from ibergrid.lake.tables import ensure_table
 from ibergrid.settings import BrokerSettings, StreamSettings
-from ibergrid.stream.consumer import StreamConsumer, read_checkpoint
+from ibergrid.stream.consumer import (
+    ConsumerError,
+    FlushReport,
+    StreamConsumer,
+    read_checkpoint,
+    reset_checkpoint,
+)
 from ibergrid.stream.kafka import client_config, consumer_config, producer_config
 from ibergrid.stream.producer import StreamProducer, replay_chunk
 
@@ -53,7 +60,7 @@ pytestmark = pytest.mark.integration
 BOOTSTRAP = os.environ.get("IBERGRID_TEST_BROKER", "127.0.0.1:29092")
 TOPIC = "redata.demand.realtime.v1"
 DLQ = "redata.demand.realtime.dlq.v1"
-GROUP = "ibergrid.stream.bronze"
+GROUP = StreamSettings().group_id
 FIXTURE = (
     REPO / "tests" / "fixtures" / "redata" / "demand_realtime-national-2026-11-18_2026-11-18.json"
 )
@@ -229,8 +236,7 @@ def test_recorded_events_land_once_with_revisions_kept_and_dead_letters_routed(
     assert sink.flush(30) == 0
 
     kafka = Consumer(consumer_config(broker("consumer"), "it-consumer", lane.group_id))
-    dlq = Producer(producer_config(broker("consumer"), "it-consumer-dlq"))
-    stream = StreamConsumer(table, kafka, dlq, lane)
+    stream = StreamConsumer(table, kafka, *lane_clients(), lane)
     try:
         stream.start()
         idle = 0
@@ -254,7 +260,9 @@ def test_recorded_events_land_once_with_revisions_kept_and_dead_letters_routed(
     )
     end = end_offsets(topic)
     assert sum(end.values()) == 2 * emitted + 2
-    assert read_checkpoint(table, lane.group_id, topic) == end == report.offsets == committed
+    checkpoint = read_checkpoint(table, lane.group_id)
+    assert checkpoint is not None
+    assert checkpoint.offsets == end == report.offsets == committed
     assert report.lag == {p: 0 for p in end}
     assert end_offsets(lane.dlq_topic) == {0: 1}
     name = duck.table_name(f"{namespace}.{spec.name}")
@@ -264,6 +272,84 @@ def test_recorded_events_land_once_with_revisions_kept_and_dead_letters_routed(
         params={"t": name},
     ).fetchall()
     assert counts == [(emitted + 1, emitted, emitted + 1)]
+
+
+def lane_clients() -> tuple[Producer, AdminClient]:
+    """The consumer user's dead-letter producer and admin client (for the topic's id)."""
+    user = broker("consumer")
+    return Producer(producer_config(user, "it-dlq")), AdminClient(client_config(user, "it-admin"))
+
+
+def consumed(table: Any, lane: StreamSettings) -> FlushReport | None:
+    """A consumer of ``lane`` started on ``table``, run until the topic is drained, flushed."""
+    kafka = Consumer(consumer_config(broker("consumer"), "it-consumer", lane.group_id))
+    stream = StreamConsumer(table, kafka, *lane_clients(), lane)
+    try:
+        stream.start()
+        idle = 0
+        while idle < 5:
+            messages = kafka.consume(500, 1.0)
+            for message in messages:
+                stream.handle(message)
+            idle = 0 if messages else idle + 1
+        return stream.maybe_flush(final=True)
+    finally:
+        kafka.close()
+
+
+def test_a_recreated_topic_is_refused_until_a_deliberate_reset(
+    catalog: LakeCatalog, namespace: str, lane: StreamSettings
+) -> None:
+    """R2 on the real broker: the topic is deleted, created again and refilled past the table's
+    checkpoint; its id changed, so the consumer refuses until `stream reset`."""
+    spec = replace(REDATA_DEMAND_STREAM, namespace=namespace)
+    ensure_table(catalog, spec)
+    table = catalog.load_table(spec.identifier)
+    payload = FIXTURE.read_bytes()
+    sink = Producer(producer_config(broker("producer"), "it-producer"))
+    first = StreamProducer(sink, lane.topic, lambda _c: payload).emit(
+        payload, replay_chunk(payload)
+    )
+    assert consumed(table, lane) is not None
+    before = read_checkpoint(table, lane.group_id)
+    admin = AdminClient(client_config(broker("admin"), "it-admin"))
+    settle(admin.delete_topics([lane.topic]))
+    deadline = time.monotonic() + 30
+    while True:  # the deletion settles before the name can be created again
+        try:
+            settle(admin.create_topics([NewTopic(lane.topic, 3, 1)]))
+            break
+        except KafkaException:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(1)
+    StreamProducer(sink, lane.topic, lambda _c: payload).emit(payload, replay_chunk(payload))
+
+    with pytest.raises(ConsumerError, match="deleted and recreated"):
+        consumed(table, lane)
+    kafka = Consumer(consumer_config(broker("consumer"), "it-reset", lane.group_id))
+    try:
+        after = reset_checkpoint(table, kafka, lane_clients()[1], lane, "earliest")
+    finally:
+        kafka.close()
+    report = consumed(table, lane)
+
+    assert before is not None
+    assert after.topic_id != before.topic_id
+    assert report is not None
+    assert report.rows == first.emitted  # the new incarnation, written again, its own rows
+    ids = catalog.load_table(spec.identifier).scan(selected_fields=("kafka_topic_id",)).to_arrow()
+    assert set(ids["kafka_topic_id"].to_pylist()) == {before.topic_id, after.topic_id}
+
+
+def test_the_brokers_unauthenticated_http_proxy_and_schema_registry_do_not_listen() -> None:
+    for port, listening in ((8081, False), (8082, False), (9092, True)):
+        probe = subprocess.run(
+            ["docker", "compose", "exec", "-T", "broker", "bash", "-c",
+             f"exec 3<>/dev/tcp/127.0.0.1/{port}"],
+            cwd=REPO, capture_output=True, text=True, timeout=60, check=False,
+        )  # fmt: skip
+        assert (probe.returncode == 0) is listening, (port, probe.stderr)
 
 
 def test_the_stream_image_reaches_the_broker_and_the_catalog_inside_the_network() -> None:
