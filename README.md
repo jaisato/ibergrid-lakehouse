@@ -5,8 +5,9 @@ day-ahead market files, stored as Apache Iceberg tables behind a REST catalog an
 DuckDB, Polars and PyIceberg without a JVM.
 
 **Status: phase 0 (foundation).** The stack runs end to end (object storage, Iceberg REST catalog,
-broker) with CI/CD around it, but no data is ingested yet: connectors arrive in later phases (see
-[Roadmap](#roadmap)).
+broker) with CI/CD around it, and the lake library writes Iceberg tables through
+Write-Audit-Publish and reads them with DuckDB, but no data is ingested yet: connectors arrive in
+later phases (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -61,7 +62,7 @@ make smoke   # ibergrid doctor from inside the compose network
 `make smoke` prints one line per dependency and exits non-zero if any is down:
 
 ```text
-ok    storage  HEAD http://storage:9000/ibergrid -> 200 (13 ms)
+ok    storage  HeadBucket http://storage:9000/ibergrid (2 ms)
 ok    catalog  GET http://catalog:8181/health -> 200 (1 ms)
 ok    broker   TCP connect to broker:9092
 doctor: all checks passed
@@ -69,6 +70,31 @@ doctor: all checks passed
 
 `make help` lists every target; `make down` stops the stack and `make down-volumes` also deletes
 its data.
+
+## Lake
+
+`ibergrid.lake` is the library every pipeline writes and reads through; who does what, the
+Write-Audit-Publish protocol and the measured engine capabilities are in
+[ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md).
+
+- **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` and created
+  by `ensure_table`, which also adds new optional columns and refuses any other change. Every
+  write goes to a run's audit branch (`wap.start`, `wap.write`), and `wap.publish` moves `main` to
+  it in one guarded commit, or raises `PublishConflict` and changes nothing.
+- **DuckDB reads.** `duck.connect` attaches the catalog as `lake`; `duck.scan`, `duck.scan_ref`
+  (a branch), `duck.metadata` and `duck.describe` answer from it.
+- **Maintenance.** `maintenance.expire_snapshots` (PyIceberg) and
+  `maintenance.rewrite_data_files` (DuckDB compaction).
+
+The CLI wraps the table registry and the metadata queries, from inside the compose network:
+
+```bash
+docker compose run --rm --no-deps doctor lake init               # create the registry's tables
+docker compose run --rm --no-deps doctor lake describe ops.smoke # snapshot, refs, data files
+```
+
+Clients use their own S3 endpoint and keys (`IBERGRID_S3_*`), so the same code runs from the host
+against the published ports, as the integration tests do.
 
 ## Services
 
@@ -94,6 +120,10 @@ make sync               # install the locked dependencies (uv.lock)
 make ci                 # lint, types, unit tests (>= 90 % branch coverage) and repository checks
 make test-integration   # against the running stack (make up first)
 ```
+
+The unit tests run the lake library on PyIceberg's SQL catalog (sqlite and local files), with no
+Docker. DuckDB downloads its `iceberg`, `httpfs` and `avro` extensions on first use outside the
+app image, which bakes them in at build time.
 
 Branches, commits and pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go
 through [SECURITY.md](SECURITY.md).
@@ -131,7 +161,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Foundation: compose stack, `ibergrid` CLI, CI/CD, docs | In progress |
-| 1 | Lake library: Iceberg table conventions and I/O with PyIceberg, DuckDB and Polars | Planned |
+| 1 | Lake library: Iceberg table conventions and I/O with PyIceberg, DuckDB and Polars | In progress (PyIceberg and DuckDB: [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) |
 | 2 | Connectors: REE REData and OMIE ingestion, raw events on Redpanda topics | Planned |
 | 3 | Orchestration with Dagster: assets, partitions, schedules, backfills, asset checks | Planned |
 | 4 | Streaming: continuous ingestion from Redpanda into Iceberg | Planned |
