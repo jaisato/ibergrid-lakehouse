@@ -1,6 +1,6 @@
 # Pull request checks; release.yml also calls this workflow before publishing a tagged release.
 # Three jobs in parallel: Quality (Python), Repository (files and history) and Integration (the
-# compose stack). Each step is a make target, so `make ci` and `make up smoke test-integration`
+# compose stack). Each step is a make target, so `make ci` and `make up test-integration`
 # reproduce it locally.
 name: CI
 
@@ -124,9 +124,7 @@ jobs:
       - name: Build the app image and start the stack (waits for health checks and one-shots)
         run: make up
 
-      - name: Smoke test (ibergrid doctor inside the network)
-        run: make smoke
-
+      # Includes the smoke test: `ibergrid doctor` inside the network, as `make smoke` runs it.
       - name: Integration tests
         run: make test-integration
 

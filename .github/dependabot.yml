@@ -1,7 +1,7 @@
-# One monthly multi-ecosystem group: uv and GitHub Actions arrive together in a single PR, which
-# keeps CI runs (and Actions minutes) to one per month. The 7-day cooldown skips releases that are
-# only days old. Docker images are pinned by digest in the compose files and the Dockerfile and
-# are updated by hand.
+# One monthly multi-ecosystem group: Python packages (uv), GitHub Actions and the container images
+# (Dockerfile and compose files, pinned by tag and digest) arrive together in a single PR, which
+# keeps CI runs, and Actions minutes, to one per month. The 7-day cooldown skips releases that are
+# only days old.
 version: 2
 
 multi-ecosystem-groups:
@@ -21,6 +21,22 @@ updates:
       default-days: 7
 
   - package-ecosystem: github-actions
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # FROM lines of the Dockerfile: the Python base image and the uv image.
+  - package-ecosystem: docker
+    directory: /
+    multi-ecosystem-group: monthly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # image: lines of compose.yaml (RustFS, AWS CLI, Postgres, Lakekeeper, Redpanda).
+  - package-ecosystem: docker-compose
     directory: /
     multi-ecosystem-group: monthly
     patterns: ["*"]

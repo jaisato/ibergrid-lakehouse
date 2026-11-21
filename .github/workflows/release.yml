@@ -1,6 +1,7 @@
 # Publishes the app image to GHCR and, for version tags, deploys it.
 #   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse:main and :sha-<short>
-#   push v*.*.*    -> CI on the tagged commit, then :vX.Y.Z, then the deploy job
+#   push v*.*.*    -> tag == v<pyproject version>, CI on the tagged commit, :vX.Y.Z, deploy job
+# Both build the image, run it once (`ibergrid version`) and only then push it.
 # The deploy job stays skipped until the repository variable DEPLOY_HOST is set (the server does
 # not exist yet); deploy/deploy.env.example lists everything it needs.
 name: Release
@@ -21,9 +22,31 @@ env:
   IMAGE: ghcr.io/jaisato/ibergrid-lakehouse
 
 jobs:
+  # Fail fast: a tag must name the version the package declares.
+  version:
+    name: Tag matches pyproject.toml
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the tag with the project version
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME, but pyproject.toml says $version (expected v$version)"
+            exit 1
+          fi
+
   # Pull requests already passed CI before reaching main; a tag gets one more full run before shipping.
   ci:
     name: CI
+    needs: version
     if: github.ref_type == 'tag'
     permissions:
       contents: read
@@ -31,8 +54,9 @@ jobs:
 
   image:
     name: Image
-    needs: ci
-    if: ${{ !cancelled() && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
+    needs: [version, ci]
+    # On main both are skipped; on a tag both must succeed.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -68,6 +92,12 @@ jobs:
           args=()
           for tag in $TAGS; do args+=(--tag "$IMAGE:$tag"); done
           docker build --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA" "${args[@]}" .
+
+      # The exact image about to be pushed must start and run the CLI.
+      - name: Smoke test the image
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: docker run --rm "$IMAGE:${TAGS%% *}" version
 
       - name: Push and record the digest
         id: push
