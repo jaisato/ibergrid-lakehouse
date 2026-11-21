@@ -110,12 +110,13 @@ healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`. `d
   has a 384 MiB memory limit, since a month of five-minute demand peaks at 238 MiB; the other app
   one-shots keep 192 MiB.
 - **OMIE ([ADR 0004](adr/0004-omie-ingestion.md)).** `ibergrid ingest omie` runs in the same
-  one-shot. Per chunk (a calendar month of delivery days) it downloads one file per day, checks
-  each against its contract version (hourly until 2025-09-30, quarter-hourly from 2025-10-01),
+  one-shot. Per chunk (a calendar month of delivery days) it downloads one file per day (its
+  current version: `.1`, or the `.2`/`.3` OMIE republished it as), checks each against its
+  contract version (hourly until 2025-09-30, quarter-hourly from 2025-10-01),
   lands the original files under `landing/omie/` and publishes the rows to
   `bronze.omie_day_ahead_prices` through Write-Audit-Publish, replacing exactly those delivery
-  days. It stops, with exit 0, at the first day OMIE has not published yet. A month peaks at
-  114 MiB.
+  days. It stops at the first day OMIE has not published yet, with exit 0 or, with
+  `--require-published`, exit 1. A month peaks at 114 MiB.
 - **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
   advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
   `http://catalog:8181/catalog` from containers.

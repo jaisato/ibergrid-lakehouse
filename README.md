@@ -90,8 +90,9 @@ Write-Audit-Publish protocol and the measured engine capabilities are in
 [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md).
 
 - **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` (today
-  `bronze.redata_observations` and `bronze.omie_day_ahead_prices`) and created by `ensure_table`, which also adds new optional
-  columns and refuses any other change. Every write goes to a run's audit branch
+  `bronze.redata_observations` and `bronze.omie_day_ahead_prices`) and created by
+  `ensure_table`, which also adds new optional columns and refuses any other change. Every write
+  goes to a run's audit branch
   (`wap.start`, `wap.write`); the audit reads the snapshot `wap.head` (or `wap.read`) returns, and
   `wap.publish(table, run, expected_head)` moves `main` to exactly that snapshot in one guarded
   commit, optionally with table properties such as stream offsets, or raises `PublishConflict`
@@ -188,22 +189,34 @@ omie: 2 chunk(s) published
   unit. The delivery date picks the version and the period count must match it; the line grammar
   is strict. A file that breaks its contract refuses its chunk before anything is landed or
   written, so a backfill stops at the first such month, and resumes by rerunning.
+- **File versions.** A day's file is `marginalpdbc_<YYYYMMDD>.<N>`: `.1` almost always, and a
+  republication replaces it under the next number (`20230528.2`, `20251030.3`, `20251127.2` so
+  far). The connector asks for `.1`, then `.2` up to `.5`, and takes the first that exists;
+  `source_file` and `file_version` record which. A rerun picks up a republished or rewritten
+  file; the Dagster schedule will re-ingest the last 7 delivery days for that. Daily files start
+  on 2023-01-01 (older years are yearly archives, not read).
 - **UTC intervals.** `interval_start_utc` is the Madrid midnight of the delivery day plus
   (period - 1) times the resolution, contiguous on every DST day; `resolution_minutes` and
   `contract_version` travel with each row.
 - **Chunks and idempotency.** One download per delivery day (at most one a second) and one
   Write-Audit-Publish run per calendar month, replacing exactly its delivery days; the table is
-  partitioned by `month(delivery_date)`, so a rerun replaces whole files. Prices outside
-  -500..4000 EUR/MWh are counted per run, not refused.
-- **Not published yet.** OMIE answers 404 for a file it has not published. A delivery day after
-  today (Madrid) ends the ingestion there with exit 0 (`not published yet from <day>`), after
-  writing the days before it; a missing day up to today is an error.
+  partitioned by `month(delivery_date)`, so a rerun never touches another month: a whole-month
+  rerun replaces that month's files, and a rerun of some days rewrites the files holding them,
+  keeping the other days' rows unchanged. Prices outside -500..4000 EUR/MWh are counted per run,
+  not refused.
+- **Not published yet.** OMIE answers 404 for a file it does not have (every version of a day
+  not out yet: five requests). A delivery day after today (Madrid) ends the ingestion there with
+  exit 0 (`not published yet from <day>`; the library reports `not_published_from`), after
+  writing the days before it, or exit 1 with `--require-published`; a missing day up to today is
+  always an error. Results normally appear the afternoon before, around 13:00-14:30 Madrid time.
 - **Original files.** Each lands byte for byte at
-  `s3://<bucket>/landing/omie/marginalpdbc/<YYYY>/<MM>/marginalpdbc_<YYYYMMDD>-<sha256[:12]>.1`;
+  `s3://<bucket>/landing/omie/marginalpdbc/<YYYY>/<MM>/marginalpdbc_<YYYYMMDD>-<sha256[:12]>.<N>`;
   every row carries that path and that hash.
-- **Library.** `ibergrid.sources.omie.ingest.ingest(settings, start, end, run_id_prefix)`.
-- **Cross-check.** REData's spot price equals OMIE's Spanish price on every quarter-hour of the
-  days both were recorded for; phase 4 turns that into a gate.
+- **Library.** `ibergrid.sources.omie.ingest.ingest(settings, start, end, run_id_prefix,
+  require_published=False)`.
+- **Cross-check.** REData's spot price equals OMIE's Spanish price, and differs from Portugal's
+  where the zones decouple, on the recorded days that can tell them apart (2025-04-28 and
+  2025-10-01); on days the zones agree it confirms only the timing. Phase 4 turns it into a gate.
 
 ## Services
 
@@ -264,7 +277,8 @@ widget and the update date REE reports (`series_last_update`).
 - **OMIE**, day-ahead market result files (`marginalpdbc`, the marginal prices for Spain and
   Portugal, downloaded from `www.omie.es`): Iberian electricity market data, credited as "Source:
   OMIE" with a link to [omie.es](https://www.omie.es). No licence terms are assumed beyond what
-  OMIE publishes on its site. Every row records the file it came from and its SHA-256.
+  OMIE publishes on its site. Every row records the file it came from, its version and its
+  SHA-256.
 
 This project is not affiliated with or endorsed by REE or OMIE.
 
