@@ -4,13 +4,14 @@ Standard library only (``urllib``): the CLI runs in one-shot containers and from
 where a small dependency surface is worth more than a nicer HTTP client.
 """
 
+import http.client
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
 
 
 class Unreachable(Exception):
-    """No HTTP answer at all: refused connection, unknown host or timeout."""
+    """No complete HTTP answer: refused connection, unknown host, timeout or a broken response."""
 
 
 def send(
@@ -42,8 +43,10 @@ def exchange(
             return response.status, _lower(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, _lower(exc.headers.items()), exc.read()
-    except OSError as exc:  # URLError, refused connections and timeouts
-        raise Unreachable(f"{method} {url}: {getattr(exc, 'reason', exc)}") from exc
+    # OSError: URLError, refused connections and timeouts; HTTPException: a response cut short
+    # (IncompleteRead) or not HTTP at all.
+    except (OSError, http.client.HTTPException) as exc:
+        raise Unreachable(f"{method} {url}: {getattr(exc, 'reason', exc)!s}") from exc
 
 
 def _lower(items: Iterable[tuple[str, str]]) -> dict[str, str]:

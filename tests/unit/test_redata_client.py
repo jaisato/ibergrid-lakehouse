@@ -1,5 +1,7 @@
 """The REData client against a local HTTP server: retries, backoff, permanent errors, pacing."""
 
+import socket
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -192,3 +194,28 @@ def test_a_retry_after_date_without_a_zone_is_read_as_utc(serve: Serve) -> None:
     client(server, delays).fetch(CANARIAS)
 
     assert 25 <= delays[0] <= 30
+
+
+def test_a_response_cut_short_is_retried() -> None:
+    """A 200 whose body stops before its Content-Length (IncompleteRead) is transient."""
+    replies = [
+        b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    ]
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+
+        def answer() -> None:
+            for reply in replies:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.recv(65536)
+                    connection.sendall(reply)
+
+        threading.Thread(target=answer, daemon=True).start()
+        delays: list[float] = []
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+        body = RedataClient(url, timeout=2, max_rps=1e9, sleep=delays.append).fetch(CANARIAS)
+
+    assert body == b"{}"
+    assert len(delays) == 1
