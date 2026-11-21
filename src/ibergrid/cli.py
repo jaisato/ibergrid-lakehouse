@@ -353,14 +353,16 @@ def stream_consume(
     """Write the topic into bronze.redata_demand_stream as WAP micro-batches whose publish
     commits the checkpoint; resume from it. Runs until SIGTERM, then flushes."""
     settings = _load_settings()
+    # Start the watchdog before the first catalog call: PyIceberg 0.12's REST client has no
+    # timeout, so a catalog that accepts TCP and stalls during startup would otherwise hang.
+    watchdog = health.Watchdog(settings.stream.watchdog_timeout)
+    watchdog.start()
     table = _stream_table(settings)
     kafka, admin = _stream_clients(settings, "ibergrid-stream-consumer")
     try:
         dlq = Producer(producer_config(settings.broker, "ibergrid-stream-consumer-dlq"))
     except KafkaException as exc:
         _fail(exc)
-    watchdog = health.Watchdog(settings.stream.watchdog_timeout)
-    watchdog.start()
     try:
         StreamConsumer(
             table,

@@ -146,13 +146,19 @@ def test_consume_writes_the_topic_and_flushes_on_stop(
 
 
 def test_consume_and_status_need_the_table(
-    broker: FakeBroker, catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None
+    broker: FakeBroker,
+    catalog: SqlCatalog,
+    monkeypatch: pytest.MonkeyPatch,
+    credentials: None,
+    no_watchdog_thread: list[float],
 ) -> None:
     monkeypatch.setattr(cli, "rest_catalog", lambda _settings: catalog)
     for command in ("consume", "status"):
         result = runner.invoke(app, ["stream", command])
         assert result.exit_code == 1
         assert "run `ibergrid lake init` first" in result.stderr
+    # The consumer starts its watchdog before the first (untimed) catalog call.
+    assert no_watchdog_thread == [900.0]
 
 
 def test_status_prints_the_checkpoint_and_the_lag(broker: FakeBroker, stream_table: Any) -> None:
