@@ -160,12 +160,19 @@ On start, the consumer:
    batch lane still has those days), and records the jump in its next checkpoint; starts a
    partition without a checkpoint at its earliest message;
 5. reads back the message before each checkpointed offset and refuses to start when its timestamp
-   is not the recorded one (a lost tail that grew back past the checkpoint before this start);
-6. rebuilds the duplicate check from the table: the latest `content_sha256` of every key of the
+   is not the recorded one (a lost tail that grew back past the checkpoint before this start;
+   recovery is `ibergrid stream reset --to earliest|latest --force`, since the offsets still fit
+   the watermarks). If a compacted topic returns a later offset instead of the requested one,
+   that partition is skipped with a warning;
+6. determines the stream epoch: the checkpoint's when one exists, otherwise `max(stream_epoch) + 1`
+   across the table's rows and any other checkpoint properties (0 on an empty table, null rows
+   counting as 0), so a force-dropped checkpoint or a consumer group migration never writes rows
+   below an earlier reset's epoch;
+7. rebuilds the duplicate check from the table: the latest `content_sha256` of every key of the
    last three days (`IBERGRID_STREAM_DEDUP_DAYS`), the latest being the highest
    (`stream_epoch`, `kafka_offset`): within an epoch every version of a key is in the same
    partition, and a reset starts a later epoch;
-7. assigns every partition at those offsets (manual assignment, no group rebalancing: one writer
+8. assigns every partition at those offsets (manual assignment, no group rebalancing: one writer
    owns the table).
 
 While it runs, three checks keep the same guarantees. `auto.offset.reset` is `error` (pinned by
@@ -173,10 +180,13 @@ the configuration's unit test and by an integration test: assigned past the end,
 answers `_AUTO_OFFSET_RESET` and delivers nothing), so an offset that goes out of range (retention
 passing a consumer that fell behind, a topic recreated shorter) starts it again from step 1
 instead of a silent jump; so do an authorization or authentication failure and an unknown topic.
-A topic recreated and refilled past the consumer's position gives no such error: its messages
-read as if they continued the old topic. So before every publish the consumer compares the
-topic's id with the checkpoint's and refuses on a mismatch, nothing published (pinned on the real
-broker: a topic recreated under a running consumer adds no row, and the next start refuses). And
+A topic recreated — or a log truncated and refilled under the same topic id — past the consumer's
+position gives no such error: its messages read as if the old log went on. So before every publish
+the consumer compares the topic's id with the checkpoint's AND verifies the previous checkpoint's
+log fingerprint (watermarks and read-back of the message before each stored offset, skipping
+partitions retention already trimmed, then restoring the consumer's cursor), refusing on a
+mismatch with nothing published (pinned on the real broker for topic recreation and in unit tests
+for same-topic rewrites). And
 every minute it probes the broker the same way: without traffic librdkafka reports neither an
 unreachable broker nor a rejected password to the consumer (review measured no error event in
 12 s), so the probe is what feeds the failure streak then.
@@ -184,7 +194,8 @@ unreachable broker nor a rejected password to the consumer (review measured no e
 Every refusal leaves the consumer running, unhealthy at once (`refused` in its heartbeat), until an
 operator, with the consumer stopped, runs `ibergrid stream reset --to earliest` (write again what
 the topic retains) or `--to latest` (skip it). The reset publishes a checkpoint for the topic as it
-is now, with the epoch plus one, through the same fenced publish, so a consumer left running
+is now, with an epoch strictly above the table's highest epoch and checkpoint, through the same
+fenced publish, so a consumer left running
 conflicts instead of interleaving; it refuses a checkpoint that still fits the topic unless
 `--force`. `ibergrid stream status` says when the checkpoint is not the topic's.
 
@@ -220,7 +231,8 @@ A flush is one WAP run, `stream-<UTC start to the microsecond>Z-<hex>` (unique p
    properties;
 4. the audit reads the branch head back, bounded by the batch's instants so planning prunes the
    other months: one row per message of this run, no more;
-5. the topic's id is compared with the checkpoint's (above); then
+5. the topic's id is compared with the checkpoint's and the previous checkpoint's log fingerprint
+   is verified (above); then
    `wap.publish(..., set_properties={checkpoint property: checkpoint})`: rows and checkpoint land
    in one catalog commit or not at all. A `WapError` (the catalog may have lost its answer) is
    retried twice with the same arguments, which completes the run or resumes from its own
@@ -254,8 +266,8 @@ At about 300 snapshots a day, metadata that every flush loads ten times would ot
 | The topic deleted and recreated (another topic id) while the consumer is stopped | Nothing of the new topic | The consumer refuses to start, unhealthy at once; an operator runs `stream reset --to earliest` or `--to latest` |
 | The topic deleted and recreated under a running consumer | Nothing of the new topic: an out-of-range error restarts it, or, refilled past its position, the topic-id check before the publish refuses | The next start refuses; `stream reset` |
 | The broker lost the tail of a partition (checkpoint past its end) | Nothing of the reused offsets | The consumer refuses to start; `stream reset` |
-| The tail was lost and grew back past the checkpoint before a start (same topic id) | Nothing of the rewritten messages | The read-back of the message before the checkpoint finds another timestamp: refuses; `stream reset` |
-| A reset on the same topic hands out offsets again | Earlier rows at higher offsets | The new epoch orders the new rows after them (duplicate check and Silver) |
+| The tail was lost and grew back past the checkpoint (stopped or running, same topic id) | Nothing of the rewritten messages | The read-back of the message before the checkpoint (at start and before every publish) finds another timestamp: refuses; `stream reset --force` |
+| A reset, force-dropped checkpoint, or group migration on the same topic hands out offsets again | Earlier rows at higher offsets | The next epoch (`max(stream_epoch) + 1`) orders the new rows after them (duplicate check and Silver) |
 | The broker unreachable, or the consumer's password refused, while idle | Nothing new | The minute probe fails: a failure streak, unhealthy after 10 minutes |
 | Checkpoint older than the retention (7 days), or retention passing a running consumer | Earlier events never arrive | Starts at the earliest message left (after an out-of-range error, through a restart), logs `stream.consumer.retention_gap` with the count; the batch lane covers closed days |
 | A message the contract refuses | Not in the table | In the dead-letter topic, with its reason |
