@@ -1,0 +1,1169 @@
+{
+  "environment": {
+    "captured_at_utc": "2026-11-21T19:40:03Z",
+    "python_version": "3.12.11",
+    "duckdb_version": "2.0.1",
+    "polars_version": "2.1.0",
+    "pyiceberg_version": "0.12.0",
+    "os_platform": "Linux 6.18.58.1-microsoft-standard-WSL2 (x86_64)",
+    "cpu_count": 12,
+    "ram_gib": 47.05
+  },
+  "cold_starts_ms": {
+    "duckdb_import_and_query_ms": 96.83,
+    "polars_import_and_query_ms": 124.66
+  },
+  "total_s3_objects": 4844,
+  "total_s3_bytes": 240381948,
+  "table_inventory": [
+    {
+      "table": "bronze.redata_observations",
+      "total_records": 1690379,
+      "data_files": 971,
+      "partitions": 192,
+      "total_data_bytes": 33695619
+    },
+    {
+      "table": "bronze.omie_day_ahead_prices",
+      "total_records": 64131,
+      "data_files": 48,
+      "partitions": 47,
+      "total_data_bytes": 1671106
+    },
+    {
+      "table": "bronze.redata_demand_stream",
+      "total_records": 2671,
+      "data_files": 12,
+      "partitions": 1,
+      "total_data_bytes": 217565
+    },
+    {
+      "table": "silver.demand_national_5min",
+      "total_records": 409248,
+      "data_files": 48,
+      "partitions": 48,
+      "total_data_bytes": 6990998
+    },
+    {
+      "table": "silver.demand_system_hourly",
+      "total_records": 170400,
+      "data_files": 48,
+      "partitions": 48,
+      "total_data_bytes": 1316459
+    },
+    {
+      "table": "silver.mibel_prices_period",
+      "total_records": 64131,
+      "data_files": 47,
+      "partitions": 47,
+      "total_data_bytes": 1538425
+    },
+    {
+      "table": "silver.mibel_prices_hourly",
+      "total_records": 34104,
+      "data_files": 48,
+      "partitions": 48,
+      "total_data_bytes": 1301651
+    },
+    {
+      "table": "silver.generation_daily",
+      "total_records": 68207,
+      "data_files": 47,
+      "partitions": 47,
+      "total_data_bytes": 1342989
+    },
+    {
+      "table": "gold.mibel_hourly_market",
+      "total_records": 34104,
+      "data_files": 48,
+      "partitions": 48,
+      "total_data_bytes": 1673699
+    },
+    {
+      "table": "gold.mibel_daily_summary",
+      "total_records": 1421,
+      "data_files": 1,
+      "partitions": 1,
+      "total_data_bytes": 134477
+    },
+    {
+      "table": "gold.system_demand_daily",
+      "total_records": 7100,
+      "data_files": 1,
+      "partitions": 1,
+      "total_data_bytes": 397768
+    },
+    {
+      "table": "gold.optimal_consumption_windows",
+      "total_records": 576,
+      "data_files": 1,
+      "partitions": 1,
+      "total_data_bytes": 29052
+    },
+    {
+      "table": "quarantine.rejected_records",
+      "total_records": 0,
+      "data_files": 0,
+      "partitions": 0,
+      "total_data_bytes": 0
+    }
+  ],
+  "query_benchmarks": [
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "unpartitioned_parquet",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 17770057,
+      "total_table_bytes": 17770057,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 5.988,
+        "p50_ms": 6.446,
+        "p95_ms": 8.303,
+        "mean_ms": 6.722,
+        "max_ms": 9.213,
+        "peak_rss_mib": 224.68
+      }
+    },
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "unpartitioned_parquet",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 17770057,
+      "total_table_bytes": 17770057,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 11.905,
+        "p50_ms": 13.284,
+        "p95_ms": 14.885,
+        "mean_ms": 13.454,
+        "max_ms": 15.335,
+        "peak_rss_mib": 201.97
+      }
+    },
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "partitioned_iceberg",
+      "engine": "duckdb",
+      "files_planned": 2,
+      "total_table_files": 971,
+      "planned_file_bytes": 439211,
+      "total_table_bytes": 33695619,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 26.667,
+        "p50_ms": 29.112,
+        "p95_ms": 37.16,
+        "mean_ms": 30.493,
+        "max_ms": 40.477,
+        "peak_rss_mib": 229.06
+      }
+    },
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "partitioned_iceberg",
+      "engine": "polars",
+      "files_planned": 2,
+      "total_table_files": 971,
+      "planned_file_bytes": 439211,
+      "total_table_bytes": 33695619,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 21.109,
+        "p50_ms": 22.909,
+        "p95_ms": 33.309,
+        "mean_ms": 25.499,
+        "max_ms": 33.538,
+        "peak_rss_mib": 209.11
+      }
+    },
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "compacted_iceberg",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 192,
+      "planned_file_bytes": 431394,
+      "total_table_bytes": 26464525,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 10.437,
+        "p50_ms": 11.073,
+        "p95_ms": 11.702,
+        "mean_ms": 11.054,
+        "max_ms": 11.894,
+        "peak_rss_mib": 222.91
+      }
+    },
+    {
+      "query_id": "Q1",
+      "title": "Single-month point lookup (2025-10 OMIE v2 cut-over)",
+      "source_table": "bronze.redata_observations",
+      "layout": "compacted_iceberg",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 192,
+      "planned_file_bytes": 431394,
+      "total_table_bytes": 26464525,
+      "row_count": 3,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 17.835,
+        "p50_ms": 18.564,
+        "p95_ms": 19.572,
+        "mean_ms": 18.599,
+        "max_ms": 19.785,
+        "peak_rss_mib": 205.3
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "unpartitioned_parquet",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 918497,
+      "total_table_bytes": 918497,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 3.421,
+        "p50_ms": 3.596,
+        "p95_ms": 3.856,
+        "mean_ms": 3.611,
+        "max_ms": 3.872,
+        "peak_rss_mib": 213.3
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "unpartitioned_parquet",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 918497,
+      "total_table_bytes": 918497,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 7.172,
+        "p50_ms": 7.941,
+        "p95_ms": 9.178,
+        "mean_ms": 7.994,
+        "max_ms": 9.293,
+        "peak_rss_mib": 185.86
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "partitioned_iceberg",
+      "engine": "duckdb",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1673699,
+      "total_table_bytes": 1673699,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 15.531,
+        "p50_ms": 17.138,
+        "p95_ms": 18.595,
+        "mean_ms": 17.167,
+        "max_ms": 18.704,
+        "peak_rss_mib": 244.93
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "partitioned_iceberg",
+      "engine": "polars",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1673699,
+      "total_table_bytes": 1673699,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 19.748,
+        "p50_ms": 27.209,
+        "p95_ms": 50.701,
+        "mean_ms": 32.027,
+        "max_ms": 52.74,
+        "peak_rss_mib": 205.62
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "compacted_iceberg",
+      "engine": "duckdb",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1673699,
+      "total_table_bytes": 1673699,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.787,
+        "p50_ms": 15.207,
+        "p95_ms": 16.366,
+        "mean_ms": 15.311,
+        "max_ms": 16.46,
+        "peak_rss_mib": 248.51
+      }
+    },
+    {
+      "query_id": "Q2",
+      "title": "Full 3.9-year annual MIBEL aggregation",
+      "source_table": "gold.mibel_hourly_market",
+      "layout": "compacted_iceberg",
+      "engine": "polars",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1673699,
+      "total_table_bytes": 1673699,
+      "row_count": 4,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.429,
+        "p50_ms": 14.081,
+        "p95_ms": 16.435,
+        "mean_ms": 14.632,
+        "max_ms": 17.01,
+        "peak_rss_mib": 205.51
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "unpartitioned_parquet",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 4274553,
+      "total_table_bytes": 4274553,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 6.535,
+        "p50_ms": 7.053,
+        "p95_ms": 8.062,
+        "mean_ms": 7.175,
+        "max_ms": 8.243,
+        "peak_rss_mib": 217.55
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "unpartitioned_parquet",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 4274553,
+      "total_table_bytes": 4274553,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 9.564,
+        "p50_ms": 10.931,
+        "p95_ms": 11.548,
+        "mean_ms": 10.873,
+        "max_ms": 11.714,
+        "peak_rss_mib": 193.2
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "partitioned_iceberg",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 48,
+      "planned_file_bytes": 147345,
+      "total_table_bytes": 6990998,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 14.139,
+        "p50_ms": 14.788,
+        "p95_ms": 15.84,
+        "mean_ms": 14.862,
+        "max_ms": 15.925,
+        "peak_rss_mib": 226.64
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "partitioned_iceberg",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 48,
+      "planned_file_bytes": 147345,
+      "total_table_bytes": 6990998,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.667,
+        "p50_ms": 14.88,
+        "p95_ms": 22.188,
+        "mean_ms": 16.025,
+        "max_ms": 26.996,
+        "peak_rss_mib": 202.94
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "compacted_iceberg",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 48,
+      "planned_file_bytes": 147345,
+      "total_table_bytes": 6990998,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 12.443,
+        "p50_ms": 13.469,
+        "p95_ms": 14.105,
+        "mean_ms": 13.367,
+        "max_ms": 14.356,
+        "peak_rss_mib": 225.94
+      }
+    },
+    {
+      "query_id": "Q3",
+      "title": "5-minute national demand rolling 1h peak (2025-10)",
+      "source_table": "silver.demand_national_5min",
+      "layout": "compacted_iceberg",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 48,
+      "planned_file_bytes": 147345,
+      "total_table_bytes": 6990998,
+      "row_count": 32,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.506,
+        "p50_ms": 14.332,
+        "p95_ms": 15.106,
+        "mean_ms": 14.287,
+        "max_ms": 15.189,
+        "peak_rss_mib": 203.02
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "unpartitioned_parquet",
+      "engine": "duckdb",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 916128,
+      "total_table_bytes": 916128,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 8.198,
+        "p50_ms": 8.54,
+        "p95_ms": 9.173,
+        "mean_ms": 8.602,
+        "max_ms": 9.285,
+        "peak_rss_mib": 220.93
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "unpartitioned_parquet",
+      "engine": "polars",
+      "files_planned": 1,
+      "total_table_files": 1,
+      "planned_file_bytes": 916128,
+      "total_table_bytes": 916128,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 11.539,
+        "p50_ms": 12.613,
+        "p95_ms": 14.143,
+        "mean_ms": 12.757,
+        "max_ms": 14.643,
+        "peak_rss_mib": 196.2
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "partitioned_iceberg",
+      "engine": "duckdb",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1316459,
+      "total_table_bytes": 1316459,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 18.194,
+        "p50_ms": 18.985,
+        "p95_ms": 21.042,
+        "mean_ms": 19.442,
+        "max_ms": 21.165,
+        "peak_rss_mib": 252.66
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "partitioned_iceberg",
+      "engine": "polars",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1316459,
+      "total_table_bytes": 1316459,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 17.197,
+        "p50_ms": 19.659,
+        "p95_ms": 38.334,
+        "mean_ms": 22.542,
+        "max_ms": 53.272,
+        "peak_rss_mib": 213.98
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "compacted_iceberg",
+      "engine": "duckdb",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1316459,
+      "total_table_bytes": 1316459,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 18.138,
+        "p50_ms": 21.123,
+        "p95_ms": 26.557,
+        "mean_ms": 21.278,
+        "max_ms": 29.916,
+        "peak_rss_mib": 252.91
+      }
+    },
+    {
+      "query_id": "Q4",
+      "title": "Peninsular vs Canarias isolated daily demand scan",
+      "source_table": "silver.demand_system_hourly",
+      "layout": "compacted_iceberg",
+      "engine": "polars",
+      "files_planned": 48,
+      "total_table_files": 48,
+      "planned_file_bytes": 1316459,
+      "total_table_bytes": 1316459,
+      "row_count": 2840,
+      "answer_verified": true,
+      "timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 18.957,
+        "p50_ms": 22.348,
+        "p95_ms": 33.441,
+        "mean_ms": 23.826,
+        "max_ms": 38.464,
+        "peak_rss_mib": 213.02
+      }
+    }
+  ],
+  "metadata_benchmarks": [
+    {
+      "table": "bronze.redata_observations",
+      "total_records": 1690379,
+      "data_files": 971,
+      "total_data_bytes": 33695619,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 207.329,
+        "p50_ms": 215.399,
+        "p95_ms": 227.248,
+        "mean_ms": 216.481,
+        "max_ms": 231.353,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 95.913,
+        "p50_ms": 122.601,
+        "p95_ms": 144.411,
+        "mean_ms": 118.958,
+        "max_ms": 153.705,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.57,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "bronze.omie_day_ahead_prices",
+      "total_records": 64131,
+      "data_files": 48,
+      "total_data_bytes": 1671106,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 36.822,
+        "p50_ms": 48.366,
+        "p95_ms": 56.525,
+        "mean_ms": 48.177,
+        "max_ms": 59.4,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 15.665,
+        "p50_ms": 17.496,
+        "p95_ms": 18.653,
+        "mean_ms": 17.283,
+        "max_ms": 18.84,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.36,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "bronze.redata_demand_stream",
+      "total_records": 2671,
+      "data_files": 12,
+      "total_data_bytes": 217565,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 33.965,
+        "p50_ms": 35.497,
+        "p95_ms": 37.796,
+        "mean_ms": 35.619,
+        "max_ms": 38.297,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.55,
+        "p50_ms": 14.113,
+        "p95_ms": 16.148,
+        "mean_ms": 14.414,
+        "max_ms": 16.299,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.4,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "silver.demand_national_5min",
+      "total_records": 409248,
+      "data_files": 48,
+      "total_data_bytes": 6990998,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 4,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 29.84,
+        "p50_ms": 33.262,
+        "p95_ms": 36.639,
+        "mean_ms": 33.165,
+        "max_ms": 37.941,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 14.455,
+        "p50_ms": 31.117,
+        "p95_ms": 70.414,
+        "mean_ms": 36.46,
+        "max_ms": 76.946,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.94,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "silver.demand_system_hourly",
+      "total_records": 170400,
+      "data_files": 48,
+      "total_data_bytes": 1316459,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 6,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 29.85,
+        "p50_ms": 31.652,
+        "p95_ms": 34.424,
+        "mean_ms": 32.141,
+        "max_ms": 34.572,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 15.86,
+        "p50_ms": 16.984,
+        "p95_ms": 18.353,
+        "mean_ms": 17.004,
+        "max_ms": 18.49,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.54,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "silver.mibel_prices_period",
+      "total_records": 64131,
+      "data_files": 47,
+      "total_data_bytes": 1538425,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 4,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 29.848,
+        "p50_ms": 32.44,
+        "p95_ms": 34.344,
+        "mean_ms": 32.152,
+        "max_ms": 34.963,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 12.792,
+        "p50_ms": 13.745,
+        "p95_ms": 15.004,
+        "mean_ms": 13.911,
+        "max_ms": 15.034,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.42,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "silver.mibel_prices_hourly",
+      "total_records": 34104,
+      "data_files": 48,
+      "total_data_bytes": 1301651,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 4,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 29.442,
+        "p50_ms": 31.288,
+        "p95_ms": 33.152,
+        "mean_ms": 31.381,
+        "max_ms": 33.802,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 12.758,
+        "p50_ms": 13.786,
+        "p95_ms": 38.489,
+        "mean_ms": 19.494,
+        "max_ms": 47.68,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.44,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "silver.generation_daily",
+      "total_records": 68207,
+      "data_files": 47,
+      "total_data_bytes": 1342989,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 29.384,
+        "p50_ms": 31.86,
+        "p95_ms": 33.808,
+        "mean_ms": 31.669,
+        "max_ms": 34.261,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 13.318,
+        "p50_ms": 14.087,
+        "p95_ms": 16.135,
+        "mean_ms": 14.382,
+        "max_ms": 16.495,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.44,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "gold.mibel_hourly_market",
+      "total_records": 34104,
+      "data_files": 48,
+      "total_data_bytes": 1673699,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 6,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 32.54,
+        "p50_ms": 33.288,
+        "p95_ms": 34.688,
+        "mean_ms": 33.507,
+        "max_ms": 34.933,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 14.796,
+        "p50_ms": 15.966,
+        "p95_ms": 19.166,
+        "mean_ms": 16.509,
+        "max_ms": 19.507,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.48,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "gold.mibel_daily_summary",
+      "total_records": 1421,
+      "data_files": 1,
+      "total_data_bytes": 134477,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 25.153,
+        "p50_ms": 27.025,
+        "p95_ms": 30.072,
+        "mean_ms": 27.506,
+        "max_ms": 30.213,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 9.455,
+        "p50_ms": 10.618,
+        "p95_ms": 10.989,
+        "mean_ms": 10.498,
+        "max_ms": 11.049,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.39,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "gold.system_demand_daily",
+      "total_records": 7100,
+      "data_files": 1,
+      "total_data_bytes": 397768,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 6,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 27.234,
+        "p50_ms": 33.922,
+        "p95_ms": 39.249,
+        "mean_ms": 33.563,
+        "max_ms": 41.754,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 10.272,
+        "p50_ms": 12.154,
+        "p95_ms": 15.007,
+        "mean_ms": 12.441,
+        "max_ms": 16.537,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.36,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    },
+    {
+      "table": "gold.optimal_consumption_windows",
+      "total_records": 576,
+      "data_files": 1,
+      "total_data_bytes": 29052,
+      "metadata_bytes_scanned": 0,
+      "audited_columns": 5,
+      "metadata_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 24.634,
+        "p50_ms": 26.294,
+        "p95_ms": 31.789,
+        "mean_ms": 27.036,
+        "max_ms": 33.714,
+        "peak_rss_mib": 3048.6
+      },
+      "full_scan_timing": {
+        "warmup": 2,
+        "iterations": 10,
+        "min_ms": 9.024,
+        "p50_ms": 9.462,
+        "p95_ms": 10.333,
+        "mean_ms": 9.516,
+        "max_ms": 10.628,
+        "peak_rss_mib": 3048.6
+      },
+      "speedup_p50": 0.36,
+      "bytes_saved_pct": 100.0,
+      "counts_match": true
+    }
+  ],
+  "chaos_proofs": [
+    {
+      "suite": "Stream Chaos (make chaos-stream, ADR 0006)",
+      "scenario": "SIGKILL consumer mid-flush across 3 crash windows (pre-publish, post-publish, checkpoint)",
+      "target": "bronze.redata_demand_stream",
+      "blocked_or_recovered": "22 / 22 assertions passed (0 duplicates, 0 lost rows)",
+      "evidence": "Throwaway compose stack; exactly-once proved via atomic WAP checkpoint properties in 66 s."
+    },
+    {
+      "suite": "Data Chaos #1 (make chaos-data, ADR 0008)",
+      "scenario": "Duplicate (delivery_date, period) primary key injection",
+      "target": "bronze.omie_day_ahead_prices",
+      "blocked_or_recovered": "100 % blocked before wap.publish",
+      "evidence": "Soda no_duplicate_values + DST continuity gate; audit branch discarded, main untouched."
+    },
+    {
+      "suite": "Data Chaos #2 (make chaos-data, ADR 0008)",
+      "scenario": "OMIE Spain/Portugal price column swap on decoupled blackout day (2025-04-28)",
+      "target": "silver.mibel_prices_hourly",
+      "blocked_or_recovered": "100 % blocked before wap.publish",
+      "evidence": "Cross-source OMIE ES vs REData spot gate (<= 0.02 EUR/MWh); decoupled check catches swap."
+    },
+    {
+      "suite": "Data Chaos #3 (make chaos-data, ADR 0008)",
+      "scenario": "Canarias misclassified as peninsular with ts_utc_verified = TRUE",
+      "target": "silver.demand_system_hourly",
+      "blocked_or_recovered": "100 % blocked before wap.publish",
+      "evidence": "Peninsular/non-peninsular isolation + Canarias clock-flag gates; 0 leakage to main."
+    },
+    {
+      "suite": "Data Chaos #4 (make chaos-data, ADR 0008)",
+      "scenario": "Missing DST spring-forward hour (22h on 23h day 2025-03-30)",
+      "target": "gold.mibel_hourly_market",
+      "blocked_or_recovered": "100 % blocked before wap.publish",
+      "evidence": "DST 23/24/25h continuity gate; offending date sampled into quarantine.rejected_records."
+    },
+    {
+      "suite": "Data Chaos #5 (make chaos-data, ADR 0008)",
+      "scenario": "Out-of-range MIBEL price (9999.0 EUR/MWh > 4000 EUR/MWh cap)",
+      "target": "bronze.omie_day_ahead_prices",
+      "blocked_or_recovered": "100 % blocked before wap.publish (0 data bytes scanned)",
+      "evidence": "Zero-scan metadata bounds gate + Soda range check; 47 forensic rows persisted across 5 runs."
+    }
+  ],
+  "r2_tiers": [
+    {
+      "label": "Actual 3.9-year IberGrid dataset (1x)",
+      "storage_gb": 0.2239,
+      "monthly_class_a_ops": 182850,
+      "monthly_class_b_ops": 740700,
+      "monthly_egress_gb": 50.0,
+      "storage_usd": 0.0,
+      "class_a_usd": 0.0,
+      "class_b_usd": 0.0,
+      "egress_usd": 0.0,
+      "total_usd": 0.0,
+      "total_eur": 0.0
+    },
+    {
+      "label": "10-year + high-frequency expansion (~10 GB)",
+      "storage_gb": 10.0,
+      "monthly_class_a_ops": 365700,
+      "monthly_class_b_ops": 2222100,
+      "monthly_egress_gb": 250.0,
+      "storage_usd": 0.0,
+      "class_a_usd": 0.0,
+      "class_b_usd": 0.0,
+      "egress_usd": 0.0,
+      "total_usd": 0.0,
+      "total_eur": 0.0
+    },
+    {
+      "label": "Pan-European ENTSO-E scale (~100 GB)",
+      "storage_gb": 100.0,
+      "monthly_class_a_ops": 914250,
+      "monthly_class_b_ops": 7407000,
+      "monthly_egress_gb": 1000.0,
+      "storage_usd": 1.35,
+      "class_a_usd": 0.0,
+      "class_b_usd": 0.0,
+      "egress_usd": 0.0,
+      "total_usd": 1.35,
+      "total_eur": 1.24
+    },
+    {
+      "label": "Sub-terabyte ceiling (1 TB)",
+      "storage_gb": 1024.0,
+      "monthly_class_a_ops": 1828500,
+      "monthly_class_b_ops": 14814000,
+      "monthly_egress_gb": 2000.0,
+      "storage_usd": 15.21,
+      "class_a_usd": 3.7283,
+      "class_b_usd": 1.733,
+      "egress_usd": 0.0,
+      "total_usd": 20.67,
+      "total_eur": 19.02
+    }
+  ],
+  "infra_scenarios": [
+    {
+      "name": "IberGrid minimal EU (batch + serving)",
+      "compute_tier": "Hetzner Cloud CAX11 (2 Arm64 vCPU, 4 GB RAM, 40 GB NVMe, Falkenstein)",
+      "storage_tier": "Cloudflare R2 Standard (EU jurisdiction, 0 egress)",
+      "compute_eur_month": 3.79,
+      "storage_eur_month": 0.0,
+      "egress_eur_month": 0.0,
+      "total_eur_month": 3.79,
+      "notes": "Ex-VAT list price (~4.59 EUR incl. 21 % ES VAT); 20 TB traffic included."
+    },
+    {
+      "name": "IberGrid full stack EU (batch + Redpanda + Dagster + API)",
+      "compute_tier": "Hetzner Cloud CAX21 (4 Arm64 vCPU, 8 GB RAM, 80 GB NVMe, Falkenstein)",
+      "storage_tier": "Cloudflare R2 Standard (EU jurisdiction, 0 egress)",
+      "compute_eur_month": 6.49,
+      "storage_eur_month": 0.0,
+      "egress_eur_month": 0.0,
+      "total_eur_month": 6.49,
+      "notes": "Ex-VAT list price (~7.85 EUR incl. 21 % ES VAT); comfortably fits Lakekeeper, Postgres, Redpanda, Dagster, dbt, Soda and FastAPI."
+    },
+    {
+      "name": "Managed Spark baseline (reference, EU region)",
+      "compute_tier": "Managed Spark cluster / Databricks Jobs + Managed Kafka + RDS Postgres catalog",
+      "storage_tier": "AWS S3 Standard + NAT/egress",
+      "compute_eur_month": 340.0,
+      "storage_eur_month": 2.5,
+      "egress_eur_month": 18.0,
+      "total_eur_month": 360.5,
+      "notes": "Conservative lower bound for always-on/scheduled EU managed Spark + broker + catalog; 30-90 s JVM cold starts and ~55x higher fixed cost for <1 TB data."
+    }
+  ]
+}

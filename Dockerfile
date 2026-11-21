@@ -1,11 +1,11 @@
-# Two images from one file, both on the same locked environment:
-#   app (the default, last stage): the `ibergrid` CLI (catalog-init, doctor, ingest in compose);
-#   orchestration (--target orchestration): the same plus Dagster's `orchestration` dependency
-#   group and its instance configuration, for the dagster-code, -webserver and -daemon services.
+# Three images from one file, all on the same locked environment:
+#   app (the default, last stage): the `ibergrid` CLI (catalog-init, doctor, ingest, stream);
+#   orchestration (--target orchestration): the same plus Dagster, dbt Core and Soda Core;
+#   api (--target api): the same plus FastAPI + Uvicorn and baked static portal assets (ADR 0010).
 # `uv` pins the uv binary by digest; `deps` installs the locked runtime dependencies into a
 # virtual environment and downloads DuckDB's extensions; each builder adds the project (and, for
-# orchestration, Dagster); the final stages copy only the environment and the extensions: no uv,
-# no compilers, no cache, and no extension download at runtime.
+# orchestration/api, its optional group); the final stages copy only the environment and the
+# extensions: no uv, no compilers, no cache, and no extension download at runtime.
 
 FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
@@ -41,6 +41,14 @@ RUN uv sync --locked --no-dev --group orchestration --no-install-project --no-ed
 COPY README.md LICENSE ./
 COPY src ./src
 RUN uv sync --locked --no-dev --group orchestration --no-editable
+
+
+# The same with FastAPI + Uvicorn (serving layer, ADR 0010), in its own layer.
+FROM deps AS builder-api
+RUN uv sync --locked --no-dev --group api --no-install-project --no-editable
+COPY README.md LICENSE ./
+COPY src ./src
+RUN uv sync --locked --no-dev --group api --no-editable
 
 
 FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
@@ -89,6 +97,26 @@ USER 10001
 
 WORKDIR /opt/dagster/home
 CMD ["dagster", "--version"]
+
+
+FROM runtime AS api
+
+LABEL org.opencontainers.image.title="ibergrid-lakehouse-api" \
+      org.opencontainers.image.description="IberGrid Lakehouse serving layer: FastAPI + DuckDB REST API and interactive analytical portal"
+
+COPY --from=builder-api /app/.venv /app/.venv
+COPY portal /opt/ibergrid/portal
+COPY benchmarks/results/latest.json /opt/ibergrid/benchmarks/results/latest.json
+
+ENV IBERGRID_API_PORTAL_DIR=/opt/ibergrid/portal \
+    IBERGRID_API_BENCHMARKS_PATH=/opt/ibergrid/benchmarks/results/latest.json
+
+EXPOSE 8000
+
+USER 10001
+
+ENTRYPOINT ["ibergrid"]
+CMD ["api", "serve"]
 
 
 FROM runtime AS app

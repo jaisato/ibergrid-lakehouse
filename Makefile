@@ -24,11 +24,13 @@ COMPOSE_DUMMY_ENV := IBERGRID_S3_ACCESS_KEY=x IBERGRID_S3_SECRET_KEY=x \
 PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 	IBERGRID_S3_ENDPOINT_URL=https://account-id.r2.cloudflarestorage.com \
 	IBERGRID_APP_DIGEST=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
-	IBERGRID_ORCHESTRATION_DIGEST=sha256:2222222222222222222222222222222222222222222222222222222222222222
+	IBERGRID_ORCHESTRATION_DIGEST=sha256:2222222222222222222222222222222222222222222222222222222222222222 \
+	IBERGRID_API_DIGEST=sha256:3333333333333333333333333333333333333333333333333333333333333333
 
 .PHONY: help sync lock lint format typecheck test test-integration test-live contracts audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke \
-	transform quality-check maintain stream-up stream-down stream-status chaos-stream chaos-data benchmark
+	transform quality-check maintain stream-up stream-down stream-status chaos-stream chaos-data benchmark \
+	portal-export
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -78,6 +80,7 @@ ci: lint typecheck test compose-config hadolint shellcheck actionlint gitleaks #
 compose-config: ## Validate the local and the production compose files (dummy values)
 	$(COMPOSE_DUMMY_ENV) $(COMPOSE) --profile '*' config -q
 	$(PROD_DUMMY_ENV) $(COMPOSE) -f compose.yaml -f compose.prod.yaml config -q
+	$(PROD_DUMMY_ENV) $(COMPOSE) -f compose.yaml -f compose.prod.yaml --profile edge config -q
 
 hadolint: ## Lint the Dockerfile (pinned hadolint image)
 	docker run --rm -i $(HADOLINT_IMAGE) < Dockerfile
@@ -99,10 +102,10 @@ gitleaks: ## Scan the whole history of the current branch for secrets (pinned gi
 env: ## Create .env with random local secrets (never overwrites an existing one)
 	./scripts/gen-env.sh
 
-build: ## Build the app and orchestration images (ibergrid-app:local, ibergrid-orchestration:local)
-	$(COMPOSE) build catalog-init dagster-code
+build: ## Build the app, orchestration and api images
+	$(COMPOSE) build catalog-init dagster-code api
 
-up: ## Build the images and start the stack; waits until every service is ready (Dagster UI: http://127.0.0.1:28300)
+up: ## Build the images and start the stack; waits until every service is ready (Dagster :28300, API/Portal :28000)
 	$(STACK) up -d --wait --build
 
 down: ## Stop the stack, keeping its volumes
@@ -150,3 +153,6 @@ chaos-data: build ## Inject corrupt data into WAP audit branches in a throwaway 
 
 benchmark: ## Run DuckDB vs Polars storage/engine & zero-scan metadata benchmarks against the running stack
 	$(UV) run python -u benchmarks/run.py
+
+portal-export: ## Export precalculated Gold/Silver portal JSON & CSV bundles into portal/data/
+	$(UV) run python -u scripts/export_portal.py

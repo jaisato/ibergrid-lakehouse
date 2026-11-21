@@ -1,22 +1,18 @@
 # Architecture
 
-The stack runs the storage, catalog and broker layers and the CLI that wires them together; the
-lake library (`ibergrid.lake`) writes and reads Iceberg tables on them, the phase-1 connectors
-(`ibergrid.sources.redata` and `ibergrid.sources.omie`) ingest REData and OMIE into Bronze
-through it, and Dagster (`ibergrid.orchestration`) runs the connectors as partitioned assets on
-schedules and backfills; the streaming lane (`ibergrid.stream`) carries REData's five-minute
-demand through Redpanda into Bronze, exactly once; and the dbt medallion (`ibergrid.transform` +
-`dbt/`) builds and tests Silver and Gold tables in a staging DuckDB over snapshot-pinned Bronze
-views and publishes them back to Iceberg through Write-Audit-Publish. The decisions behind the
-stack are in [ADR 0001](adr/0001-stack-and-scope.md); who writes and who reads Iceberg, and how
-Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.md); how REData is
-ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
-[ADR 0004](adr/0004-omie-ingestion.md); how both are orchestrated, in
-[ADR 0005](adr/0005-dagster-orchestration.md); the streaming lane and the broker's security, in
-[ADR 0006](adr/0006-streaming-lane.md); the dbt Silver/Gold medallion, in
-[ADR 0007](adr/0007-dbt-medallion.md); and declarative Soda v4 quality gates, zero-scan metadata
-audits, S3 orphan-file maintenance and OpenLineage v2 observability, in
-[ADR 0008](adr/0008-quality-maintenance-lineage.md).
+IberGrid Lakehouse is an end-to-end, single-server Apache Iceberg lakehouse for Iberian
+electricity data (Red Eléctrica REData API and OMIE MIBEL day-ahead market files). Every layer is
+covered by an Architecture Decision Record:
+
+- Stack & scope: [ADR 0001](adr/0001-stack-and-scope.md)
+- Iceberg write/read paths & Write-Audit-Publish (WAP): [ADR 0002](adr/0002-iceberg-write-and-read-paths.md)
+- Batch connectors (REData & OMIE): [ADR 0003](adr/0003-redata-ingestion.md), [ADR 0004](adr/0004-omie-ingestion.md)
+- Asset-oriented orchestration (Dagster): [ADR 0005](adr/0005-dagster-orchestration.md)
+- Exactly-once streaming lane (Redpanda SASL/SCRAM + Iceberg WAP): [ADR 0006](adr/0006-streaming-lane.md)
+- Medallion Silver & Gold transforms (dbt Core + DuckDB + PyIceberg WAP): [ADR 0007](adr/0007-dbt-medallion.md)
+- Quality gates (zero-scan metadata + Soda v4), quarantine, maintenance & OpenLineage v2: [ADR 0008](adr/0008-quality-maintenance-lineage.md)
+- Multi-engine benchmarks (DuckDB 2.0 vs Polars 2.1 vs Spark) & EU cost model: [ADR 0009](adr/0009-duckdb-polars-vs-spark.md)
+- Serving layer (FastAPI + DuckDB), static analytical portal & Caddy edge security boundary: [ADR 0010](adr/0010-serving-and-production.md)
 
 ## System context (C4 level 1)
 
@@ -24,83 +20,92 @@ audits, S3 orphan-file maintenance and OpenLineage v2 observability, in
 C4Context
   title IberGrid Lakehouse - system context (C4 level 1)
 
-  Person(analyst, "Data engineer / analyst", "Queries Iceberg tables with DuckDB, Polars or PyIceberg")
+  Person(viewer, "Public user / analyst", "Explores Iberian electricity insights via HTTPS portal or REST API")
+  Person(engineer, "Data engineer", "Operates Dagster, queries Iceberg directly with DuckDB/Polars and runs chaos/benchmark proofs")
 
-  System(lakehouse, "IberGrid Lakehouse", "Ingests, stores and serves Iberian electricity data as Apache Iceberg tables")
+  System(lakehouse, "IberGrid Lakehouse", "Ingests, validates, transforms and serves Iberian electricity data as Apache Iceberg tables")
 
   System_Ext(ree, "Red Electrica REData API", "Demand, generation mix, prices and balances (JSON over HTTPS)")
-  System_Ext(omie, "OMIE", "Day-ahead market result files")
-  System_Ext(r2, "Cloudflare R2", "S3-compatible object storage in production")
-  System_Ext(github, "GitHub", "CI, image registry (GHCR) and deploys")
+  System_Ext(omie, "OMIE", "Daily MIBEL marginalpdbc day-ahead price files")
+  System_Ext(r2, "Cloudflare R2", "S3-compatible object storage (and optional static portal host) in production")
+  System_Ext(github, "GitHub", "CI, GHCR container registry (3 immutable images) and SSH deploys")
 
-  Rel(analyst, lakehouse, "Reads tables through the Iceberg REST catalog")
-  Rel(lakehouse, ree, "Pulls data from", "HTTPS")
-  Rel(lakehouse, omie, "Downloads files from", "HTTPS")
-  Rel(lakehouse, r2, "Stores table data in", "S3 API")
-  Rel(github, lakehouse, "Builds, publishes and deploys", "SSH")
+  Rel(viewer, lakehouse, "Browses analytical portal & queries /v1/* REST endpoints", "HTTPS (Caddy TLS)")
+  Rel(engineer, lakehouse, "Triggers backfills, audits quality gates and queries Iceberg", "SSH tunnel / loopback")
+  Rel(lakehouse, ree, "Polls batch & 5-min real-time demand from", "HTTPS <= 1 req/s")
+  Rel(lakehouse, omie, "Downloads marginalpdbc files from", "HTTPS <= 1 req/s")
+  Rel(lakehouse, r2, "Stores Iceberg tables, raw landing and static portal bundles in", "S3 API")
+  Rel(github, lakehouse, "Builds, smoke-tests, pins digests and deploys", "SSH")
 ```
 
 ## Containers (C4 level 2)
 
 ```mermaid
 C4Container
-  title IberGrid Lakehouse - containers (C4 level 2, phase 3)
+  title IberGrid Lakehouse - containers (C4 level 2)
 
-  Person(analyst, "Data engineer / analyst")
+  Person(viewer, "Public user / API client")
+  Person(engineer, "Data engineer")
 
   System_Boundary(stack, "Docker Compose project ibergrid") {
-    Container(webserver, "dagster-webserver", "Dagster 1.13, orchestration image", "UI and GraphQL API: partitions, runs, backfills, medallion lineage")
+    Container(proxy, "proxy (prod edge profile)", "Caddy 2.10.2 Alpine", "Automatic Let's Encrypt TLS (80/443), CSP/HSTS, blocks internal routes; public-edge network only")
+    Container(api, "api", "FastAPI + Uvicorn + DuckDB 2.0, api image", "Read-only /v1/* REST API (rate-limited, CORS, TTL cache) + mounted interactive /portal")
+    Container(webserver, "dagster-webserver", "Dagster 1.13, orchestration image", "UI and GraphQL API: partitions, runs, backfills, medallion & maintenance lineage")
     Container(daemon, "dagster-daemon", "Dagster 1.13, orchestration image", "Schedules, backfills, run queue with pools of 1, run monitoring")
-    Container(code, "dagster-code", "Dagster 1.13, dbt Core, orchestration image", "Code server with ibergrid.orchestration; runs Bronze ingestion and Silver/Gold dbt+WAP transforms")
-    ContainerDb(orchdb, "orchestration-db", "Postgres 17", "Runs, event logs (materializations and metadata), schedules")
-    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
-    Container(transform, "transform", "dbt Core 1.12, dbt-duckdb 1.11, orchestration image", "On-demand `ibergrid transform run`: builds and tests Silver/Gold in staging DuckDB and WAP-publishes to Iceberg")
-    Container(quality, "quality", "Soda Core 4.29, DuckDB, orchestration image", "On-demand `ibergrid quality check` and `lake maintain`: zero-scan metadata checks, Soda v4 contracts, quarantine and orphan cleanup")
-    Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
-    ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
-    Container(producer, "stream-producer", "Python 3.12, confluent-kafka, app image", "Polls the REData real-time demand every 5 min; emits changed points")
-    Container(consumer, "stream-consumer", "Python 3.12, confluent-kafka, PyIceberg, app image", "Validates, deduplicates, dead-letters; WAP micro-batches with the offsets in the publish")
-    Container(broker, "broker", "Redpanda 26.2", "Kafka API with SASL/SCRAM and ACLs: redata.demand.realtime.v1 and its DLQ")
-    Container(brokerinit, "broker-init", "Redpanda 26.2 (rpk), one-shot", "Authentication, topics, users and ACLs")
-    ContainerDb(storage, "storage", "RustFS 1.0.6", "S3-compatible bucket, local profile only")
+    Container(code, "dagster-code", "Dagster 1.13, dbt Core, Soda Core, orchestration image", "Code server running Bronze ingestion, dbt+WAP medallion, Soda gates & daily maintenance")
+    ContainerDb(orchdb, "orchestration-db", "Postgres 17", "Runs, event logs, schedules (internal network)")
+    Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init, doctor, ingest (REData/OMIE), portal export")
+    Container(transform, "transform", "dbt Core 1.12, dbt-duckdb 1.11, orchestration image", "On-demand `ibergrid transform run`: staging DuckDB build/test -> PyIceberg WAP")
+    Container(quality, "quality", "Soda Core 4.29, DuckDB, orchestration image", "On-demand `ibergrid quality check` and `lake maintain`: metadata gates, Soda v4, quarantine, orphan cleanup")
+    Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API (internal only in prod)")
+    ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials (internal network)")
+    Container(producer, "stream-producer", "Python 3.12, confluent-kafka, app image", "Polls REData real-time demand every 5 min; emits changed points")
+    Container(consumer, "stream-consumer", "Python 3.12, confluent-kafka, PyIceberg, app image", "Validates, deduplicates, dead-letters; WAP micro-batches with offsets in publish")
+    Container(broker, "broker", "Redpanda 26.2", "Kafka API with SASL/SCRAM and ACLs: redata.demand.realtime.v1 + DLQ")
+    Container(brokerinit, "broker-init", "Redpanda 26.2 (rpk), one-shot", "Authentication, topics, least-privilege users and ACLs")
+    ContainerDb(storage, "storage", "RustFS 1.0.6", "S3-compatible bucket, local-storage profile only")
   }
 
-  System_Ext(r2, "Cloudflare R2", "Object storage in production")
+  System_Ext(r2, "Cloudflare R2", "Object storage & optional static portal host in production")
   System_Ext(ree, "Red Electrica REData API", "Public JSON:API, no token")
   System_Ext(omie, "OMIE", "Daily marginalpdbc files, public downloads, no token")
 
-  Rel(analyst, catalog, "Iceberg REST", "HTTP")
-  Rel(analyst, webserver, "Materializes partitions, launches backfills", "HTTP, 127.0.0.1:28300 locally")
+  Rel(viewer, proxy, "HTTPS portal & /v1/* API", "HTTPS 443")
+  Rel(proxy, api, "Reverse proxy (public-edge only)", "HTTP 8000")
+  Rel(api, catalog, "Read-only Iceberg REST metadata & snapshots", "HTTP")
+  Rel(api, storage, "Read-only Parquet scans via DuckDB", "S3 API")
+  Rel(engineer, webserver, "Materializes partitions, inspects runs", "SSH tunnel / 127.0.0.1:28300")
+  Rel(engineer, catalog, "Direct DuckDB/Polars analytical queries", "127.0.0.1:28181 locally")
   Rel(webserver, code, "Loads definitions, launches runs", "gRPC")
   Rel(daemon, code, "Evaluates schedules, launches queued runs", "gRPC")
   Rel(webserver, orchdb, "Reads and writes", "SQL")
   Rel(daemon, orchdb, "Reads and writes", "SQL")
   Rel(code, orchdb, "Runs write their events", "SQL")
-  Rel(code, ree, "REData assets: one run at a time, at most 1 request/s", "HTTPS")
-  Rel(code, omie, "OMIE asset: one run at a time, at most 1 request/s", "HTTPS")
+  Rel(code, ree, "REData assets (pool=1, <= 1 req/s)", "HTTPS")
+  Rel(code, omie, "OMIE asset (pool=1, <= 1 req/s)", "HTTPS")
   Rel(code, catalog, "Iceberg REST (WAP)", "HTTP")
-  Rel(code, storage, "Table data and landed raw answers and files", "S3 API")
-  Rel(app, ree, "ingest redata: at most 1 request/s", "HTTPS")
-  Rel(app, omie, "ingest omie: one file per delivery day, at most 1 request/s", "HTTPS")
+  Rel(code, storage, "Table data and raw landing", "S3 API")
+  Rel(app, ree, "ingest redata", "HTTPS")
+  Rel(app, omie, "ingest omie", "HTTPS")
   Rel(app, catalog, "Bootstrap, warehouse, Iceberg REST, /health", "HTTP")
-  Rel(app, storage, "Table data and landed raw answers and files, with its own keys; HeadBucket", "S3 API")
+  Rel(app, storage, "Table data, raw landing, portal export", "S3 API")
   Rel(app, broker, "TCP readiness", "Kafka port")
   Rel(transform, catalog, "Reads Bronze snapshots; publishes Silver/Gold via WAP", "HTTP")
   Rel(transform, storage, "Reads Bronze Parquet; writes Silver/Gold Parquet", "S3 API")
   Rel(quality, catalog, "Audits snapshots/branches; writes quarantine; expires snapshots", "HTTP")
   Rel(quality, storage, "Zero-scan manifest reads; Soda checks; orphan cleanup", "S3 API")
-  Rel(producer, ree, "demanda-tiempo-real, every 5 min, at most 1 request/s", "HTTPS")
+  Rel(producer, ree, "demanda-tiempo-real every 5 min", "HTTPS")
   Rel(producer, broker, "Produces events as ibergrid-producer", "Kafka, SASL/SCRAM")
   Rel(consumer, broker, "Consumes; dead letters; group offsets for lag", "Kafka, SASL/SCRAM")
   Rel(consumer, catalog, "Iceberg REST (WAP, offsets as table properties)", "HTTP")
   Rel(consumer, storage, "Table data", "S3 API")
-  Rel(brokerinit, broker, "Admin API and Kafka as the superuser", "HTTP, Kafka")
+  Rel(brokerinit, broker, "Admin API and Kafka as superuser", "HTTP, Kafka")
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
-  Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
+  Rel(catalog, storage, "Validates and manages warehouse", "S3 API")
   Rel(catalog, r2, "Same role in production", "S3 API")
 ```
 
-## OpenLineage data flow
+## OpenLineage & serving data flow
 
 ```mermaid
 flowchart LR
@@ -133,7 +138,13 @@ flowchart LR
   subgraph Quality["Quality & Lineage (ADR 0008)"]
     QG["Zero-scan Metadata + Soda v4 WAP Gates"]
     QR["quarantine.rejected_records"]
-    OL["OpenLineage v2 RunEvents (structlog / JSONL / HTTP)"]
+    OL["OpenLineage v2 RunEvents"]
+  end
+
+  subgraph Serving["Serving & Edge (ADR 0010)"]
+    API["FastAPI + DuckDB (/v1/*)"]
+    PORTAL["Interactive Portal (/portal or Cloudflare R2/Pages)"]
+    CADDY["Caddy TLS Reverse Proxy (public-edge)"]
   end
 
   REE --> B_RE
@@ -164,135 +175,97 @@ flowchart LR
   QG -->|blocked before publish| QR
   Silver -.-> OL
   Gold -.-> OL
+
+  G_HM --> API
+  G_DS --> API
+  G_SD --> API
+  G_OW --> API
+  S_D5 --> API
+  API --> PORTAL
+  API --> CADDY
 ```
 
 ## Service inventory
 
-| Container | Image (pinned by digest in `compose.yaml`) | Purpose | Networks | Local ports (127.0.0.1) |
+| Container | Image (pinned by digest in `compose.yaml` / `compose.prod.yaml`) | Purpose | Networks | Local ports (127.0.0.1) |
 |---|---|---|---|---|
 | `storage` | `rustfs/rustfs:1.0.6` | S3 object storage; `local-storage` profile only | storage | 29000 (S3), 29001 (console at `/rustfs/console/`) |
-| `storage-init` | `amazon/aws-cli:2.41.2` | One-shot: create the bucket (an existing one is fine) | storage | |
+| `storage-init` | `amazon/aws-cli:2.41.2` | One-shot: create bucket idempotently | storage | |
 | `catalog-db` | `postgres:17-alpine` | Lakekeeper state; encrypted storage credentials | catalog-db (internal) | |
 | `catalog-migrate` | `quay.io/lakekeeper/catalog:v0.15.1` | One-shot: `lakekeeper migrate` | catalog-db | |
-| `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | `lakekeeper serve`: Iceberg REST catalog and management API | catalog-db, catalog, storage | 28181 |
+| `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | `lakekeeper serve`: Iceberg REST catalog & management API | catalog-db, catalog, storage | 28181 |
 | `catalog-init` | `ibergrid-app` (this repository) | One-shot: `ibergrid catalog bootstrap` | catalog | |
-| `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node; dev-container mode locally, production mode in `compose.prod.yaml`; SASL/SCRAM and ACLs | broker | 29092 (Kafka, SASL/SCRAM) |
-| `broker-init` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | One-shot: SCRAM users, authentication, cluster policy, topics and ACLs (idempotent) | broker | |
-| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
-| `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
-| `transform` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid transform run` (`make transform`), 1.25 GiB limit | storage, catalog | |
-| `quality` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid quality check` (`make quality-check`) and `lake maintain` (`make maintain`), 1 GiB limit | storage, catalog | |
+| `broker` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | Kafka API, single node; SASL/SCRAM and ACLs | broker | 29092 (Kafka, SASL/SCRAM) |
+| `broker-init` | `docker.redpanda.com/redpandadata/redpanda:v26.2.2` | One-shot: SCRAM users, authentication, topics & ACLs | broker | |
+| `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor` & `lake` commands | storage, catalog, broker | |
+| `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...` (384 MiB limit) | storage, catalog | |
+| `transform` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid transform run` (1.25 GiB limit) | storage, catalog | |
+| `quality` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid quality check` & `lake maintain` (1 GiB) | storage, catalog | |
 | `stream-producer` | `ibergrid-app` (this repository) | `ibergrid stream produce` (`stream` profile locally); no lake keys; 256 MiB | broker | |
 | `stream-consumer` | `ibergrid-app` (this repository) | `ibergrid stream consume` (`stream` profile locally); 384 MiB | broker, catalog, storage | |
-| `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs and schedules | orchestration-db (internal) | |
+| `orchestration-db` | `postgres:17-alpine` | Dagster runs, event logs and schedules | orchestration-db (internal) | |
 | `orchestration-migrate` | `ibergrid-orchestration` (this repository) | One-shot: `dagster instance migrate` | orchestration-db | |
-| `dagster-code` | `ibergrid-orchestration` (this repository) | `dagster code-server start`: the definitions; runs execute here (1.5 GiB limit) | orchestration, orchestration-db, storage, catalog | |
-| `dagster-webserver` | `ibergrid-orchestration` (this repository) | `dagster-webserver`: UI and GraphQL | orchestration, orchestration-db, orchestration-ui (local only) | 28300 |
-| `dagster-daemon` | `ibergrid-orchestration` (this repository) | `dagster-daemon run`: schedules, backfills, run queue, run monitoring | orchestration, orchestration-db | |
+| `dagster-code` | `ibergrid-orchestration` (this repository) | `dagster code-server start`: definitions & run subprocesses (1.5 GiB) | orchestration, orchestration-db, storage, catalog | |
+| `dagster-webserver` | `ibergrid-orchestration` (this repository) | `dagster-webserver`: UI and GraphQL | orchestration, orchestration-db, orchestration-ui (local) | 28300 |
+| `dagster-daemon` | `ibergrid-orchestration` (this repository) | `dagster-daemon run`: schedules, backfills, pools, run monitoring | orchestration, orchestration-db | |
+| `api` | `ibergrid-api` (this repository) | FastAPI + Uvicorn + DuckDB `/v1/*` REST API & mounted `/portal` (512 MiB) | storage, catalog, public-edge | 28000 |
+| `proxy` | `caddy:2.10.2-alpine` (`compose.prod.yaml`, `edge` profile) | Automatic TLS (80/443), HSTS/CSP, blocks internal paths, proxies `api:8000` (128 MiB) | public-edge only | (prod 80/443 when `edge` profile enabled) |
 
-Start-up order comes from `depends_on`: `storage` healthy, then `storage-init`; `catalog-db`
-healthy, then `catalog-migrate`, then `catalog` healthy; then `catalog-init`; `orchestration-db`
-healthy, then `orchestration-migrate`; both one-shots done, then `dagster-code` healthy; then
-`dagster-webserver` and `dagster-daemon`; `broker` healthy, then `broker-init`, which `doctor`
-and the stream services wait for (the consumer also for `catalog-init`). `docker compose up
---wait` returns once every long-running service is healthy and every one-shot has exited 0.
+Start-up order comes from `depends_on`: `storage` healthy -> `storage-init`; `catalog-db`
+healthy -> `catalog-migrate` -> `catalog` healthy -> `catalog-init` -> `api` healthy (and
+`proxy` when the production `edge` profile is enabled); `orchestration-db` healthy ->
+`orchestration-migrate`; both init one-shots done -> `dagster-code` healthy -> `dagster-webserver`
+and `dagster-daemon`; `broker` healthy -> `broker-init` -> `doctor` and stream services.
+`docker compose up --wait` returns once every long-running service is healthy and every one-shot
+has exited 0.
 
 ## Design notes
 
-- **Least connectivity.** Each network groups the services that must talk to each other.
-  Postgres sits on an `internal` network with no egress; only Lakekeeper reaches it. The catalog
-  joins `storage` because it validates the warehouse location and manages files there. Dagster's
-  Postgres and gRPC networks are internal too; only `dagster-code`, where runs execute, joins
-  `storage` and `catalog` (and so has egress to the sources) and holds the lake's keys. Locally the
-  webserver also joins `orchestration-ui`, because Docker publishes no port through an internal
-  network. The stream producer joins only `broker` (which has egress, for REData) and holds no
-  lake keys; the consumer joins `broker`, `catalog` and `storage`.
+- **Least connectivity & public-edge boundary ([ADR 0010](adr/0010-serving-and-production.md)).**
+  Each Docker network groups only the services that must talk. Postgres sits on `internal`
+  networks with zero egress. In production, internal services (`catalog`, `broker`, `dagster-*`,
+  databases) publish **zero host ports**. The optional Caddy `proxy` (`profiles: [edge]`) joins
+  **only** `public-edge` alongside `api`: Lakekeeper, Redpanda, Postgres, RustFS and Dagster are
+  unreachable at the Docker network layer even if the edge proxy were compromised, and
+  `deploy/Caddyfile` also returns `403` on `/catalog/*`, `/management/*` and `/graphql*` as
+  defense in depth.
 - **Hardening.** Every container, one-shots included, runs with `no-new-privileges`, all
-  capabilities dropped, a memory limit and a non-root user: RustFS as `rustfs` (10001), the AWS
-  CLI as `nobody` (65534), Postgres as `postgres` (70), Lakekeeper as distroless `nonroot`
-  (65532, set in compose because the image declares no user), Redpanda as `redpanda` (101) and
-  the app and orchestration images as 10001.
-- **Secrets.** Compose reads them from `.env` with `${VAR:?}` and no defaults, so a missing secret
-  stops `docker compose` before anything starts. The app keeps them as `SecretStr` and its
-  validation errors never echo input values.
-- **Storage readiness.** `ibergrid doctor` sends a HeadBucket through pyarrow's S3 client
-  instead of RustFS's anonymous `/health/ready`: the same check proves the endpoint, the keys and
-  the bucket on RustFS and on Cloudflare R2, which has no health endpoint.
-- **Lake access ([ADR 0002](adr/0002-iceberg-write-and-read-paths.md)).** PyIceberg writes,
-  always to a run's audit branch, and publishes; DuckDB reads, queries metadata and compacts.
-  Lakekeeper hands every client the warehouse's in-network endpoint (`http://storage:9000`) and
-  no credentials, and the warehouse has remote signing off, so each client applies its own
-  `IBERGRID_S3_*` endpoint and keys: the same code runs in containers and from the host. The app
-  image bakes DuckDB's extensions at build time and never downloads them at runtime.
-- **Ingestion ([ADR 0003](adr/0003-redata-ingestion.md)).** `ibergrid ingest redata` runs in
-  the `ingest` one-shot, whose networks have egress to the public API. Per chunk (a dataset, a
-  system and a calendar month or year of local days) it fetches, checks the structure, lands the
-  raw answer under `landing/` in the bucket (outside the warehouse prefix) and publishes the rows
-  to `bronze.redata_observations` through Write-Audit-Publish, replacing exactly that window. It
-  has a 384 MiB memory limit, since a month of five-minute demand peaks at 238 MiB; the other app
-  one-shots keep 192 MiB.
-- **OMIE ([ADR 0004](adr/0004-omie-ingestion.md)).** `ibergrid ingest omie` runs in the same
-  one-shot. Per chunk (a calendar month of delivery days) it downloads one file per day (its
-  current version: `.1`, or the `.2`/`.3` OMIE republished it as), checks each against its
-  contract version (hourly until 2025-09-30, quarter-hourly from 2025-10-01),
-  lands the original files under `landing/omie/` and publishes the rows to
-  `bronze.omie_day_ahead_prices` through Write-Audit-Publish, replacing exactly those delivery
-  days. It stops at the first day OMIE has not published yet, with exit 0 or, with
-  `--require-published`, exit 1. A month peaks at 114 MiB.
-- **Catalog URI per client.** `LAKEKEEPER__BASE_URI` is left unset, so `/catalog/v1/config`
-  advertises the address each client used: `http://127.0.0.1:28181/catalog` from the host and
-  `http://catalog:8181/catalog` from containers.
-- **No authentication on the catalog yet.** Lakekeeper runs without an identity provider, so its
-  management API is open to whoever reaches port 8181; locally it listens on 127.0.0.1 only, and
-  in production no port is published. Authentication is a prerequisite for the public endpoints
-  of phase 6.
-- **Broker security ([ADR 0006](adr/0006-streaming-lane.md)).** SASL/SCRAM on every Kafka
-  listener in every environment; one user per service with least-privilege ACLs
-  (`ibergrid-producer` writes the data topic; `ibergrid-consumer` reads it, writes the DLQ and
-  commits its group); the superuser `ibergrid-admin` is used by `broker-init` only; the admin API
-  requires it and is not published; the unauthenticated HTTP Proxy (8082) and Schema Registry
-  (8081) do not start; topics are never created on demand. No TLS yet: plaintext on the Docker
-  networks.
-- **Streaming ([ADR 0006](adr/0006-streaming-lane.md)).** The consumer writes WAP micro-batches
-  whose publish commits the checkpoint (the topic's id and the next offsets) as a table property,
-  and resumes from that property: exactly once into `bronze.redata_demand_stream` without Kafka
-  transactions; it refuses a topic that changed under the checkpoint until `ibergrid stream
-  reset`, and expires its table's snapshots daily. Both stream services beat a heartbeat file with
-  their failure streak; their healthchecks run `python -m ibergrid.stream.health` (standard
-  library only) because the full CLI costs 133 MiB per start inside the service's own memory
-  limit, and a watchdog ends a process whose loop is stuck so that its restart policy recovers it.
-- **Two images, one Dockerfile.** `catalog-init`, `doctor`, `ingest` and the stream services run
-  the app image (813 MB: no Dagster, no dbt); the Dagster services and the on-demand `transform`
-  runner use the orchestration image (`--target orchestration`, 1.44 GB: the same environment plus
-  Dagster, dbt Core, `dbt-duckdb`, `/opt/ibergrid/dbt`, `dagster.yaml` and `workspace.yaml`). In
-  production both are pulled from GHCR by the digests the release job recorded: the images that job
-  built, ran once (`ibergrid version`; the Dagster definitions validated) and pushed. The server
-  never builds anything.
-- **Medallion transforms ([ADR 0007](adr/0007-dbt-medallion.md)).** Because DuckDB 2.0.1 cannot
-  write Iceberg branches or guard `main` (ADR 0002), `ibergrid.transform` runs `dbt build` in an
-  ephemeral staging DuckDB file wired via a `dbt-duckdb` plugin (`ibergrid.transform.plugin`) that
-  reuses `ibergrid.lake.duck.configure`, sets `GLOBAL TimeZone = 'UTC'` across all cursors, and
-  exposes every Bronze table pinned to its `main` snapshot (or an empty typed table when a table
-  has no snapshot yet). Any failing model or dbt test aborts before any Iceberg branch is opened;
-  only after all models and tests pass does PyIceberg publish each selected Silver and Gold table
-  through `ibergrid.lake.wap`, recording the Bronze snapshot provenance in every snapshot summary.
-  Dagster exposes all 9 Silver and Gold tables as a subsettable `@multi_asset` in the `transform`
-  pool (limit 1) with daily Madrid schedules at 09:30 and 16:30.
-- **Orchestration ([ADR 0005](adr/0005-dagster-orchestration.md)).** Runs execute as subprocesses
-  of `dagster-code` (the default run launcher: no Docker socket anywhere), whose memory limit
-  covers them. The daemon launches a queued run only when its pool (`redata`, `omie`, limit 1) is
-  free. Run metadata, materializations and schedule ticks live in `orchestration-db`; compute
-  logs in a volume written by `dagster-code` and read by the webserver. A stop of `dagster-code`
-  waits up to 5 minutes (`stop_grace_period`) for its runs to end; a run killed anyway holds its
-  pool until run monitoring fails it after 2 hours (then it is queued again), and the daily
-  sweeper frees its audit branches. Healthchecks run every 60 s (every 5 s while a service starts): each one starts a
-  Python process. The deploy runs `lake init` before `up`, so the schedules never meet missing
-  tables.
-- **Storage keys live in two places.** `catalog-init` stores the S3 keys in the warehouse when it
-  creates it and never updates them. After rotating `IBERGRID_S3_*`, run
-  `ibergrid catalog update-credential` (see `.env.example`), which also resets the storage-profile
-  fields ibergrid owns and keeps the others: that is how a warehouse created before ADR 0002 gets
-  remote signing turned off.
+  capabilities dropped (Caddy adds only `NET_BIND_SERVICE` with `read_only: true`), a memory
+  limit and a non-root user on all application and data services: RustFS (`10001`), AWS CLI
+  (`65534`), Postgres (`70`), Lakekeeper (`65532`), Redpanda (`101`), and `ibergrid-app`,
+  `ibergrid-orchestration` and `ibergrid-api` (`10001`).
+- **Three images, one Dockerfile.**
+  - `ibergrid-app` (~813 MB): lean CLI, ingestion and streaming runtime (no Dagster, dbt, Soda or
+    FastAPI).
+  - `ibergrid-orchestration` (~1.46 GB): app plus Dagster, dbt Core, `dbt-duckdb`, Soda Core,
+    `/opt/ibergrid/dbt` and `/opt/ibergrid/contracts/soda`.
+  - `ibergrid-api` (~824 MB): app plus FastAPI, Uvicorn, baked static `portal/` assets
+    (`/opt/ibergrid/portal`) and `benchmarks/results/latest.json`.
+  In production all three are pulled from GHCR by immutable `sha256` digest pinned in
+  `release.env`; the server never builds images.
+- **Secrets.** Compose reads required secrets from `.env` with `${VAR:?}` and no defaults. The
+  app keeps them in Pydantic `SecretStr` fields and validation errors never echo input values.
+- **Lake access ([ADR 0002](adr/0002-iceberg-write-and-read-paths.md)).** PyIceberg writes to
+  audit branches and publishes atomically via WAP; DuckDB reads, queries metadata and compacts.
+  The Docker images bake DuckDB's `httpfs`, `avro` and `iceberg` extensions at build time.
+- **Ingestion & streaming ([ADR 0003](adr/0003-redata-ingestion.md), [ADR 0004](adr/0004-omie-ingestion.md), [ADR 0006](adr/0006-streaming-lane.md)).**
+  Batch connectors are chunk-idempotent (`<= 1 req/s`), archive raw bodies under `landing/`, and
+  preserve Canarias timestamps transparently (`ts_utc_verified=False`). The streaming lane writes
+  REData 5-minute national demand through Redpanda (SASL/SCRAM + least-privilege ACLs) into
+  `bronze.redata_demand_stream`, committing Kafka offsets atomically as Iceberg table properties
+  on WAP publish (`make chaos-stream` proves 0 lost, 0 duplicated under SIGKILL).
+- **Medallion, quality, maintenance & lineage ([ADR 0007](adr/0007-dbt-medallion.md), [ADR 0008](adr/0008-quality-maintenance-lineage.md)).**
+  `dbt build` runs 12 models and 87 tests in an ephemeral staging DuckDB pinned to Bronze `main`
+  snapshots before PyIceberg WAP publication; zero-scan Iceberg metadata checks (`0 B` Parquet
+  scanned) and declarative Soda v4 YAML contracts guard every layer, quarantining rejected rows
+  into `quarantine.rejected_records`; daily Dagster maintenance runs compaction, snapshot expiry
+  and 48 h-graced S3 orphan-file cleanup; OpenLineage v2 emits structured run lineage.
+- **Serving & static portal ([ADR 0010](adr/0010-serving-and-production.md)).**
+  FastAPI queries Iceberg directly via thread-safe DuckDB with short TTL caching, bounded date
+  ranges, CORS allowlists, security headers and sliding-window per-IP rate limiting.
+  `ibergrid portal export` materializes compact JSON/CSV bundles to `portal/data/` and/or S3/R2
+  so the zero-build Chart.js portal works identically on Cloudflare R2/Pages and on FastAPI's
+  `/portal`.
 
 ## Environments
 
@@ -301,10 +274,12 @@ and the stream services wait for (the consumer also for `catalog-init`). `docker
 | Object storage | RustFS container (`local-storage` profile) | Cloudflare R2, `https://<account-id>.r2.cloudflarestorage.com`, region `auto` |
 | App image | Built from source (`compose.override.yaml`) | `ghcr.io/jaisato/ibergrid-lakehouse@sha256:...`, digest in `release.env` |
 | Orchestration image | Built from source (`--target orchestration`) | `ghcr.io/jaisato/ibergrid-lakehouse-orchestration@sha256:...`, digest in `release.env` |
-| Dagster schedules | Stopped (start them in the UI) | Running (`IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING`) |
-| Streaming lane | `stream` profile, started by `make stream-up` | Running |
-| Broker mode | Dev-container (fsync bypassed); SASL/SCRAM and ACLs | Production mode (fsync, startup checks); SASL/SCRAM and ACLs |
-| Env files | `.env` | `.env` (secrets, never written by the deploy) and `release.env` |
-| Host ports | 127.0.0.1, 28xxx-29xxx (Dagster UI 28300) | None |
+| API & Portal image | Built from source (`--target api`) | `ghcr.io/jaisato/ibergrid-lakehouse-api@sha256:...`, digest in `release.env` |
+| Public HTTPS edge | Direct FastAPI on `127.0.0.1:28000` | Optional Caddy (`COMPOSE_PROFILES=edge`) on 80/443 -> `api:8000` (`IBERGRID_DOMAIN`) |
+| Dagster schedules | Stopped (start in UI) | Running (`IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING=true`) |
+| Streaming lane | `stream` profile (`make stream-up`) | Running |
+| Broker mode | Dev-container; SASL/SCRAM and ACLs | Production mode (fsync, checks); SASL/SCRAM and ACLs |
+| Env files | `.env` | `.env` (secrets, never written by deploy) and `release.env` (3 image digests) |
+| Host ports | `127.0.0.1` only (`28000`, `28181`, `28300`, `29000`, `29001`, `29092`) | None (or `80`/`443` on Caddy `proxy` only when `edge` profile is enabled) |
 | Restart policy | `on-failure` | `unless-stopped` |
 | Logs | Docker defaults | `json-file`, 3 x 10 MB per container |

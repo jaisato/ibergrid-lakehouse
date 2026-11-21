@@ -7,6 +7,10 @@ x-build-orchestration: &build-orchestration
   build:
     context: .
     target: orchestration
+x-build-api: &build-api
+  build:
+    context: .
+    target: api
 
 services:
   storage:
@@ -35,6 +39,10 @@ services:
       - "127.0.0.1:28300:3000" # Dagster UI and GraphQL API
     # Its other networks are internal, and Docker publishes no port through an internal network.
     networks: [orchestration-ui]
+  api:
+    <<: *build-api
+    ports:
+      - "127.0.0.1:28000:8000" # FastAPI REST API, OpenAPI docs and mounted analytical portal (/portal)
 
 networks:
   orchestration-ui:

@@ -558,10 +558,44 @@ services:
       start_period: 60s
       start_interval: 5s
 
+  # --- Serving: FastAPI + DuckDB API & static portal (ADR 0010) ----------------------------------
+  # Read-only real-time serving layer over Iceberg tables plus mounted static portal at /portal.
+  # Joins storage, catalog and public-edge (never broker, catalog-db or orchestration networks).
+  api:
+    <<: *hardened
+    image: ibergrid-api:local
+    restart: on-failure
+    user: "10001:10001"
+    mem_limit: 512m
+    environment:
+      <<: *app-env
+      IBERGRID_API_HOST: "0.0.0.0"
+      IBERGRID_API_PORT: "8000"
+      IBERGRID_API_RATE_LIMIT_RPM: ${IBERGRID_API_RATE_LIMIT_RPM:-60}
+      IBERGRID_API_CORS_ORIGINS: ${IBERGRID_API_CORS_ORIGINS:-http://127.0.0.1:28000,http://localhost:28000}
+      IBERGRID_API_CACHE_TTL_SECONDS: ${IBERGRID_API_CACHE_TTL_SECONDS:-60}
+      IBERGRID_API_TRUST_PROXY_HEADERS: ${IBERGRID_API_TRUST_PROXY_HEADERS:-false}
+    depends_on:
+      catalog-init:
+        condition: service_completed_successfully
+    networks: [storage, catalog, public-edge]
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 3s
+
 networks:
   storage:
   catalog:
   broker:
+  # Public ingress boundary (ADR 0010): only Caddy (in compose.prod.yaml) and `api` join this
+  # network, isolating storage, catalog, broker, Postgres and Dagster from the public edge.
+  public-edge:
   # Postgres needs no egress: only Lakekeeper talks to it.
   catalog-db:
     internal: true

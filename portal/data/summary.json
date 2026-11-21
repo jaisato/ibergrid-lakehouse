@@ -1,0 +1,1215 @@
+{
+  "exported_at_utc": "2026-11-21T20:21:34Z",
+  "source_attribution": "Source: OMIE (omie.es) & Red El\u00e9ctrica, REData",
+  "non_commercial_notice": "Non-commercial open-data portfolio project; not affiliated with or endorsed by REE or OMIE.",
+  "coverage_start": "2023-01-01",
+  "coverage_end": "2026-11-21",
+  "total_days": 1421,
+  "annual_mibel": [
+    {
+      "year": 2023,
+      "days": 365,
+      "price_es_mean_eur_mwh": 87.1,
+      "price_pt_mean_eur_mwh": 88.27,
+      "zero_or_negative_es_hours": 109,
+      "decoupled_hours": 464,
+      "peninsular_renewable_share_pct": 52.9,
+      "peninsular_solar_share_pct": 16.73
+    },
+    {
+      "year": 2024,
+      "days": 366,
+      "price_es_mean_eur_mwh": 63.03,
+      "price_pt_mean_eur_mwh": 63.44,
+      "zero_or_negative_es_hours": 784,
+      "decoupled_hours": 547,
+      "peninsular_renewable_share_pct": 58.86,
+      "peninsular_solar_share_pct": 19.33
+    },
+    {
+      "year": 2025,
+      "days": 365,
+      "price_es_mean_eur_mwh": 65.28,
+      "price_pt_mean_eur_mwh": 66.18,
+      "zero_or_negative_es_hours": 797,
+      "decoupled_hours": 938,
+      "peninsular_renewable_share_pct": 57.59,
+      "peninsular_solar_share_pct": 20.66
+    },
+    {
+      "year": 2026,
+      "days": 325,
+      "price_es_mean_eur_mwh": 88.55,
+      "price_pt_mean_eur_mwh": 88.85,
+      "zero_or_negative_es_hours": 950,
+      "decoupled_hours": 1100,
+      "peninsular_renewable_share_pct": 58.43,
+      "peninsular_solar_share_pct": 24.74
+    }
+  ],
+  "systems_overview": [
+    {
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 650398.9,
+      "peak_demand_mw": 41779.2,
+      "avg_renewable_share_pct": 56.91,
+      "avg_solar_share_pct": 20.24,
+      "avg_wind_share_pct": 22.64
+    },
+    {
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 17229.5,
+      "peak_demand_mw": 1515.3,
+      "avg_renewable_share_pct": 13.87,
+      "avg_solar_share_pct": 10.75,
+      "avg_wind_share_pct": 0.01
+    },
+    {
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 1420,
+      "avg_daily_demand_mwh": 24554.0,
+      "peak_demand_mw": 1510.1,
+      "avg_renewable_share_pct": 20.51,
+      "avg_solar_share_pct": 4.76,
+      "avg_wind_share_pct": 15.37
+    },
+    {
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 545.4,
+      "peak_demand_mw": 38.2,
+      "avg_renewable_share_pct": 0.0,
+      "avg_solar_share_pct": 0.0,
+      "avg_wind_share_pct": 0.0
+    },
+    {
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 603.8,
+      "peak_demand_mw": 48.4,
+      "avg_renewable_share_pct": 2.48,
+      "avg_solar_share_pct": 0.03,
+      "avg_wind_share_pct": 0.0
+    }
+  ],
+  "blackout_2025_04_28_daily": [
+    {
+      "delivery_date": "2025-04-27",
+      "hours_in_day": 24,
+      "price_es_mean_eur_mwh": 10.977083,
+      "price_es_min_eur_mwh": -6.01,
+      "price_es_max_eur_mwh": 100.7,
+      "price_es_peak_eur_mwh": -3.148333,
+      "price_es_offpeak_eur_mwh": 25.1025,
+      "price_pt_mean_eur_mwh": 11.59375,
+      "spread_mean_eur_mwh": -0.616667,
+      "spread_abs_mean_eur_mwh": 0.616667,
+      "decoupled_hours": 6,
+      "zero_or_negative_es_hours": 11,
+      "peninsular_demand_mwh": 505602.089,
+      "peninsular_peak_demand_mw": 26890.951,
+      "evening_ramp_max_mw": 2472.608,
+      "non_peninsular_demand_mwh": 36239.596,
+      "peninsular_renewable_share_pct": 67.512,
+      "peninsular_solar_share_pct": 27.3102,
+      "peninsular_wind_share_pct": 22.445
+    },
+    {
+      "delivery_date": "2025-04-28",
+      "hours_in_day": 24,
+      "price_es_mean_eur_mwh": 18.499167,
+      "price_es_min_eur_mwh": -3.0,
+      "price_es_max_eur_mwh": 80.8,
+      "price_es_peak_eur_mwh": 2.78,
+      "price_es_offpeak_eur_mwh": 34.218333,
+      "price_pt_mean_eur_mwh": 18.260833,
+      "spread_mean_eur_mwh": 0.238333,
+      "spread_abs_mean_eur_mwh": 0.365,
+      "decoupled_hours": 3,
+      "zero_or_negative_es_hours": 8,
+      "peninsular_demand_mwh": 364238.964,
+      "peninsular_peak_demand_mw": 27356.175,
+      "evening_ramp_max_mw": 2279.748,
+      "non_peninsular_demand_mwh": 39058.526,
+      "peninsular_renewable_share_pct": 65.3123,
+      "peninsular_solar_share_pct": 22.0629,
+      "peninsular_wind_share_pct": 16.1628
+    },
+    {
+      "delivery_date": "2025-04-29",
+      "hours_in_day": 24,
+      "price_es_mean_eur_mwh": 5.793333,
+      "price_es_min_eur_mwh": -1.9,
+      "price_es_max_eur_mwh": 35.01,
+      "price_es_peak_eur_mwh": -0.148333,
+      "price_es_offpeak_eur_mwh": 11.735,
+      "price_pt_mean_eur_mwh": 5.793333,
+      "spread_mean_eur_mwh": 0.0,
+      "spread_abs_mean_eur_mwh": 0.0,
+      "decoupled_hours": 0,
+      "zero_or_negative_es_hours": 9,
+      "peninsular_demand_mwh": 550125.024,
+      "peninsular_peak_demand_mw": 30034.28,
+      "evening_ramp_max_mw": 2066.297,
+      "non_peninsular_demand_mwh": 39883.83,
+      "peninsular_renewable_share_pct": 61.1085,
+      "peninsular_solar_share_pct": 16.8335,
+      "peninsular_wind_share_pct": 15.9801
+    }
+  ],
+  "realtime_demand": {
+    "hours": 24,
+    "batch_points": 0,
+    "stream_points": 288,
+    "updated_at_utc": "2026-11-21T22:55:00Z",
+    "items": [
+      {
+        "ts_utc": "2026-11-21T15:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": 30254.0,
+        "demand_forecast_mw": 29959.0,
+        "demand_scheduled_mw": 27991.0,
+        "demand_total_scheduled_mw": 29698.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": 30250.0,
+        "demand_forecast_mw": 29807.0,
+        "demand_scheduled_mw": 27991.0,
+        "demand_total_scheduled_mw": 29698.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": 29952.0,
+        "demand_forecast_mw": 29695.0,
+        "demand_scheduled_mw": 27991.0,
+        "demand_total_scheduled_mw": 29698.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": 30080.0,
+        "demand_forecast_mw": 29622.0,
+        "demand_scheduled_mw": 29454.0,
+        "demand_total_scheduled_mw": 29265.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29566.0,
+        "demand_scheduled_mw": 29454.0,
+        "demand_total_scheduled_mw": 29265.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29501.0,
+        "demand_scheduled_mw": 29454.0,
+        "demand_total_scheduled_mw": 29265.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29428.0,
+        "demand_scheduled_mw": 29583.0,
+        "demand_total_scheduled_mw": 30434.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29362.0,
+        "demand_scheduled_mw": 29583.0,
+        "demand_total_scheduled_mw": 30434.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29319.0,
+        "demand_scheduled_mw": 29583.0,
+        "demand_total_scheduled_mw": 30434.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29297.0,
+        "demand_scheduled_mw": 29556.0,
+        "demand_total_scheduled_mw": 30479.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29267.0,
+        "demand_scheduled_mw": 29556.0,
+        "demand_total_scheduled_mw": 30479.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T15:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29199.0,
+        "demand_scheduled_mw": 29556.0,
+        "demand_total_scheduled_mw": 30479.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29092.0,
+        "demand_scheduled_mw": 29441.0,
+        "demand_total_scheduled_mw": 30328.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28996.0,
+        "demand_scheduled_mw": 29441.0,
+        "demand_total_scheduled_mw": 30328.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28958.0,
+        "demand_scheduled_mw": 29441.0,
+        "demand_total_scheduled_mw": 30328.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28978.0,
+        "demand_scheduled_mw": 28207.0,
+        "demand_total_scheduled_mw": 28692.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29029.0,
+        "demand_scheduled_mw": 28207.0,
+        "demand_total_scheduled_mw": 28692.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29082.0,
+        "demand_scheduled_mw": 28207.0,
+        "demand_total_scheduled_mw": 28692.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29138.0,
+        "demand_scheduled_mw": 28358.0,
+        "demand_total_scheduled_mw": 28662.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29198.0,
+        "demand_scheduled_mw": 28358.0,
+        "demand_total_scheduled_mw": 28662.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29264.0,
+        "demand_scheduled_mw": 28358.0,
+        "demand_total_scheduled_mw": 28662.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29336.0,
+        "demand_scheduled_mw": 28764.0,
+        "demand_total_scheduled_mw": 28958.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29422.0,
+        "demand_scheduled_mw": 28764.0,
+        "demand_total_scheduled_mw": 28958.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T16:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29529.0,
+        "demand_scheduled_mw": 28764.0,
+        "demand_total_scheduled_mw": 28958.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29658.0,
+        "demand_scheduled_mw": 29196.0,
+        "demand_total_scheduled_mw": 29212.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29786.0,
+        "demand_scheduled_mw": 29196.0,
+        "demand_total_scheduled_mw": 29212.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29891.0,
+        "demand_scheduled_mw": 29196.0,
+        "demand_total_scheduled_mw": 29212.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29975.0,
+        "demand_scheduled_mw": 29573.0,
+        "demand_total_scheduled_mw": 29597.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30045.0,
+        "demand_scheduled_mw": 29573.0,
+        "demand_total_scheduled_mw": 29597.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30111.0,
+        "demand_scheduled_mw": 29573.0,
+        "demand_total_scheduled_mw": 29597.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30173.0,
+        "demand_scheduled_mw": 29709.0,
+        "demand_total_scheduled_mw": 29742.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30230.0,
+        "demand_scheduled_mw": 29709.0,
+        "demand_total_scheduled_mw": 29742.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30283.0,
+        "demand_scheduled_mw": 29709.0,
+        "demand_total_scheduled_mw": 29742.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30330.0,
+        "demand_scheduled_mw": 29876.0,
+        "demand_total_scheduled_mw": 29862.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30371.0,
+        "demand_scheduled_mw": 29876.0,
+        "demand_total_scheduled_mw": 29862.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T17:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30405.0,
+        "demand_scheduled_mw": 29876.0,
+        "demand_total_scheduled_mw": 29862.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30431.0,
+        "demand_scheduled_mw": 30247.0,
+        "demand_total_scheduled_mw": 30225.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30457.0,
+        "demand_scheduled_mw": 30247.0,
+        "demand_total_scheduled_mw": 30225.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30488.0,
+        "demand_scheduled_mw": 30247.0,
+        "demand_total_scheduled_mw": 30225.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30525.0,
+        "demand_scheduled_mw": 30376.0,
+        "demand_total_scheduled_mw": 30364.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30567.0,
+        "demand_scheduled_mw": 30376.0,
+        "demand_total_scheduled_mw": 30364.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30613.0,
+        "demand_scheduled_mw": 30376.0,
+        "demand_total_scheduled_mw": 30364.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30663.0,
+        "demand_scheduled_mw": 30515.0,
+        "demand_total_scheduled_mw": 30504.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30713.0,
+        "demand_scheduled_mw": 30515.0,
+        "demand_total_scheduled_mw": 30504.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30757.0,
+        "demand_scheduled_mw": 30515.0,
+        "demand_total_scheduled_mw": 30504.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30795.0,
+        "demand_scheduled_mw": 30640.0,
+        "demand_total_scheduled_mw": 30645.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30843.0,
+        "demand_scheduled_mw": 30640.0,
+        "demand_total_scheduled_mw": 30645.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T18:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30912.0,
+        "demand_scheduled_mw": 30640.0,
+        "demand_total_scheduled_mw": 30645.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31004.0,
+        "demand_scheduled_mw": 30865.0,
+        "demand_total_scheduled_mw": 30841.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31092.0,
+        "demand_scheduled_mw": 30865.0,
+        "demand_total_scheduled_mw": 30841.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31150.0,
+        "demand_scheduled_mw": 30865.0,
+        "demand_total_scheduled_mw": 30841.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31177.0,
+        "demand_scheduled_mw": 31054.0,
+        "demand_total_scheduled_mw": 31054.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31191.0,
+        "demand_scheduled_mw": 31054.0,
+        "demand_total_scheduled_mw": 31054.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31206.0,
+        "demand_scheduled_mw": 31054.0,
+        "demand_total_scheduled_mw": 31054.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31222.0,
+        "demand_scheduled_mw": 30998.0,
+        "demand_total_scheduled_mw": 31003.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31228.0,
+        "demand_scheduled_mw": 30998.0,
+        "demand_total_scheduled_mw": 31003.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31210.0,
+        "demand_scheduled_mw": 30998.0,
+        "demand_total_scheduled_mw": 31003.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31167.0,
+        "demand_scheduled_mw": 30905.0,
+        "demand_total_scheduled_mw": 30909.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31133.0,
+        "demand_scheduled_mw": 30905.0,
+        "demand_total_scheduled_mw": 30909.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T19:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31137.0,
+        "demand_scheduled_mw": 30905.0,
+        "demand_total_scheduled_mw": 30909.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31181.0,
+        "demand_scheduled_mw": 31031.0,
+        "demand_total_scheduled_mw": 31081.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31214.0,
+        "demand_scheduled_mw": 31031.0,
+        "demand_total_scheduled_mw": 31081.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31185.0,
+        "demand_scheduled_mw": 31031.0,
+        "demand_total_scheduled_mw": 31081.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 31094.0,
+        "demand_scheduled_mw": 30975.0,
+        "demand_total_scheduled_mw": 31042.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30973.0,
+        "demand_scheduled_mw": 30975.0,
+        "demand_total_scheduled_mw": 31042.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30853.0,
+        "demand_scheduled_mw": 30975.0,
+        "demand_total_scheduled_mw": 31042.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30735.0,
+        "demand_scheduled_mw": 30554.0,
+        "demand_total_scheduled_mw": 30570.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30609.0,
+        "demand_scheduled_mw": 30554.0,
+        "demand_total_scheduled_mw": 30570.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30466.0,
+        "demand_scheduled_mw": 30554.0,
+        "demand_total_scheduled_mw": 30570.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30306.0,
+        "demand_scheduled_mw": 29924.0,
+        "demand_total_scheduled_mw": 29939.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 30141.0,
+        "demand_scheduled_mw": 29924.0,
+        "demand_total_scheduled_mw": 29939.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T20:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29983.0,
+        "demand_scheduled_mw": 29924.0,
+        "demand_total_scheduled_mw": 29939.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29831.0,
+        "demand_scheduled_mw": 29538.0,
+        "demand_total_scheduled_mw": 29536.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29674.0,
+        "demand_scheduled_mw": 29538.0,
+        "demand_total_scheduled_mw": 29536.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29502.0,
+        "demand_scheduled_mw": 29538.0,
+        "demand_total_scheduled_mw": 29536.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29314.0,
+        "demand_scheduled_mw": 29105.0,
+        "demand_total_scheduled_mw": 29109.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 29119.0,
+        "demand_scheduled_mw": 29105.0,
+        "demand_total_scheduled_mw": 29109.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28927.0,
+        "demand_scheduled_mw": 29105.0,
+        "demand_total_scheduled_mw": 29109.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28738.0,
+        "demand_scheduled_mw": 28602.0,
+        "demand_total_scheduled_mw": 28607.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28551.0,
+        "demand_scheduled_mw": 28602.0,
+        "demand_total_scheduled_mw": 28607.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28365.0,
+        "demand_scheduled_mw": 28602.0,
+        "demand_total_scheduled_mw": 28607.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 28181.0,
+        "demand_scheduled_mw": 27990.0,
+        "demand_total_scheduled_mw": 27995.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27996.0,
+        "demand_scheduled_mw": 27990.0,
+        "demand_total_scheduled_mw": 27995.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T21:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27805.0,
+        "demand_scheduled_mw": 27990.0,
+        "demand_total_scheduled_mw": 27995.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:00:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27609.0,
+        "demand_scheduled_mw": 27432.0,
+        "demand_total_scheduled_mw": 27468.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:05:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27415.0,
+        "demand_scheduled_mw": 27432.0,
+        "demand_total_scheduled_mw": 27468.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:10:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27231.0,
+        "demand_scheduled_mw": 27432.0,
+        "demand_total_scheduled_mw": 27468.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:15:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 27056.0,
+        "demand_scheduled_mw": 26846.0,
+        "demand_total_scheduled_mw": 26846.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:20:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26886.0,
+        "demand_scheduled_mw": 26846.0,
+        "demand_total_scheduled_mw": 26846.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:25:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26718.0,
+        "demand_scheduled_mw": 26846.0,
+        "demand_total_scheduled_mw": 26846.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:30:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26552.0,
+        "demand_scheduled_mw": 26530.0,
+        "demand_total_scheduled_mw": 26529.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:35:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26388.0,
+        "demand_scheduled_mw": 26530.0,
+        "demand_total_scheduled_mw": 26529.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:40:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26228.0,
+        "demand_scheduled_mw": 26530.0,
+        "demand_total_scheduled_mw": 26529.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:45:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 26071.0,
+        "demand_scheduled_mw": 26249.0,
+        "demand_total_scheduled_mw": 26249.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:50:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 25916.0,
+        "demand_scheduled_mw": 26249.0,
+        "demand_total_scheduled_mw": 26249.0,
+        "source_lane": "stream"
+      },
+      {
+        "ts_utc": "2026-11-21T22:55:00Z",
+        "madrid_date": "2026-11-21",
+        "demand_real_mw": null,
+        "demand_forecast_mw": 25762.0,
+        "demand_scheduled_mw": 26249.0,
+        "demand_total_scheduled_mw": 26249.0,
+        "source_lane": "stream"
+      }
+    ]
+  },
+  "metadata_inventory": {
+    "source_attribution": "Source: OMIE (omie.es) & Red El\u00e9ctrica, REData",
+    "updated_at_utc": "2026-11-21T17:30:43Z",
+    "non_commercial_notice": "Non-commercial open-data portfolio project; not affiliated with or endorsed by REE or OMIE.",
+    "total_tables": 13,
+    "total_records": 2546472,
+    "total_data_bytes": 50309808,
+    "total_data_bytes_scanned": 0,
+    "items": [
+      {
+        "table": "bronze.redata_observations",
+        "snapshot_id": 3461553927514407468,
+        "snapshot_committed_utc": "2026-11-21T15:27:18.568000Z",
+        "operation": "append",
+        "data_files": 971,
+        "delete_files": 0,
+        "total_records": 1690379,
+        "total_data_bytes": 33695619,
+        "data_bytes_scanned": 0,
+        "partitions": 192
+      },
+      {
+        "table": "bronze.omie_day_ahead_prices",
+        "snapshot_id": 1723416405280473062,
+        "snapshot_committed_utc": "2026-11-21T08:47:22.855000Z",
+        "operation": "append",
+        "data_files": 48,
+        "delete_files": 0,
+        "total_records": 64131,
+        "total_data_bytes": 1671106,
+        "data_bytes_scanned": 0,
+        "partitions": 47
+      },
+      {
+        "table": "bronze.redata_demand_stream",
+        "snapshot_id": 4092455876848438779,
+        "snapshot_committed_utc": "2026-11-21T15:26:13.946000Z",
+        "operation": "append",
+        "data_files": 12,
+        "delete_files": 0,
+        "total_records": 2671,
+        "total_data_bytes": 217565,
+        "data_bytes_scanned": 0,
+        "partitions": 1
+      },
+      {
+        "table": "silver.demand_national_5min",
+        "snapshot_id": 7425682040116491573,
+        "snapshot_committed_utc": "2026-11-21T17:30:26.282000Z",
+        "operation": "append",
+        "data_files": 48,
+        "delete_files": 0,
+        "total_records": 409248,
+        "total_data_bytes": 6990998,
+        "data_bytes_scanned": 0,
+        "partitions": 48
+      },
+      {
+        "table": "silver.demand_system_hourly",
+        "snapshot_id": 8500935025462911787,
+        "snapshot_committed_utc": "2026-11-21T17:30:29.159000Z",
+        "operation": "append",
+        "data_files": 48,
+        "delete_files": 0,
+        "total_records": 170400,
+        "total_data_bytes": 1316459,
+        "data_bytes_scanned": 0,
+        "partitions": 48
+      },
+      {
+        "table": "silver.mibel_prices_period",
+        "snapshot_id": 1167255566209794444,
+        "snapshot_committed_utc": "2026-11-21T17:30:33.160000Z",
+        "operation": "append",
+        "data_files": 47,
+        "delete_files": 0,
+        "total_records": 64131,
+        "total_data_bytes": 1538425,
+        "data_bytes_scanned": 0,
+        "partitions": 47
+      },
+      {
+        "table": "silver.mibel_prices_hourly",
+        "snapshot_id": 7014903020941949409,
+        "snapshot_committed_utc": "2026-11-21T17:30:35.712000Z",
+        "operation": "append",
+        "data_files": 48,
+        "delete_files": 0,
+        "total_records": 34104,
+        "total_data_bytes": 1301651,
+        "data_bytes_scanned": 0,
+        "partitions": 48
+      },
+      {
+        "table": "silver.generation_daily",
+        "snapshot_id": 847609372231108230,
+        "snapshot_committed_utc": "2026-11-21T17:30:37.691000Z",
+        "operation": "append",
+        "data_files": 47,
+        "delete_files": 0,
+        "total_records": 68207,
+        "total_data_bytes": 1342989,
+        "data_bytes_scanned": 0,
+        "partitions": 47
+      },
+      {
+        "table": "gold.mibel_hourly_market",
+        "snapshot_id": 7415468837773446685,
+        "snapshot_committed_utc": "2026-11-21T17:30:40.670000Z",
+        "operation": "append",
+        "data_files": 48,
+        "delete_files": 0,
+        "total_records": 34104,
+        "total_data_bytes": 1673699,
+        "data_bytes_scanned": 0,
+        "partitions": 48
+      },
+      {
+        "table": "gold.mibel_daily_summary",
+        "snapshot_id": 1442186013488012495,
+        "snapshot_committed_utc": "2026-11-21T17:30:41.482000Z",
+        "operation": "append",
+        "data_files": 1,
+        "delete_files": 0,
+        "total_records": 1421,
+        "total_data_bytes": 134477,
+        "data_bytes_scanned": 0,
+        "partitions": 1
+      },
+      {
+        "table": "gold.system_demand_daily",
+        "snapshot_id": 7072074338490844092,
+        "snapshot_committed_utc": "2026-11-21T17:30:42.364000Z",
+        "operation": "append",
+        "data_files": 1,
+        "delete_files": 0,
+        "total_records": 7100,
+        "total_data_bytes": 397768,
+        "data_bytes_scanned": 0,
+        "partitions": 1
+      },
+      {
+        "table": "gold.optimal_consumption_windows",
+        "snapshot_id": 8561742950393511132,
+        "snapshot_committed_utc": "2026-11-21T17:30:43.180000Z",
+        "operation": "append",
+        "data_files": 1,
+        "delete_files": 0,
+        "total_records": 576,
+        "total_data_bytes": 29052,
+        "data_bytes_scanned": 0,
+        "partitions": 1
+      },
+      {
+        "table": "quarantine.rejected_records",
+        "snapshot_id": null,
+        "snapshot_committed_utc": null,
+        "operation": null,
+        "data_files": 0,
+        "delete_files": 0,
+        "total_records": 0,
+        "total_data_bytes": 0,
+        "data_bytes_scanned": 0,
+        "partitions": 0
+      }
+    ]
+  },
+  "quarantine_summary": {
+    "total_rejected_records": 0,
+    "by_rule": []
+  }
+}

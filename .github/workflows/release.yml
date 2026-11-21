@@ -1,8 +1,8 @@
-# Publishes the app and orchestration images to GHCR and, for version tags, deploys them.
-#   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse{,-orchestration}:main and :sha-<short>
+# Publishes the app, orchestration and api images to GHCR and, for version tags, deploys them.
+#   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse{,-orchestration,-api}:main and :sha-<short>
 #   push v*.*.*    -> tag == v<pyproject version>, CI on the tagged commit, :vX.Y.Z, deploy job
-# Both build the images, run each once (`ibergrid version`; the Dagster definitions validated)
-# and only then push them.
+# Both build the images, run each once (`ibergrid version`; the Dagster definitions validated;
+# the FastAPI app + portal assets verified) and only then push them.
 # The deploy job stays skipped until the repository variable DEPLOY_HOST is set (the server does
 # not exist yet); deploy/deploy.env.example lists everything it needs.
 name: Release
@@ -22,6 +22,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/jaisato/ibergrid-lakehouse
   ORCHESTRATION_IMAGE: ghcr.io/jaisato/ibergrid-lakehouse-orchestration
+  API_IMAGE: ghcr.io/jaisato/ibergrid-lakehouse-api
 
 jobs:
   # Fail fast: a tag must name the version the package declares.
@@ -68,6 +69,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       orchestration-digest: ${{ steps.push.outputs.orchestration-digest }}
+      api-digest: ${{ steps.push.outputs.api-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,16 +95,19 @@ jobs:
           VERSION: ${{ steps.tags.outputs.version }}
           TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          app=() orchestration=()
+          app=() orchestration=() api=()
           for tag in $TAGS; do
             app+=(--tag "$IMAGE:$tag")
             orchestration+=(--tag "$ORCHESTRATION_IMAGE:$tag")
+            api+=(--tag "$API_IMAGE:$tag")
           done
           build=(docker build --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA")
           "${build[@]}" "${app[@]}" .
           "${build[@]}" --target orchestration "${orchestration[@]}" .
+          "${build[@]}" --target api "${api[@]}" .
 
-      # The exact images about to be pushed must start: the CLI runs, the Dagster code loads.
+      # The exact images about to be pushed must start: the CLI runs, the Dagster code loads,
+      # and the API image imports FastAPI with the static portal baked in.
       - name: Smoke test the images
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
@@ -111,6 +116,8 @@ jobs:
           # A throwaway DAGSTER_HOME: the image's dagster.yaml needs the stack's Postgres.
           docker run --rm --network none -e DAGSTER_HOME=/tmp "$ORCHESTRATION_IMAGE:${TAGS%% *}" \
             dagster definitions validate -m ibergrid.orchestration.definitions
+          docker run --rm --network none --entrypoint python "$API_IMAGE:${TAGS%% *}" -c \
+            "from pathlib import Path; from ibergrid.api.app import create_app; assert Path('/opt/ibergrid/portal/index.html').is_file()"
 
       - name: Push and record the digest
         id: push
@@ -118,11 +125,14 @@ jobs:
           TAGS: ${{ steps.tags.outputs.tags }}
         run: |
           first="${TAGS%% *}"
-          for image in "$IMAGE" "$ORCHESTRATION_IMAGE"; do
+          for image in "$IMAGE" "$ORCHESTRATION_IMAGE" "$API_IMAGE"; do
             for tag in $TAGS; do docker push --quiet "$image:$tag"; done
             digest="$(docker buildx imagetools inspect "$image:$first" --format '{{.Manifest.Digest}}')"
-            output=digest
-            [[ "$image" == "$ORCHESTRATION_IMAGE" ]] && output=orchestration-digest
+            case "$image" in
+              "$IMAGE") output=digest ;;
+              "$ORCHESTRATION_IMAGE") output=orchestration-digest ;;
+              "$API_IMAGE") output=api-digest ;;
+            esac
             printf '%s=%s\n' "$output" "$digest" >> "$GITHUB_OUTPUT"
             {
               echo "### ${image##*/}"
@@ -170,12 +180,14 @@ jobs:
         env:
           DIGEST: ${{ needs.image.outputs.digest }}
           ORCHESTRATION_DIGEST: ${{ needs.image.outputs.orchestration-digest }}
+          API_DIGEST: ${{ needs.image.outputs.api-digest }}
         run: |
           ssh_opts=(-i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes -o BatchMode=yes
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts")
-          ssh "${ssh_opts[@]}" "$TARGET" mkdir -p "$DEPLOY_DIR"
+          ssh "${ssh_opts[@]}" "$TARGET" mkdir -p "$DEPLOY_DIR/deploy"
           scp "${ssh_opts[@]}" compose.yaml compose.prod.yaml "$TARGET:$DEPLOY_DIR/"
-          ssh "${ssh_opts[@]}" "$TARGET" bash -s -- "$DEPLOY_DIR" "$DIGEST" "$ORCHESTRATION_DIGEST" \
+          scp "${ssh_opts[@]}" deploy/Caddyfile "$TARGET:$DEPLOY_DIR/deploy/"
+          ssh "${ssh_opts[@]}" "$TARGET" bash -s -- "$DEPLOY_DIR" "$DIGEST" "$ORCHESTRATION_DIGEST" "$API_DIGEST" \
             < deploy/remote.sh
 
       - name: Remove the SSH key

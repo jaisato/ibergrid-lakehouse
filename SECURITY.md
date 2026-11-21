@@ -18,20 +18,33 @@ Only the latest release and `main` receive fixes.
   hook. The deploy writes the image digest to a separate `release.env` and never rewrites `.env`.
 - Third-party container images are pinned by digest and GitHub Actions by commit SHA; Dependabot
   proposes updates for Python packages, actions and images monthly.
-- Every container, one-shots included, runs as a non-root user with `no-new-privileges`, all
-  capabilities dropped and a memory limit (the users are listed in
-  [docs/architecture.md](docs/architecture.md#design-notes)). No port is published in production,
-  and locally only on 127.0.0.1.
+- Every container, one-shots included, runs with `no-new-privileges`, all capabilities dropped
+  (the optional Caddy `proxy` adds only `NET_BIND_SERVICE` with a read-only root filesystem), a
+  memory limit and a non-root user on all application and data services (listed in
+  [docs/architecture.md](docs/architecture.md#design-notes)).
+- **Public edge boundary ([ADR 0010](docs/adr/0010-serving-and-production.md)).** Internal services
+  (Lakekeeper, Redpanda, Postgres, RustFS, Dagster) publish zero host ports in production and sit
+  on isolated Docker networks. When the optional `edge` profile is enabled in `compose.prod.yaml`,
+  Caddy terminates TLS on 80/443 on the `public-edge` network and can reach **only** `api:8000`.
+  The FastAPI serving layer is strictly read-only, enforces bounded date ranges, CORS allowlists,
+  security response headers and sliding-window per-IP rate limiting (`429` + `Retry-After`), while
+  Caddy also blocks `/catalog/*`, `/management/*` and `/graphql*` as defense in depth.
 
-## Known gaps in this phase
+## Internal-only services and residual risks
 
-These services must not be exposed to untrusted networks:
+These services must remain strictly on internal Docker networks (or loopback in local development)
+and must never be exposed directly to untrusted networks:
 
-- The catalog (Lakekeeper) runs without an identity provider: its Iceberg REST and management
-  APIs accept any caller. Public endpoints (phase 6) require authentication in front of it.
-- The broker (Redpanda) authenticates every Kafka client with SASL/SCRAM and enforces
+- **Lakekeeper (`catalog`)** runs without an OIDC identity provider: its Iceberg REST and
+  management APIs accept any caller that reaches the internal `catalog` network. Production keeps
+  it completely unreachable from `public-edge` and publishes zero host ports; administrative access
+  uses SSH tunneling or in-network CLI one-shots.
+- **Dagster (`dagster-webserver`)** has no built-in authentication and stays on the internal
+  `orchestration` network in production (accessed via SSH tunnel per
+  [deploy/deploy.env.example](deploy/deploy.env.example)).
+- **Redpanda (`broker`)** authenticates every Kafka client with SASL/SCRAM and enforces
   least-privilege ACLs, one user per service; its admin API requires the superuser and is
   published nowhere, and its HTTP Proxy and Schema Registry, which have no authentication and are
-  unused, do not start ([ADR 0006](docs/adr/0006-streaming-lane.md)). Its traffic is not encrypted
-  (no TLS), so its listeners must stay on the Docker networks and, locally, the host's loopback;
-  TLS comes before any listener leaves the host. The superuser's password rotates by hand.
+  unused, do not start ([ADR 0006](docs/adr/0006-streaming-lane.md)). Its traffic is plaintext on
+  the single-host Docker network (TLS is required before any multi-host broker deployment). The
+  superuser's password rotates by hand.
