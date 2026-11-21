@@ -26,6 +26,8 @@ from ibergrid.sources.redata.client import RedataError
 from ibergrid.sources.redata.datasets import DATASETS
 from ibergrid.sources.redata.ingest import ChunkReport, ingest
 
+SHOWN_DAYS = 5  # incomplete days named per chunk line
+
 app = typer.Typer(
     help="IberGrid Lakehouse operations.",
     no_args_is_help=True,
@@ -172,10 +174,10 @@ def _print_chunk(report: ChunkReport) -> None:
         f"snapshot {report.snapshot_id}"
     )
     if measured.incomplete:
-        days = ", ".join(
-            f"{day} {received}/{expected}" for day, expected, received in measured.incomplete
-        )
-        line += f"; incomplete days: {days}"
+        shown = measured.incomplete[:SHOWN_DAYS]  # the snapshot summary keeps all of them
+        days = ", ".join(f"{day} {received}/{expected}" for day, expected, received in shown)
+        more = len(measured.incomplete) - len(shown)
+        line += f"; incomplete days: {days}" + (f" and {more} more" if more else "")
     if report.violations:
         broken = ", ".join(f"{series} {count}" for series, count in report.violations.items())
         line += f"; points breaking the value rules: {broken}"

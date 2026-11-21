@@ -433,3 +433,19 @@ def test_ingest_redata_names_rule_breaches_and_dropped_series(redata_stack: Fake
         "; points breaking the value rules: 2037 1"
         "; series no longer in the answer: 2052, 2053, 2054"
     )
+
+
+def test_ingest_redata_names_five_incomplete_days_and_counts_the_rest(
+    redata_stack: FakeRedata,
+) -> None:
+    # Twelve days asked for, only the first one answered.
+    name = "demand_hourly-canarias-2026-11-18_2026-11-29.json"
+    redata_stack.payloads[name] = fixture("demand_hourly-canarias-2026-11-18_2026-11-18.json")
+
+    result = runner.invoke(app, [*INGEST, "--end", "2026-11-29", "--system", "canarias"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0].endswith(
+        "; incomplete days: 2026-11-19 0/24, 2026-11-20 0/24, 2026-11-21 0/24, 2026-11-22 0/24, "
+        "2026-11-23 0/24 and 6 more"
+    )
