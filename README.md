@@ -4,13 +4,16 @@ An open, multi-engine lakehouse for Iberian electricity data: Red Eléctrica's R
 day-ahead market files, stored as Apache Iceberg tables behind a REST catalog and readable from
 DuckDB, Polars and PyIceberg without a JVM.
 
-**Status: phase 1 (batch ingestion) complete.** The stack runs end to end (object storage,
+**Status: phase 2 (streaming lane) complete.** The stack runs end to end (object storage,
 Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes Iceberg
 tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
 Eléctrica's REData API (demand, daily generation mix, prices) into `bronze.redata_observations`
 and OMIE's day-ahead marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`;
-and Dagster runs them as partitioned assets, with daily schedules, backfills from 2023-01-01 and
-a sweeper for the audit branches of dead runs. Streaming is next (see [Roadmap](#roadmap)).
+Dagster runs them as partitioned assets, with daily schedules, backfills from 2023-01-01 and a
+sweeper for the audit branches of dead runs; and a streaming lane carries REData's five-minute
+national demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly
+once, with a contract, a dead-letter topic and a crash test. The dbt medallion is next (see
+[Roadmap](#roadmap)).
 
 ## Why
 
@@ -258,6 +261,56 @@ choice against Airflow, the measurements behind the schedules and the decisions.
 - **Runs** execute in `dagster-code`; their metadata, logs and schedule ticks live in
   `orchestration-db` (Postgres), and survive `make down` (not `make down-volumes`).
 
+## Streaming
+
+The streaming lane ([ADR 0006](docs/adr/0006-streaming-lane.md)) polls REData's national
+real-time demand (`demanda/demanda-tiempo-real`: Real, Forecasted, Scheduled and Total scheduled,
+a point every five minutes) and writes each new or revised point into
+`bronze.redata_demand_stream`, once, within about six minutes of REData publishing it (a
+five-minute poll, then a flush 60 s after the burst):
+
+- **`stream-producer`** asks REData every five minutes for today (and yesterday, until two hours
+  after midnight) through the batch lane's polite client, and emits each point whose content
+  changed to `redata.demand.realtime.v1` (key `<series_id>|<ts_utc>`, idempotent producer,
+  `acks=all`). Events follow a pydantic contract, committed as a JSON Schema in
+  [contracts/redata-demand-realtime.v1.json](contracts/redata-demand-realtime.v1.json).
+- **`stream-consumer`** validates every message (failures go to `redata.demand.realtime.dlq.v1`
+  with their reason in the headers), drops exact duplicates and keeps revisions, and writes
+  micro-batches (at 10,000 rows or 60 s) as Write-Audit-Publish runs whose publish also commits
+  the Kafka offsets as a table property. On start it seeks to the offsets in the table, not in the
+  consumer group: a crash anywhere replays from the last published batch, so nothing is lost or
+  written twice. `make chaos-stream` proves it by SIGKILLing the consumer between the write and
+  the publish, and between the publish and the group commit, in a throwaway compose project.
+- **`broker-init`** (one-shot) turns SASL/SCRAM on for the Kafka listener and authentication on
+  for the admin API, disables automatic topic creation, and creates the topics, one user per
+  service and their least-privilege ACLs.
+
+The stream services are in the `stream` profile locally, so a local stack never calls REData on
+its own; production runs them:
+
+```bash
+make stream-up       # lake init, then the producer and the consumer (they poll REData)
+make stream-status   # the table's rows and checkpoint, the lag per partition, the dead letters
+make stream-down     # stop both (the consumer flushes first)
+make chaos-stream    # the crash/restart proof, in its own compose project (about a minute)
+```
+
+```text
+table:        bronze.redata_demand_stream: 2047 rows, snapshot 4824344040039726969
+checkpoint:   ibergrid.stream.ibergrid.stream.bronze.redata.demand.realtime.v1.offsets = {"0": 3385, "1": 3220, "2": 3384}
+partition 0:  checkpoint 3385, end 3385, lag 0
+partition 1:  checkpoint 3220, end 3220, lag 0
+partition 2:  checkpoint 3384, end 3384, lag 0
+lag:          0 message(s) behind redata.demand.realtime.v1
+dead letters: 0 retained in redata.demand.realtime.dlq.v1
+```
+
+That is the table after a 34-minute run against the live API (ADR 0006): 8 polls, 3,071 events,
+1,024 duplicates from a producer restart dropped, 1,020 revisions kept (REE reprograms the rest
+of the day every few minutes), and every key's latest value equal to the batch lane's for the
+same day. The batch table stays authoritative for closed days; Silver (phase 3) reconciles the
+two.
+
 ## Services
 
 One container per service. Ports are published on 127.0.0.1 only, and only in local development.
@@ -270,9 +323,12 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `catalog-migrate` | `quay.io/lakekeeper/catalog:v0.15.1` | One-shot: catalog schema migrations | |
 | `catalog` | `quay.io/lakekeeper/catalog:v0.15.1` | Iceberg REST catalog and management API | [28181](http://127.0.0.1:28181/health) |
 | `catalog-init` | app image (`ibergrid catalog bootstrap`) | One-shot: bootstraps the catalog and creates the warehouse, idempotently | |
-| `broker` | `redpandadata/redpanda:v26.2.2` | Kafka API, single node | 29092 Kafka, 29644 admin |
+| `broker` | `redpandadata/redpanda:v26.2.2` | Kafka API, single node, SASL/SCRAM and ACLs | 29092 Kafka (SASL/SCRAM); the admin API is not published |
+| `broker-init` | `redpandadata/redpanda:v26.2.2` (`rpk`) | One-shot: authentication, topics, users and ACLs, idempotently | |
 | `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
 | `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...`, `ingest omie ...` (384 MiB limit) | |
+| `stream-producer` | app image (`ibergrid stream produce`) | REData's real-time demand into the topic (`stream` profile locally) | |
+| `stream-consumer` | app image (`ibergrid stream consume`) | The topic into `bronze.redata_demand_stream` (`stream` profile locally) | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs, schedules | |
 | `orchestration-migrate` | orchestration image (`dagster instance migrate`) | One-shot: Dagster's schema | |
 | `dagster-code` | orchestration image | Dagster code server; runs execute here | |
@@ -291,6 +347,8 @@ make ci                 # lint, types, unit tests (>= 90 % branch coverage) and 
 make test-integration   # against the running stack (make up first); the Dagster tests that
                         # materialize assets run only on a fresh stack and skip on a backfilled one
 make test-live          # opt-in: a few requests to the live REData API and omie.es (never in CI)
+make chaos-stream       # the streaming lane's crash/restart proof in a throwaway compose project
+make contracts          # rewrite contracts/*.json after changing the event model
 ```
 
 The unit tests run the lake library on PyIceberg's SQL catalog (sqlite and local files), with no
@@ -340,7 +398,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 |---|---|---|
 | 0 | Foundation and risk spike: compose stack, `ibergrid` CLI, CI/CD, docs; the lake library and the measured engine capabilities ([ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) | Done |
 | 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md)) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md)) connectors, orchestrated with Dagster: assets, partitions, schedules, backfills ([ADR 0005](docs/adr/0005-dagster-orchestration.md)) | Done |
-| 2 | Streaming lane: Redpanda producer and consumer, dead-letter queue, deduplication, exactly-once into Bronze | Planned |
+| 2 | Streaming lane: REData's real-time demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once through offsets in the WAP publish, contract, dead-letter topic, deduplication, crash test ([ADR 0006](docs/adr/0006-streaming-lane.md)) | Done |
 | 3 | dbt medallion: Silver and Gold models | Planned |
 | 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |
 | 5 | Benchmarks | Planned |

@@ -25,9 +25,12 @@ Only the latest release and `main` receive fixes.
 
 ## Known gaps in this phase
 
-These services have no authentication yet, so they must not be exposed to untrusted networks:
+These services must not be exposed to untrusted networks:
 
 - The catalog (Lakekeeper) runs without an identity provider: its Iceberg REST and management
   APIs accept any caller. Public endpoints (phase 6) require authentication in front of it.
-- The broker (Redpanda) runs in dev-container mode with unauthenticated Kafka and admin APIs and
-  no TLS. Phase 2, which adds the topics, hardens it.
+- The broker (Redpanda) authenticates every Kafka client with SASL/SCRAM and enforces
+  least-privilege ACLs, one user per service; its admin API requires the superuser and is
+  published nowhere ([ADR 0006](docs/adr/0006-streaming-lane.md)). Its traffic is not encrypted
+  (no TLS), so its listeners must stay on the Docker networks and, locally, the host's loopback;
+  TLS comes before any listener leaves the host. The superuser's password rotates by hand.
