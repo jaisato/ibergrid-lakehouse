@@ -41,13 +41,16 @@ class Target(NamedTuple):
 
 @pytest.fixture(scope="module", autouse=True)
 def initialised() -> None:
-    """``lake init`` from the app image creates the Bronze table once; later runs change nothing."""
+    """``lake init`` from the app image creates the Bronze tables once; reruns change nothing."""
     first = compose_run("doctor", "lake", "init")
     second = compose_run("doctor", "lake", "init")
 
     assert first.returncode == 0, first.stdout + first.stderr
     assert "lake: bronze.redata_observations " in first.stdout
-    assert second.stdout == "lake: bronze.redata_observations unchanged\n", second.stderr
+    assert "lake: bronze.omie_day_ahead_prices " in first.stdout
+    assert second.stdout == (
+        "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
+    ), second.stderr
 
 
 @pytest.fixture

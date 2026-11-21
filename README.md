@@ -6,9 +6,10 @@ DuckDB, Polars and PyIceberg without a JVM.
 
 **Status: phase 1 (batch ingestion), in progress.** The stack runs end to end (object storage,
 Iceberg REST catalog, broker) with CI/CD around it; the lake library writes Iceberg tables through
-Write-Audit-Publish and reads them with DuckDB; and the first connector ingests Red Eléctrica's
-REData API (demand, daily generation mix, prices) into `bronze.redata_observations`. Dagster
-orchestration and the OMIE connector come next (see [Roadmap](#roadmap)).
+Write-Audit-Publish and reads them with DuckDB; and two connectors ingest Red Eléctrica's REData
+API (demand, daily generation mix, prices) into `bronze.redata_observations` and OMIE's day-ahead
+marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`. Dagster orchestration
+comes next (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -60,12 +61,14 @@ make up      # build the app image, start the stack, wait for health checks and 
 make smoke   # ibergrid doctor from inside the compose network
 ```
 
-Then create the lake's tables and ingest a day of REData, from inside the compose network:
+Then create the lake's tables and ingest a day of REData and of OMIE, from inside the compose
+network:
 
 ```bash
 docker compose run --rm --no-deps doctor lake init
 docker compose run --rm --no-deps ingest redata --dataset demand_hourly \
   --start 2026-11-20 --end 2026-11-20
+docker compose run --rm --no-deps ingest omie --start 2026-11-20 --end 2026-11-20
 ```
 
 `make smoke` prints one line per dependency and exits non-zero if any is down:
@@ -87,8 +90,9 @@ Write-Audit-Publish protocol and the measured engine capabilities are in
 [ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md).
 
 - **PyIceberg writes.** Tables are declared as `TableSpec`s in `ibergrid.lake.registry` (today
-  `bronze.redata_observations`) and created by `ensure_table`, which also adds new optional
-  columns and refuses any other change. Every write goes to a run's audit branch
+  `bronze.redata_observations` and `bronze.omie_day_ahead_prices`) and created by
+  `ensure_table`, which also adds new optional columns and refuses any other change. Every write
+  goes to a run's audit branch
   (`wap.start`, `wap.write`); the audit reads the snapshot `wap.head` (or `wap.read`) returns, and
   `wap.publish(table, run, expected_head)` moves `main` to exactly that snapshot in one guarded
   commit, optionally with table properties such as stream offsets, or raises `PublishConflict`
@@ -107,6 +111,14 @@ docker compose run --rm --no-deps doctor lake describe <ns>.<table> # snapshot, 
 ```
 
 ## Ingestion
+
+Clients use their own S3 endpoint and keys (`IBERGRID_S3_*`), so the same code runs from the host
+against the published ports, as the integration tests do. Warehouses are created with remote
+signing off; one created by an earlier version keeps it on until `make down-volumes && make up`
+(local) or `catalog update-credential` (server, see `.env.example`) rewrites the storage-profile
+fields this code owns.
+
+### REData
 
 `ibergrid ingest redata` pulls REData into `bronze.redata_observations`, one long table with one
 row per point for every widget; [ADR 0003](docs/adr/0003-redata-ingestion.md) has the measured
@@ -155,11 +167,56 @@ redata: 1 chunk(s) published
 - **Library.** `ibergrid.sources.redata.ingest.ingest(settings, dataset, start, end, systems,
   run_id_prefix)` is what the CLI calls and what the Dagster assets will call.
 
-Clients use their own S3 endpoint and keys (`IBERGRID_S3_*`), so the same code runs from the host
-against the published ports, as the integration tests do. Warehouses are created with remote
-signing off; one created by an earlier version keeps it on until `make down-volumes && make up`
-(local) or `catalog update-credential` (server, see `.env.example`) rewrites the storage-profile
-fields this code owns.
+### OMIE
+
+`ibergrid ingest omie` downloads OMIE's daily `marginalpdbc` files (day-ahead marginal prices,
+MIBEL) into `bronze.omie_day_ahead_prices`, one row per delivery period with Spain's and
+Portugal's prices side by side; [ADR 0004](docs/adr/0004-omie-ingestion.md) has the measurements
+and the decisions.
+
+```bash
+docker compose run --rm --no-deps ingest omie --start 2025-09-25 --end 2025-10-05
+```
+
+```text
+omie: 2025-09-25..2025-09-30: 6 file(s) (v1 6), 144 rows, snapshot 5117603404312451457
+omie: 2025-10-01..2025-10-05: 5 file(s) (v2 5), 480 rows, snapshot 7983525335044605240
+omie: 2 chunk(s) published
+```
+
+- **Two contract versions.** Hourly periods (23, 24 or 25 a day, v1) for delivery days up to
+  2025-09-30, quarter-hours (92, 96 or 100, v2) from 2025-10-01, SDAC's 15-minute market time
+  unit. The delivery date picks the version and the period count must match it; the line grammar
+  is strict. A file that breaks its contract refuses its chunk before anything is landed or
+  written, so a backfill stops at the first such month, and resumes by rerunning.
+- **File versions.** A day's file is `marginalpdbc_<YYYYMMDD>.<N>`: `.1` almost always, and a
+  republication replaces it under the next number (`20230528.2`, `20251030.3`, `20251127.2` so
+  far). The connector asks for `.1`, then `.2` up to `.5`, and takes the first that exists;
+  `source_file` and `file_version` record which. A rerun picks up a republished or rewritten
+  file; the Dagster schedule will re-ingest the last 7 delivery days for that. Daily files start
+  on 2023-01-01 (older years are yearly archives, not read).
+- **UTC intervals.** `interval_start_utc` is the Madrid midnight of the delivery day plus
+  (period - 1) times the resolution, contiguous on every DST day; `resolution_minutes` and
+  `contract_version` travel with each row.
+- **Chunks and idempotency.** One download per delivery day (at most one a second) and one
+  Write-Audit-Publish run per calendar month, replacing exactly its delivery days; the table is
+  partitioned by `month(delivery_date)`, so a rerun never touches another month: a whole-month
+  rerun replaces that month's files, and a rerun of some days rewrites the files holding them,
+  keeping the other days' rows unchanged. Prices outside -500..4000 EUR/MWh are counted per run,
+  not refused.
+- **Not published yet.** OMIE answers 404 for a file it does not have (every version of a day
+  not out yet: five requests). A delivery day after today (Madrid) ends the ingestion there with
+  exit 0 (`not published yet from <day>`; the library reports `not_published_from`), after
+  writing the days before it, or exit 1 with `--require-published` (then that day's month chunk
+  writes nothing; earlier chunks stay published); a missing day up to today is always an error. Results normally appear the afternoon before, around 13:00-14:30 Madrid time.
+- **Original files.** Each lands byte for byte at
+  `s3://<bucket>/landing/omie/marginalpdbc/<YYYY>/<MM>/marginalpdbc_<YYYYMMDD>-<sha256[:12]>.<N>`;
+  every row carries that path and that hash.
+- **Library.** `ibergrid.sources.omie.ingest.ingest(settings, start, end, run_id_prefix,
+  require_published=False)`.
+- **Cross-check.** REData's spot price equals OMIE's Spanish price, and differs from Portugal's
+  where the zones decouple, on the recorded days that can tell them apart (2025-04-28 and
+  2025-10-01); on days the zones agree it confirms only the timing. Phase 4 turns it into a gate.
 
 ## Services
 
@@ -175,7 +232,7 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `catalog-init` | app image (`ibergrid catalog bootstrap`) | One-shot: bootstraps the catalog and creates the warehouse, idempotently | |
 | `broker` | `redpandadata/redpanda:v26.2.2` | Kafka API, single node | 29092 Kafka, 29644 admin |
 | `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
-| `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...` (384 MiB limit) | |
+| `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...`, `ingest omie ...` (384 MiB limit) | |
 
 Every third-party image is pinned by tag and digest in [compose.yaml](compose.yaml).
 
@@ -185,12 +242,13 @@ Every third-party image is pinned by tag and digest in [compose.yaml](compose.ya
 make sync               # install the locked dependencies (uv.lock)
 make ci                 # lint, types, unit tests (>= 90 % branch coverage) and repository checks
 make test-integration   # against the running stack (make up first)
-make test-live          # opt-in: one request per dataset to the live REData API (never in CI)
+make test-live          # opt-in: a few requests to the live REData API and omie.es (never in CI)
 ```
 
 The unit tests run the lake library on PyIceberg's SQL catalog (sqlite and local files), with no
-Docker, and replay recorded REData answers (`tests/fixtures/redata`, recorded by
-`scripts/record_redata_fixtures.py`) from a local server: they never call the live API. DuckDB downloads its `iceberg`, `httpfs` and `avro` extensions on first use outside the
+Docker, and replay recorded REData answers and OMIE files (`tests/fixtures/redata` and
+`tests/fixtures/omie`, recorded by `scripts/record_redata_fixtures.py` and
+`scripts/record_omie_fixtures.py`) from a local server: they never call the live sources. DuckDB downloads its `iceberg`, `httpfs` and `avro` extensions on first use outside the
 app image, which bakes them in at build time.
 
 Branches, commits and pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go
@@ -208,17 +266,19 @@ skipped until the server's variables exist ([deploy/deploy.env.example](deploy/d
 
 ## Data sources
 
-Every row records its source widget and the update date the publisher reports
-(`series_last_update`), and keeps a pointer to the raw answer it came from.
+Every row keeps a pointer to the raw answer or file it came from; REData's rows also record their
+widget and the update date REE reports (`series_last_update`).
 
 - **Red Eléctrica (REE), REData API** (`apidatos.ree.es`): Spanish electricity system data. REE's
   [API page](https://www.ree.es/es/datos/apidatos) says the API lets third parties "retrieve data
   from the REData widgets and use them for your own purposes"; no licence text for the API was
   found. This project's practice: every dataset and every view of it carries "Source: Red
   Eléctrica, REData" and the update date REE reports.
-- **OMIE**, day-ahead market result files: Iberian electricity market data, credited as "Source:
+- **OMIE**, day-ahead market result files (`marginalpdbc`, the marginal prices for Spain and
+  Portugal, downloaded from `www.omie.es`): Iberian electricity market data, credited as "Source:
   OMIE" with a link to [omie.es](https://www.omie.es). No licence terms are assumed beyond what
-  OMIE publishes on its site.
+  OMIE publishes on its site. Every row records the file it came from, its version and its
+  SHA-256.
 
 This project is not affiliated with or endorsed by REE or OMIE.
 
@@ -229,7 +289,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Foundation and risk spike: compose stack, `ibergrid` CLI, CI/CD, docs; the lake library and the measured engine capabilities ([ADR 0002](docs/adr/0002-iceberg-write-and-read-paths.md)) | Done |
-| 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md), done) and OMIE connectors, orchestrated with Dagster (assets, partitions, schedules, backfills) | In progress |
+| 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md), done) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md), done) connectors, orchestrated with Dagster (assets, partitions, schedules, backfills) | In progress |
 | 2 | Streaming lane: Redpanda producer and consumer, dead-letter queue, deduplication, exactly-once into Bronze | Planned |
 | 3 | dbt medallion: Silver and Gold models | Planned |
 | 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |

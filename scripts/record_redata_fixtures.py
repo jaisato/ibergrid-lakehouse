@@ -42,6 +42,9 @@ FIXTURES = [
     ("market_prices", "peninsular", "2026-03-29", "2026-03-29", None, "92 and 23"),
     ("market_prices", "peninsular", "2026-10-25", "2026-10-25", None, "100 and 25"),
     ("market_prices", "peninsular", "2024-12-15", "2024-12-15", None, "spot still hourly"),
+    # Days OMIE's Spanish and Portuguese prices differ: the cross-source check sees a column swap.
+    ("market_prices", "peninsular", "2025-04-28", "2025-04-28", None, "blackout, decoupled"),
+    ("market_prices", "peninsular", "2025-10-01", "2025-10-01", None, "first 15-minute day"),
 ]
 
 

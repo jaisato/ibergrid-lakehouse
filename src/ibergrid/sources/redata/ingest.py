@@ -36,7 +36,7 @@ from ibergrid.sources.redata.normalize import (
     to_arrow,
     violations,
 )
-from ibergrid.storage import s3_filesystem
+from ibergrid.storage import land, s3_filesystem
 
 log = structlog.get_logger(__name__)
 
@@ -121,7 +121,8 @@ def ingest_chunk(
     sha256 = content_sha256(
         payload
     )  # the raw body is landed whole; its cache metadata is not hashed
-    landing_path = land(filesystem, bucket, chunk.landing_key(landing_prefix, sha256), payload)
+    key = chunk.landing_key(landing_prefix, sha256)
+    landing_path = land(filesystem, bucket, key, payload, content_type="application/json")
     window = chunk.row_filter()
     attempt = 0
     while True:
@@ -175,16 +176,6 @@ def ingest_chunk(
         return ChunkReport(
             chunk, data.num_rows, measured, broken, dropped, published, run_id, landing_path
         )
-
-
-def land(filesystem: fs.FileSystem, bucket: str, key: str, payload: bytes) -> str:
-    """Write the raw body at ``<bucket>/<key>``, replacing any earlier one; returns its URI."""
-    path = f"{bucket}/{key}"
-    if filesystem.type_name != "s3":  # a local disk (tests, a laptop) needs the directories
-        filesystem.create_dir(path.rpartition("/")[0], recursive=True)
-    with filesystem.open_output_stream(path, metadata={"Content-Type": "application/json"}) as out:
-        out.write(payload)
-    return f"s3://{path}"
 
 
 def _properties(

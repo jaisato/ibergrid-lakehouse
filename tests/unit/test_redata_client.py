@@ -9,6 +9,7 @@ from email.utils import format_datetime
 from typing import Any
 
 import pytest
+import structlog.testing
 from pydantic import HttpUrl
 
 from ibergrid.settings import RedataSettings
@@ -244,3 +245,20 @@ def test_an_error_answer_cut_short_keeps_its_status_and_is_retried() -> None:
 
     assert body == b"{}"
     assert len(delays) == 1
+
+
+def test_a_retry_is_logged_with_the_widget(serve: Serve) -> None:
+    server = serve(answers((503, None), (200, b"{}")))
+
+    with structlog.testing.capture_logs() as logs:
+        client(server, []).fetch(CANARIAS)
+
+    assert logs == [
+        {
+            "event": "redata.retry",
+            "log_level": "warning",
+            "widget": "demanda/evolucion",
+            "attempt": 1,
+            "error": "HTTP 503: (empty body)",
+        }
+    ]

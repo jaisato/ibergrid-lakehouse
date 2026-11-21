@@ -22,6 +22,9 @@ from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_t
 from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
 from ibergrid.settings import Settings, base_url, describe_validation_error
+from ibergrid.sources.omie import ingest as omie_ingest
+from ibergrid.sources.omie.client import OmieError
+from ibergrid.sources.omie.marginalpdbc import PRICE_LIMITS
 from ibergrid.sources.redata.client import RedataError
 from ibergrid.sources.redata.datasets import DATASETS
 from ibergrid.sources.redata.ingest import ChunkReport, ingest
@@ -183,6 +186,62 @@ def _print_chunk(report: ChunkReport) -> None:
         line += f"; points breaking the value rules: {broken}"
     if report.dropped_series:
         line += f"; series no longer in the answer: {', '.join(report.dropped_series)}"
+    typer.echo(line)
+
+
+@ingest_app.command("omie")
+def ingest_omie(
+    start: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="First delivery day.")],
+    end: Annotated[datetime, typer.Option(formats=["%Y-%m-%d"], help="Last delivery day.")],
+    require_published: Annotated[
+        bool,
+        typer.Option(
+            "--require-published",
+            help=(
+                "Exit 1, not 0, when a delivery day after today is not published yet; "
+                "that day's month chunk then writes nothing."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Download OMIE's day-ahead marginal prices for delivery days [start, end] and publish them
+    to bronze.omie_day_ahead_prices, one month at a time; a rerun replaces the same rows. Stops
+    at the first day OMIE has not published yet (exit 0, or 1 with --require-published); exits 1
+    at the first failed chunk."""
+    settings = _load_settings()
+    try:
+        reports = omie_ingest.ingest(
+            settings,
+            start.date(),
+            end.date(),
+            on_chunk=_print_omie_chunk,
+            require_published=require_published,
+        )
+    # OSError: the catalog or the bucket did not answer; RESTError: the catalog refused.
+    except (OmieError, WapError, ValueError, OSError, RESTError) as exc:
+        _fail(exc)
+    line = f"omie: {sum(1 for r in reports if r.written)} chunk(s) published"
+    if reports[-1].not_published_from is not None:
+        line += f"; not published yet from {reports[-1].not_published_from}"
+    typer.echo(line)
+
+
+def _print_omie_chunk(report: omie_ingest.ChunkReport) -> None:
+    if report.written is None:
+        typer.echo(f"omie: {report.chunk.start}..{report.chunk.end}: nothing published yet")
+        return
+    files = ", ".join(f"v{version} {count}" for version, count in report.versions.items())
+    line = (
+        f"omie: {report.written.start}..{report.written.end}: "
+        f"{sum(report.versions.values())} file(s) ({files}), {report.rows} rows, "
+        f"snapshot {report.snapshot_id}"
+    )
+    if report.violations:
+        low, high = PRICE_LIMITS
+        broken = ", ".join(f"{column} {count}" for column, count in report.violations.items())
+        line += f"; prices outside {low:g}..{high:g} EUR/MWh: {broken}"
+    if report.not_published_from is not None:
+        line += f"; not published yet from {report.not_published_from}"
     typer.echo(line)
 
 

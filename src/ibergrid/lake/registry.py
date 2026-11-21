@@ -3,7 +3,14 @@
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.transforms import IdentityTransform, MonthTransform
-from pyiceberg.types import DoubleType, NestedField, StringType, TimestamptzType
+from pyiceberg.types import (
+    DateType,
+    DoubleType,
+    IntegerType,
+    NestedField,
+    StringType,
+    TimestamptzType,
+)
 
 from ibergrid.lake.tables import TableSpec
 
@@ -38,4 +45,37 @@ REDATA_OBSERVATIONS = TableSpec(
     ),
 )
 
-TABLES: tuple[TableSpec, ...] = (REDATA_OBSERVATIONS,)
+# One row per OMIE day-ahead period (ADR 0004). The key is (delivery_date, period); each
+# ingestion run replaces whole delivery days. Partitioned by the month of delivery_date, the
+# column every run replaces by, so a rerun drops whole files instead of rewriting a neighbour's.
+OMIE_DAY_AHEAD_PRICES = TableSpec(
+    namespace="bronze",
+    name="omie_day_ahead_prices",
+    schema=Schema(
+        NestedField(1, "delivery_date", DateType(), required=True, doc="market day (Madrid)"),
+        NestedField(2, "period", IntegerType(), required=True, doc="1-based, as in the file"),
+        NestedField(3, "resolution_minutes", IntegerType(), required=True, doc="60 or 15"),
+        NestedField(4, "interval_start_utc", TimestamptzType(), required=True),
+        NestedField(5, "interval_end_utc", TimestamptzType(), required=True),
+        NestedField(6, "price_es_eur_mwh", DoubleType(), required=True, doc="Spain, column 6"),
+        NestedField(7, "price_pt_eur_mwh", DoubleType(), required=True, doc="Portugal, column 5"),
+        NestedField(
+            8, "contract_version", IntegerType(), required=True, doc="1 hourly, 2 quarter-hourly"
+        ),
+        NestedField(9, "source_file", StringType(), required=True, doc="OMIE's file name"),
+        NestedField(
+            10, "file_version", IntegerType(), required=True, doc="the N of the file name's .N"
+        ),
+        NestedField(11, "content_sha256", StringType(), required=True, doc="of the file's bytes"),
+        NestedField(12, "fetched_at", TimestamptzType(), required=True),
+        NestedField(13, "run_id", StringType(), required=True),
+        NestedField(14, "landing_path", StringType(), required=True, doc="the original file"),
+    ),
+    partition_spec=PartitionSpec(
+        PartitionField(
+            source_id=1, field_id=1000, transform=MonthTransform(), name="delivery_date_month"
+        ),
+    ),
+)
+
+TABLES: tuple[TableSpec, ...] = (REDATA_OBSERVATIONS, OMIE_DAY_AHEAD_PRICES)

@@ -36,6 +36,9 @@ x-app: &app
     IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
     IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
     IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
+    IBERGRID_OMIE_BASE_URL: ${IBERGRID_OMIE_BASE_URL:-https://www.omie.es}
+    IBERGRID_OMIE_TIMEOUT: ${IBERGRID_OMIE_TIMEOUT:-30}
+    IBERGRID_OMIE_MAX_RPS: ${IBERGRID_OMIE_MAX_RPS:-1}
     IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
     IBERGRID_LOG_FORMAT: json
 
@@ -202,9 +205,10 @@ services:
         condition: service_completed_successfully
     networks: [storage, catalog, broker]
 
-  # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...`. REData is
-  # on the public internet (these networks have egress). A month of five-minute demand (35,760
-  # rows) peaks at 238 MiB of cgroup memory (ADR 0003), hence its own limit.
+  # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...` or
+  # `... ingest omie --start ... --end ...`. REData and OMIE are on the public internet (these
+  # networks have egress). A month of five-minute demand (35,760 rows) peaks at 238 MiB of cgroup
+  # memory (ADR 0003), hence its own limit.
   ingest:
     <<: *app
     scale: 0

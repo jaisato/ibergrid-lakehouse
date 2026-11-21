@@ -36,7 +36,7 @@ from ibergrid.sources.redata.ingest import (
     ingest_chunk,
 )
 from ibergrid.sources.redata.normalize import InvalidResponse, content_sha256
-from ibergrid.storage import s3_filesystem
+from ibergrid.storage import land, s3_filesystem
 
 from .conftest import FakeRedata, LocalServer, Responder, fixture
 
@@ -572,8 +572,10 @@ def test_ingest_before_lake_init_says_so(
 def test_landing_on_a_local_disk_creates_the_directories(tmp_path: Path) -> None:
     local = fs.SubTreeFileSystem(str(tmp_path), fs.LocalFileSystem())
 
-    path = ingest_module.land(local, BUCKET, "landing/a/b.json", b"{}")
-    again = ingest_module.land(local, BUCKET, "landing/a/b.json", b"[]")  # a rerun overwrites
+    path = land(local, BUCKET, "landing/a/b.json", b"{}", content_type="application/json")
+    again = land(
+        local, BUCKET, "landing/a/b.json", b"[]", content_type="application/json"
+    )  # a rerun overwrites
 
     assert path == again == "s3://ibergrid/landing/a/b.json"
     assert (tmp_path / "ibergrid" / "landing" / "a" / "b.json").read_bytes() == b"[]"
@@ -589,4 +591,4 @@ def test_landing_on_object_storage_creates_no_directories(closed_port: int) -> N
     s3 = s3_filesystem(storage, timeout=1, max_attempts=1)
 
     with pytest.raises(OSError, match=r"landing/a/b\.json"):
-        ingest_module.land(s3, BUCKET, "landing/a/b.json", b"{}")
+        land(s3, BUCKET, "landing/a/b.json", b"{}", content_type="application/json")
