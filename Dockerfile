@@ -53,8 +53,9 @@ LABEL org.opencontainers.image.source="https://github.com/jaisato/ibergrid-lakeh
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT"
 
-# System user without a shell or home; the fixed uid lets orchestrators pin it.
-RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin ibergrid
+# System user and group without a shell or home; the fixed ids (10001:10001) let compose pin them.
+RUN groupadd --system --gid 10001 ibergrid \
+ && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin ibergrid
 
 WORKDIR /app
 COPY --from=deps /app/duckdb-extensions /app/duckdb-extensions
