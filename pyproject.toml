@@ -26,7 +26,16 @@ dependencies = [
 ibergrid = "ibergrid.cli:app"
 
 [dependency-groups]
+# Dagster (ADR 0005), only in the orchestration image: the app image (`ingest`, `doctor`) stays
+# without it. dagster-postgres follows Dagster's integration numbering (0.29.x for 1.13.x).
+orchestration = [
+  "dagster==1.13.31",
+  "dagster-graphql==1.13.31",
+  "dagster-postgres==0.29.31",
+  "dagster-webserver==1.13.31",
+]
 dev = [
+  { include-group = "orchestration" },
   "mypy>=2.4",
   "pip-audit>=2.10",
   "pre-commit>=4.7",

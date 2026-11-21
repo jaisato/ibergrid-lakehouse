@@ -736,3 +736,22 @@ def test_write_refuses_the_protocols_own_properties(loaded: Table, key: str) -> 
 
     loaded.refresh()
     assert loaded.metadata.refs[audit.name].snapshot_id == before
+
+
+def test_a_lost_runs_branch_is_listed_and_discarded_by_name(loaded: Table, other: Table) -> None:
+    """The sweeper's recovery (ADR 0002): no handle, only the name, from another process."""
+    lost = wap.start(loaded, "killed-run")
+    wap.publish(loaded, wap.start(loaded, "finished-run"), loaded.metadata.refs["main"].snapshot_id)
+
+    assert wap.audit_branches(other) == [lost.name]
+    assert wap.discard_branch(other, lost.name) is True
+    assert wap.discard_branch(other, lost.name) is False  # already gone
+    assert wap.audit_branches(loaded) == []
+    assert set(loaded.metadata.refs) == {"main"}
+
+
+def test_discard_branch_refuses_anything_but_a_run_branch(loaded: Table) -> None:
+    with pytest.raises(ValueError, match="is not a run branch"):
+        wap.discard_branch(loaded, "main")
+
+    assert "main" in loaded.metadata.refs

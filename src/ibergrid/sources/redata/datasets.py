@@ -200,10 +200,12 @@ def dataset_named(name: str) -> Dataset:
 
 
 def plan(dataset: Dataset, start: date, end: date, systems: tuple[str, ...] = ()) -> list[Chunk]:
-    """The chunks for [start, end] (local days, inclusive): every selected system (all of them
-    when none is named), each split at calendar month or year boundaries. A year chunk that would
-    end inside a month ends at the month before, and the rest of that month is a chunk of its own:
-    REData answers a long daily window ending mid-month up to the month's end (ADR 0003)."""
+    """The chunks for [start, end] (local days, inclusive), split at calendar month or year
+    boundaries, window by window: every selected system's chunk of a window (all systems when none
+    is named) before the next window, so a window is complete as soon as its last system is. A
+    year chunk that would end inside a month ends at the month before, and the rest of that month
+    is a chunk of its own: REData answers a long daily window ending mid-month up to the month's
+    end (ADR 0003)."""
     if end < start:
         raise ValueError(f"end {end} is before start {start}")
     known = {system.name: system for system in dataset.systems}
@@ -213,19 +215,19 @@ def plan(dataset: Dataset, start: date, end: date, systems: tuple[str, ...] = ()
             f"{dataset.name} has no system {', '.join(map(repr, unknown))}; "
             f"expected one of: {', '.join(known)}"
         )
-    chunks = []
-    for system in [known[name] for name in dict.fromkeys(systems)] or dataset.systems:
-        first = start
-        while first <= end:
-            if dataset.chunk == "month":
-                last = min(end, _month_end(first))
-            else:
-                last = min(end, first.replace(month=12, day=31))
-                if last != _month_end(last) and last.replace(day=1) > first:
-                    last = last.replace(day=1) - timedelta(days=1)
-            chunks.append(Chunk(dataset, system, first, last))
-            first = last + timedelta(days=1)
-    return chunks
+    windows = []
+    first = start
+    while first <= end:
+        if dataset.chunk == "month":
+            last = min(end, _month_end(first))
+        else:
+            last = min(end, first.replace(month=12, day=31))
+            if last != _month_end(last) and last.replace(day=1) > first:
+                last = last.replace(day=1) - timedelta(days=1)
+        windows.append((first, last))
+        first = last + timedelta(days=1)
+    selected = [known[name] for name in dict.fromkeys(systems)] or dataset.systems
+    return [Chunk(dataset, system, first, last) for first, last in windows for system in selected]
 
 
 def _month_end(day: date) -> date:

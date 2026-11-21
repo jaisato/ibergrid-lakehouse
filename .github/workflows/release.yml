@@ -1,7 +1,8 @@
-# Publishes the app image to GHCR and, for version tags, deploys it.
-#   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse:main and :sha-<short>
+# Publishes the app and orchestration images to GHCR and, for version tags, deploys them.
+#   push to main   -> ghcr.io/jaisato/ibergrid-lakehouse{,-orchestration}:main and :sha-<short>
 #   push v*.*.*    -> tag == v<pyproject version>, CI on the tagged commit, :vX.Y.Z, deploy job
-# Both build the image, run it once (`ibergrid version`) and only then push it.
+# Both build the images, run each once (`ibergrid version`; the Dagster definitions validated)
+# and only then push them.
 # The deploy job stays skipped until the repository variable DEPLOY_HOST is set (the server does
 # not exist yet); deploy/deploy.env.example lists everything it needs.
 name: Release
@@ -20,6 +21,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/jaisato/ibergrid-lakehouse
+  ORCHESTRATION_IMAGE: ghcr.io/jaisato/ibergrid-lakehouse-orchestration
 
 jobs:
   # Fail fast: a tag must name the version the package declares.
@@ -65,6 +67,7 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
+      orchestration-digest: ${{ steps.push.outputs.orchestration-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,31 +93,44 @@ jobs:
           VERSION: ${{ steps.tags.outputs.version }}
           TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          args=()
-          for tag in $TAGS; do args+=(--tag "$IMAGE:$tag"); done
-          docker build --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA" "${args[@]}" .
+          app=() orchestration=()
+          for tag in $TAGS; do
+            app+=(--tag "$IMAGE:$tag")
+            orchestration+=(--tag "$ORCHESTRATION_IMAGE:$tag")
+          done
+          build=(docker build --build-arg VERSION="$VERSION" --build-arg REVISION="$GITHUB_SHA")
+          "${build[@]}" "${app[@]}" .
+          "${build[@]}" --target orchestration "${orchestration[@]}" .
 
-      # The exact image about to be pushed must start and run the CLI.
-      - name: Smoke test the image
+      # The exact images about to be pushed must start: the CLI runs, the Dagster code loads.
+      - name: Smoke test the images
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
-        run: docker run --rm "$IMAGE:${TAGS%% *}" version
+        run: |
+          docker run --rm "$IMAGE:${TAGS%% *}" version
+          # A throwaway DAGSTER_HOME: the image's dagster.yaml needs the stack's Postgres.
+          docker run --rm --network none -e DAGSTER_HOME=/tmp "$ORCHESTRATION_IMAGE:${TAGS%% *}" \
+            dagster definitions validate -m ibergrid.orchestration.definitions
 
       - name: Push and record the digest
         id: push
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          for tag in $TAGS; do docker push --quiet "$IMAGE:$tag"; done
           first="${TAGS%% *}"
-          digest="$(docker buildx imagetools inspect "$IMAGE:$first" --format '{{.Manifest.Digest}}')"
-          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
-          {
-            echo "### App image"
-            echo
-            for tag in $TAGS; do echo "- \`$IMAGE:$tag\`"; done
-            echo "- digest: \`$digest\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          for image in "$IMAGE" "$ORCHESTRATION_IMAGE"; do
+            for tag in $TAGS; do docker push --quiet "$image:$tag"; done
+            digest="$(docker buildx imagetools inspect "$image:$first" --format '{{.Manifest.Digest}}')"
+            output=digest
+            [[ "$image" == "$ORCHESTRATION_IMAGE" ]] && output=orchestration-digest
+            printf '%s=%s\n' "$output" "$digest" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ${image##*/}"
+              echo
+              for tag in $TAGS; do echo "- \`$image:$tag\`"; done
+              echo "- digest: \`$digest\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Log out of GHCR
         if: always()
@@ -153,12 +169,14 @@ jobs:
       - name: Copy the compose files and run deploy/remote.sh on the server
         env:
           DIGEST: ${{ needs.image.outputs.digest }}
+          ORCHESTRATION_DIGEST: ${{ needs.image.outputs.orchestration-digest }}
         run: |
           ssh_opts=(-i "$RUNNER_TEMP/deploy_key" -o IdentitiesOnly=yes -o BatchMode=yes
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts")
           ssh "${ssh_opts[@]}" "$TARGET" mkdir -p "$DEPLOY_DIR"
           scp "${ssh_opts[@]}" compose.yaml compose.prod.yaml "$TARGET:$DEPLOY_DIR/"
-          ssh "${ssh_opts[@]}" "$TARGET" bash -s -- "$DEPLOY_DIR" "$DIGEST" < deploy/remote.sh
+          ssh "${ssh_opts[@]}" "$TARGET" bash -s -- "$DEPLOY_DIR" "$DIGEST" "$ORCHESTRATION_DIGEST" \
+            < deploy/remote.sh
 
       - name: Remove the SSH key
         if: always()

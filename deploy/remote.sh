@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # Runs ON THE SERVER, sent over SSH by the deploy job in release.yml:
-#   ssh <user>@<host> bash -s -- <deploy-dir> <sha256:digest> < deploy/remote.sh
-# Pins the released app image digest in <deploy-dir>/release.env, pulls the images, starts the
-# stack (waiting for health checks and one-shots) and runs `ibergrid doctor`. It never writes
-# <deploy-dir>/.env, which holds the secrets. Re-running it with the previous digest is the rollback.
+#   ssh <user>@<host> bash -s -- <deploy-dir> <app sha256:digest> <orchestration sha256:digest> \
+#     < deploy/remote.sh
+# Pins the released app and orchestration image digests in <deploy-dir>/release.env, pulls the
+# images, creates the lake's tables (idempotent), starts the stack (waiting for health checks and
+# one-shots) and runs `ibergrid doctor`.
+# It never writes <deploy-dir>/.env, which holds the secrets. Re-running it with the previous
+# digests is the rollback.
 set -euo pipefail
 
-usage="usage: remote.sh <deploy-dir> <sha256:digest>"
-if [[ $# -ne 2 ]]; then
+usage="usage: remote.sh <deploy-dir> <app sha256:digest> <orchestration sha256:digest>"
+if [[ $# -ne 3 ]]; then
   echo "$usage" >&2
   exit 2
 fi
 dir="$1"
-digest="$2"
-if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "not an image digest: '$digest'" >&2
-  exit 2
-fi
+app_digest="$2"
+orchestration_digest="$3"
+for digest in "$app_digest" "$orchestration_digest"; do
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "not an image digest: '$digest'" >&2
+    exit 2
+  fi
+done
 
 cd "$dir"
 if [[ ! -f .env ]]; then
@@ -28,14 +34,18 @@ if [[ ! -r .env ]]; then
   exit 1
 fi
 
-# Write the new pin next to the old one, then swap it in atomically.
+# Write the new pins next to the old ones, then swap them in atomically.
 tmp="$(mktemp release.env.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 chmod 600 "$tmp"
-printf 'IBERGRID_APP_DIGEST=%s\n' "$digest" > "$tmp"
+printf 'IBERGRID_APP_DIGEST=%s\nIBERGRID_ORCHESTRATION_DIGEST=%s\n' "$app_digest" "$orchestration_digest" > "$tmp"
 mv "$tmp" release.env
 
 compose=(docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml)
 "${compose[@]}" pull --quiet
+# Every `run` reads stdin, which is this script when sent as `bash -s < remote.sh`: without
+# </dev/null it would swallow the lines after it, and the deploy would stop there with exit 0.
+# The tables exist before Dagster's schedules start; `run` first starts the catalog and catalog-init.
+"${compose[@]}" run --rm doctor lake init </dev/null
 "${compose[@]}" up -d --wait --remove-orphans
-"${compose[@]}" run --rm --no-deps doctor
+"${compose[@]}" run --rm --no-deps doctor </dev/null

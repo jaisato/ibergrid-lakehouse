@@ -19,10 +19,11 @@ GIT_COMMON_DIR = $(shell git rev-parse --path-format=absolute --git-common-dir)
 
 # Dummy values that only let `docker compose config` validate the files without a real .env.
 COMPOSE_DUMMY_ENV := IBERGRID_S3_ACCESS_KEY=x IBERGRID_S3_SECRET_KEY=x \
-	LAKEKEEPER_DB_PASSWORD=x LAKEKEEPER_ENCRYPTION_KEY=x
+	LAKEKEEPER_DB_PASSWORD=x LAKEKEEPER_ENCRYPTION_KEY=x DAGSTER_DB_PASSWORD=x
 PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 	IBERGRID_S3_ENDPOINT_URL=https://account-id.r2.cloudflarestorage.com \
-	IBERGRID_APP_DIGEST=sha256:1111111111111111111111111111111111111111111111111111111111111111
+	IBERGRID_APP_DIGEST=sha256:1111111111111111111111111111111111111111111111111111111111111111 \
+	IBERGRID_ORCHESTRATION_DIGEST=sha256:2222222222222222222222222222222222222222222222222222222222222222
 
 .PHONY: help sync lock lint format typecheck test test-integration test-live audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke
@@ -92,10 +93,10 @@ gitleaks: ## Scan the whole history of the current branch for secrets (pinned gi
 env: ## Create .env with random local secrets (never overwrites an existing one)
 	./scripts/gen-env.sh
 
-build: ## Build the app image (ibergrid-app:local)
-	$(COMPOSE) build catalog-init
+build: ## Build the app and orchestration images (ibergrid-app:local, ibergrid-orchestration:local)
+	$(COMPOSE) build catalog-init dagster-code
 
-up: ## Build the app image and start the stack; waits until every service is ready
+up: ## Build the images and start the stack; waits until every service is ready (Dagster UI: http://127.0.0.1:28300)
 	$(STACK) up -d --wait --build
 
 down: ## Stop the stack, keeping its volumes

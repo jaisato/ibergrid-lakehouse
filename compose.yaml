@@ -18,29 +18,40 @@ x-lakekeeper-env: &lakekeeper-env
   # request's Host header, so host clients get 127.0.0.1:28181 and containers get catalog:8181.
   RUST_LOG: info
 
-# The ibergrid app image (catalog-init, doctor, ingest). Same variable names as ibergrid.settings.
+# What ibergrid's code reads, in the app's one-shots and in dagster-code's runs. Same variable
+# names as ibergrid.settings.
+x-app-env: &app-env
+  IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:-http://storage:9000}
+  IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-us-east-1}
+  IBERGRID_S3_BUCKET: ${IBERGRID_S3_BUCKET:-ibergrid}
+  IBERGRID_S3_ACCESS_KEY: ${IBERGRID_S3_ACCESS_KEY:?set IBERGRID_S3_ACCESS_KEY in .env (make env)}
+  IBERGRID_S3_SECRET_KEY: ${IBERGRID_S3_SECRET_KEY:?set IBERGRID_S3_SECRET_KEY in .env (make env)}
+  IBERGRID_CATALOG_URL: http://catalog:8181
+  IBERGRID_CATALOG_WAREHOUSE: ${IBERGRID_CATALOG_WAREHOUSE:-lakehouse}
+  IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
+  IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
+  IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
+  IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
+  IBERGRID_OMIE_BASE_URL: ${IBERGRID_OMIE_BASE_URL:-https://www.omie.es}
+  IBERGRID_OMIE_TIMEOUT: ${IBERGRID_OMIE_TIMEOUT:-30}
+  IBERGRID_OMIE_MAX_RPS: ${IBERGRID_OMIE_MAX_RPS:-1}
+  IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
+  IBERGRID_LOG_FORMAT: json
+
+# The ibergrid app image (catalog-init, doctor, ingest).
 x-app: &app
   <<: *hardened
   image: ibergrid-app:local
   restart: "no"
   mem_limit: 192m
-  environment:
-    IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:-http://storage:9000}
-    IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-us-east-1}
-    IBERGRID_S3_BUCKET: ${IBERGRID_S3_BUCKET:-ibergrid}
-    IBERGRID_S3_ACCESS_KEY: ${IBERGRID_S3_ACCESS_KEY:?set IBERGRID_S3_ACCESS_KEY in .env (make env)}
-    IBERGRID_S3_SECRET_KEY: ${IBERGRID_S3_SECRET_KEY:?set IBERGRID_S3_SECRET_KEY in .env (make env)}
-    IBERGRID_CATALOG_URL: http://catalog:8181
-    IBERGRID_CATALOG_WAREHOUSE: ${IBERGRID_CATALOG_WAREHOUSE:-lakehouse}
-    IBERGRID_BROKER_BOOTSTRAP_SERVERS: broker:9092
-    IBERGRID_REDATA_BASE_URL: ${IBERGRID_REDATA_BASE_URL:-https://apidatos.ree.es}
-    IBERGRID_REDATA_TIMEOUT: ${IBERGRID_REDATA_TIMEOUT:-60}
-    IBERGRID_REDATA_MAX_RPS: ${IBERGRID_REDATA_MAX_RPS:-1}
-    IBERGRID_OMIE_BASE_URL: ${IBERGRID_OMIE_BASE_URL:-https://www.omie.es}
-    IBERGRID_OMIE_TIMEOUT: ${IBERGRID_OMIE_TIMEOUT:-30}
-    IBERGRID_OMIE_MAX_RPS: ${IBERGRID_OMIE_MAX_RPS:-1}
-    IBERGRID_LOG_LEVEL: ${IBERGRID_LOG_LEVEL:-INFO}
-    IBERGRID_LOG_FORMAT: json
+  environment: *app-env
+
+# The orchestration image (ADR 0005): the app plus Dagster and its instance configuration.
+x-orchestration: &orchestration
+  <<: *hardened
+  image: ibergrid-orchestration:local
+  restart: on-failure
+  user: "10001:10001"
 
 services:
   # --- Object storage (local only; production uses Cloudflare R2) --------------------------------
@@ -190,6 +201,118 @@ services:
       timeout: 5s
       retries: 12
 
+  # --- Orchestration: Dagster (ADR 0005) on Postgres ---------------------------------------------
+  orchestration-db:
+    <<: *hardened
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
+    user: postgres
+    restart: on-failure
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: dagster
+      POSTGRES_DB: dagster
+      POSTGRES_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
+    volumes:
+      - orchestration-db-data:/var/lib/postgresql/data
+    networks: [orchestration-db]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "dagster", "-d", "dagster"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: create or upgrade Dagster's schema, so the services below never race to create it.
+  orchestration-migrate:
+    <<: *orchestration
+    command: ["dagster", "instance", "migrate"]
+    restart: "no"
+    mem_limit: 256m
+    environment:
+      DAGSTER_PG_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
+    depends_on:
+      orchestration-db:
+        condition: service_healthy
+    networks: [orchestration-db]
+
+  # gRPC code server with ibergrid.orchestration.definitions. The default run launcher runs every
+  # run as a subprocess here, so this is the one Dagster service with the lake's keys and egress
+  # to the sources (storage and catalog have egress), and its memory limit covers the runs: at
+  # most one REData and one OMIE run at a time (pools of 1) plus the sweeper.
+  dagster-code:
+    <<: *orchestration
+    command:
+      ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000",
+       "-m", "ibergrid.orchestration.definitions"]
+    mem_limit: 1536m
+    # On a stop (a deploy recreates it) the code server waits for its runs to end: Docker's default
+    # 10 s would kill them, leaving runs "started" that hold their pool until the runtime limit.
+    stop_grace_period: 5m
+    environment:
+      <<: *app-env
+      DAGSTER_PG_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
+      # Stopped by default: a local stack never calls the sources on its own.
+      IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING: ${IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING:-false}
+    volumes:
+      - orchestration-compute-logs:/opt/dagster/compute-logs
+    depends_on:
+      orchestration-migrate:
+        condition: service_completed_successfully
+      catalog-init:
+        condition: service_completed_successfully
+    networks: [orchestration, orchestration-db, storage, catalog]
+    # Each check starts a Python process (about 1 s of CPU): every minute, every 5 s while starting.
+    healthcheck:
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+
+  # The UI and GraphQL API. No host port in production; locally 127.0.0.1:28300.
+  dagster-webserver:
+    <<: *orchestration
+    command:
+      ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000",
+       "-w", "/opt/dagster/home/workspace.yaml"]
+    mem_limit: 768m
+    environment:
+      DAGSTER_PG_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
+    volumes:
+      - orchestration-compute-logs:/opt/dagster/compute-logs:ro
+    depends_on:
+      dagster-code:
+        condition: service_healthy
+    networks: [orchestration, orchestration-db]
+    healthcheck:
+      test:
+        ["CMD", "python", "-c",
+         "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/server_info', timeout=3)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+
+  # Schedules, backfills, the run queue with its pools, and run monitoring.
+  dagster-daemon:
+    <<: *orchestration
+    command: ["dagster-daemon", "run", "-w", "/opt/dagster/home/workspace.yaml"]
+    mem_limit: 512m
+    environment:
+      DAGSTER_PG_PASSWORD: ${DAGSTER_DB_PASSWORD:?set DAGSTER_DB_PASSWORD in .env (make env)}
+    depends_on:
+      dagster-code:
+        condition: service_healthy
+    networks: [orchestration, orchestration-db]
+    healthcheck:
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+
   # --- Tools -------------------------------------------------------------------------------------
   # Readiness report from inside the network: `docker compose run --rm --no-deps doctor` (make smoke
   # and the deploy job); with arguments it runs other ibergrid commands, such as `lake init`.
@@ -224,8 +347,15 @@ networks:
   # Postgres needs no egress: only Lakekeeper talks to it.
   catalog-db:
     internal: true
+  # Dagster's services among themselves (gRPC to dagster-code) and to their Postgres: no egress.
+  orchestration:
+    internal: true
+  orchestration-db:
+    internal: true
 
 volumes:
   storage-data:
   catalog-db-data:
   broker-data:
+  orchestration-db-data:
+  orchestration-compute-logs:

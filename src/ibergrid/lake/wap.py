@@ -294,6 +294,28 @@ def discard(table: Table, audit: AuditBranch) -> None:
             table.manage_snapshots().remove_branch(audit.name).commit()
 
 
+def audit_branches(table: Table) -> list[str]:
+    """The names of the run branches on ``table``: published and discarded runs leave none."""
+    table.refresh()
+    return sorted(name for name in table.metadata.refs if name.startswith(BRANCH_PREFIX))
+
+
+def discard_branch(table: Table, name: str) -> bool:
+    """Remove a run's branch by name, for a run whose handle is lost (its process was killed).
+
+    The caller must know that the run is over: refs carry no owner or creation time (ADR 0002).
+    False if the branch was already gone.
+    """
+    if not name.startswith(BRANCH_PREFIX):
+        raise ValueError(f"{name!r} is not a run branch ({BRANCH_PREFIX}*)")
+    table.refresh()
+    if name not in table.metadata.refs:
+        return False
+    with _concurrently(f"discarding branch {name!r}"):
+        table.manage_snapshots().remove_branch(name).commit()
+    return True
+
+
 def _lineage_head(table: Table, audit: AuditBranch) -> int:
     """The branch head after a refresh, once it is known to descend from the run's root."""
     table.refresh()

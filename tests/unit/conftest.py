@@ -7,6 +7,7 @@ import threading
 import urllib.parse
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -33,13 +34,14 @@ Responder = Callable[[Recorded], tuple[int, Any] | tuple[int, Any, dict[str, str
 
 
 class LocalServer:
-    """An HTTP server on an ephemeral 127.0.0.1 port that records requests and answers them."""
+    """An HTTP server on an ephemeral port that records requests and answers them; on 127.0.0.1
+    unless another local address is given (one that containers reach, for Dagster's runs)."""
 
-    def __init__(self, responder: Responder) -> None:
+    def __init__(self, responder: Responder, host: str = "127.0.0.1") -> None:
         self.responder = responder
         self.requests: list[Recorded] = []
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.url = f"http://127.0.0.1:{self._httpd.server_port}"
+        self._httpd = ThreadingHTTPServer((host, 0), self._handler())
+        self.url = f"http://{host}:{self._httpd.server_port}"
         # A short poll interval keeps shutdown() (and so each test teardown) fast.
         threading.Thread(target=self._httpd.serve_forever, args=(0.01,), daemon=True).start()
 
@@ -191,6 +193,19 @@ class FakeRedata:
 
 def fixture(name: str) -> bytes:
     return (REDATA_FIXTURES / name).read_bytes()
+
+
+def restamped(name: str, *days: date) -> bytes:
+    """A recorded REData answer for 2026-11-18, its points repeated for each of ``days``."""
+    body = json.loads(fixture(name))
+    for series in body["included"]:
+        points = series["attributes"]["values"]
+        series["attributes"]["values"] = [
+            {**point, "datetime": point["datetime"].replace("2026-11-18", str(day))}
+            for day in days
+            for point in points
+        ]
+    return json.dumps(body).encode()
 
 
 OMIE_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "omie"

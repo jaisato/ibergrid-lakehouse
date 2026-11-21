@@ -81,6 +81,18 @@ def test_every_system_by_default_and_named_ones_once_in_order() -> None:
     assert [c.system.name for c in named] == ["melilla", "canarias"]
 
 
+def test_every_systems_chunk_of_a_window_comes_before_the_next_window() -> None:
+    """So a window is complete, and its days recorded by the orchestrator, window by window."""
+    chunks = plan(HOURLY, date(2026, 10, 31), date(2026, 11, 1), ("peninsular", "canarias"))
+
+    assert [(c.system.name, str(c.start)) for c in chunks] == [
+        ("peninsular", "2026-10-31"),
+        ("canarias", "2026-10-31"),
+        ("peninsular", "2026-11-01"),
+        ("canarias", "2026-11-01"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("call", "message"),
     [

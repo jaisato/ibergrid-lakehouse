@@ -5,4 +5,5 @@
 !README.md
 !LICENSE
 !src/
+!config/dagster/
 **/__pycache__

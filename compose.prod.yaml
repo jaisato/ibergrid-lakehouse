@@ -1,7 +1,9 @@
 # Production overlay, as deploy/remote.sh runs it on the server:
 #   docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml <command>
 # - object storage is Cloudflare R2 (the local-storage profile stays off);
-# - the app image comes from GHCR pinned by digest (the deploy job writes release.env);
+# - the app and orchestration images come from GHCR pinned by digest (the deploy job writes
+#   release.env);
+# - the Dagster schedules run (locally they start stopped);
 # - nothing is published on host ports (phase 6 adds a reverse proxy for public endpoints);
 # - long-running services restart unless stopped and every log rotates.
 x-logging: &logging
@@ -21,6 +23,14 @@ x-app: &app
     IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
     IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
 
+x-orchestration: &orchestration
+  image: ${IBERGRID_ORCHESTRATION_IMAGE:-ghcr.io/jaisato/ibergrid-lakehouse-orchestration}@${IBERGRID_ORCHESTRATION_DIGEST:?set IBERGRID_ORCHESTRATION_DIGEST (sha256:...) in release.env; the deploy job writes it}
+  logging: *logging
+
+x-orchestration-long-running: &orchestration-long-running
+  <<: *orchestration
+  restart: unless-stopped
+
 services:
   catalog-db: *long-running
   catalog: *long-running
@@ -30,3 +40,13 @@ services:
   catalog-init: *app
   doctor: *app
   ingest: *app
+  orchestration-db: *long-running
+  orchestration-migrate: *orchestration
+  dagster-code:
+    <<: *orchestration-long-running
+    environment:
+      IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
+      IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
+      IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING: ${IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING:-true}
+  dagster-webserver: *orchestration-long-running
+  dagster-daemon: *orchestration-long-running
