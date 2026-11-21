@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from ibergrid.catalog_admin import CatalogAdmin
+from ibergrid.catalog_admin import CatalogAdmin, storage_credential
+from ibergrid.settings import Settings
 
 from .conftest import CATALOG_URL, compose_run
 
@@ -69,3 +70,25 @@ def test_update_credential_is_accepted_by_the_catalog() -> None:
     assert f"warehouse {WAREHOUSE!r} now uses the current S3 keys" in result.stdout
     # Only Lakekeeper's `updated-at` moves: same warehouse, same storage profile.
     assert without_timestamp() == before
+
+
+def test_update_credential_keeps_hand_set_profile_fields(settings: Settings) -> None:
+    """Only the fields ibergrid owns are rewritten; one set by hand (here the remote-signing URL
+    style) survives, against the real management API."""
+    admin = CatalogAdmin(CATALOG_URL)
+    [warehouse] = [w for w in warehouses() if w["name"] == WAREHOUSE]
+    path = f"/management/v1/warehouse/{warehouse['id']}/storage"
+    profile = warehouse["storage-profile"] | {"remote-signing-url-style": "path"}
+    admin.expect(
+        "POST",
+        path,
+        {"storage-profile": profile, "storage-credential": storage_credential(settings.storage)},
+        ok=200,
+    )
+
+    result = compose_run("catalog-init", "catalog", "update-credential")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    [warehouse] = [w for w in warehouses() if w["name"] == WAREHOUSE]
+    kept = warehouse["storage-profile"]
+    assert (kept["remote-signing-url-style"], kept["remote-signing-enabled"]) == ("path", False)

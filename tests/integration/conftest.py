@@ -89,6 +89,7 @@ class CatalogProxy:
     def __init__(self) -> None:
         self.commits: list[dict[str, Any]] = []
         self.before_next_commit: Callable[[], object] | None = None
+        self.fail_next_commit: int | None = None  # answer it with this status, unforwarded
         proxy = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -98,6 +99,11 @@ class CatalogProxy:
                 if is_commit and proxy.before_next_commit is not None:
                     hook, proxy.before_next_commit = proxy.before_next_commit, None
                     hook()
+                if is_commit and proxy.fail_next_commit is not None:
+                    status, proxy.fail_next_commit = proxy.fail_next_commit, None
+                    error = {"type": "InternalServerError", "message": "injected", "code": status}
+                    self._answer(status, json.dumps({"error": error}).encode())
+                    return
                 # The Host header goes along: Lakekeeper advertises the URI the client used, so
                 # the client keeps talking to the proxy.
                 headers = {k: v for k, v in self.headers.items() if k.lower() != "content-length"}
@@ -111,6 +117,9 @@ class CatalogProxy:
                     status, answer = exc.code, exc.read()
                 if is_commit:
                     proxy.commits.append({"body": json.loads(body), "status": status})
+                self._answer(status, answer)
+
+            def _answer(self, status: int, answer: bytes) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(answer)))

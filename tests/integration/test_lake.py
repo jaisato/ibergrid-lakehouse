@@ -150,6 +150,37 @@ def test_lakekeeper_rejects_publishing_a_branch_written_after_its_audit(
     assert 9 in wap.read(table, audit).rows["value"].to_pylist()
 
 
+def test_a_run_that_deletes_every_row_leaves_main_readable(
+    catalog: LakeCatalog, namespace: str, con: duckdb.DuckDBPyConnection
+) -> None:
+    table = make_table(catalog, namespace)
+    name = f"{duck.CATALOG}.{namespace}.readings"
+    table.append(rows((JAN, 1), (FEB, 2)))
+    audit = wap.start(table, "wipe")
+
+    audited = wap.write(table, audit, rows(), overwrite_filter="value >= 0")
+    wap.publish(table, audit, audited)
+
+    assert values(duck.scan(con, name)) == []
+    assert duck.describe(con, name).data_files == 0
+
+
+def test_lakekeeper_orders_checkpoints_of_runs_without_data(
+    catalog: LakeCatalog, namespace: str
+) -> None:
+    table = make_table(catalog, namespace)
+    table.append(rows((JAN, 1)))
+    elsewhere = catalog.load_table((namespace, "readings"))
+    late, early = wap.start(table, "late"), wap.start(elsewhere, "early")
+    wap.publish(elsewhere, early, wap.head(elsewhere, early), set_properties={"offsets": "p0:20"})
+
+    with pytest.raises(wap.PublishConflict, match="main moved"):
+        wap.publish(table, late, wap.head(table, late), set_properties={"offsets": "p0:12"})
+
+    table.refresh()
+    assert table.properties["offsets"] == "p0:20"
+
+
 def test_a_discard_racing_a_write_cannot_publish_a_partial_run(
     catalog: LakeCatalog, namespace: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -244,6 +275,23 @@ def test_a_write_during_compaction_wins_and_the_compaction_says_so(
     table.refresh()
     assert 777 in [r["value"] for r in table.scan().to_arrow().to_pylist()]
     assert table.current_snapshot().summary.operation.value == "append"  # type: ignore[union-attr]
+
+
+def test_a_compaction_whose_commit_answer_is_unknown_is_not_called_a_conflict(
+    catalog: LakeCatalog, namespace: str, settings: Settings, proxy: CatalogProxy
+) -> None:
+    table = make_table(catalog, namespace)
+    for value in range(6):
+        table.append(rows((JAN, value)))
+    via_proxy = settings.catalog.model_copy(update={"url": HttpUrl(proxy.url)})
+    con = duck.connect(settings.model_copy(update={"catalog": via_proxy}))
+    proxy.fail_next_commit = 502
+
+    with pytest.raises(duckdb.TransactionException) as failure:
+        maintenance.rewrite_data_files(con, f"{duck.CATALOG}.{namespace}.readings")
+
+    assert not isinstance(failure.value, maintenance.MaintenanceConflict)
+    assert "Conflict_409" not in str(failure.value)
 
 
 def test_wrong_storage_keys_fail_without_leaking_or_committing(
