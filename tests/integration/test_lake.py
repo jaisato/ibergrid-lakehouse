@@ -181,6 +181,49 @@ def test_lakekeeper_orders_checkpoints_of_runs_without_data(
     assert table.properties["offsets"] == "p0:20"
 
 
+def test_a_checkpoint_needs_live_data_in_main(
+    catalog: LakeCatalog, namespace: str, con: duckdb.DuckDBPyConnection
+) -> None:
+    table = make_table(catalog, namespace)
+    name = f"{duck.CATALOG}.{namespace}.readings"
+    table.append(rows((JAN, 1)))
+    wipe = wap.start(table, "wipe")
+    wap.publish(table, wipe, wap.write(table, wipe, rows(), overwrite_filter="value >= 0"))
+    idle = wap.start(table, "idle")
+
+    with pytest.raises(wap.WapError, match="a checkpoint needs data"):
+        wap.publish(table, idle, wap.head(table, idle), set_properties={"offsets": "p0:5"})
+
+    assert values(duck.scan(con, name)) == []
+    assert duck.describe(con, name).data_files == 0
+
+
+def test_a_checkpoint_whose_publish_answer_was_lost_resumes(
+    catalog: LakeCatalog,
+    namespace: str,
+    settings: Settings,
+    proxy: CatalogProxy,
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    make_table(catalog, namespace).append(rows((JAN, 1)))
+    via_proxy = settings.catalog.model_copy(update={"url": HttpUrl(proxy.url)})
+    table = rest_catalog(settings.model_copy(update={"catalog": via_proxy})).load_table(
+        (namespace, "readings")
+    )
+    audit = wap.start(table, "idle")
+    audited = wap.head(table, audit)
+    proxy.fail_commits = [None, 502]  # the checkpoint append lands, the publish gets a 502
+
+    with pytest.raises(wap.WapError, match="publish again with the same arguments"):
+        wap.publish(table, audit, audited, set_properties={"offsets": "p0:5"})
+    checkpoint = wap.publish(table, audit, audited, set_properties={"offsets": "p0:5"})
+
+    table.refresh()
+    assert table.metadata.current_snapshot_id == checkpoint != audited
+    assert table.properties["offsets"] == "p0:5"
+    assert values(duck.scan(con, f"{duck.CATALOG}.{namespace}.readings")) == [1]
+
+
 def test_a_discard_racing_a_write_cannot_publish_a_partial_run(
     catalog: LakeCatalog, namespace: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -285,7 +328,7 @@ def test_a_compaction_whose_commit_answer_is_unknown_is_not_called_a_conflict(
         table.append(rows((JAN, value)))
     via_proxy = settings.catalog.model_copy(update={"url": HttpUrl(proxy.url)})
     con = duck.connect(settings.model_copy(update={"catalog": via_proxy}))
-    proxy.fail_next_commit = 502
+    proxy.fail_commits = [502]
 
     with pytest.raises(duckdb.TransactionException) as failure:
         maintenance.rewrite_data_files(con, f"{duck.CATALOG}.{namespace}.readings")

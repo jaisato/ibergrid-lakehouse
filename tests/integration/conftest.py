@@ -89,24 +89,30 @@ class CatalogProxy:
     def __init__(self) -> None:
         self.commits: list[dict[str, Any]] = []
         self.before_next_commit: Callable[[], object] | None = None
-        self.fail_next_commit: int | None = None  # answer it with this status, unforwarded
+        # One entry per coming commit: None forwards it, a status answers it unforwarded.
+        self.fail_commits: list[int | None] = []
         proxy = self
 
         class Handler(BaseHTTPRequestHandler):
             def handle_any(self) -> None:
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                is_commit = self.command == "POST" and "/transactions/commit" in self.path
+                # DuckDB commits through /transactions/commit, PyIceberg through /tables/<name>.
+                is_commit = self.command == "POST" and (
+                    "/transactions/commit" in self.path or "/tables/" in self.path
+                )
                 if is_commit and proxy.before_next_commit is not None:
                     hook, proxy.before_next_commit = proxy.before_next_commit, None
                     hook()
-                if is_commit and proxy.fail_next_commit is not None:
-                    status, proxy.fail_next_commit = proxy.fail_next_commit, None
-                    error = {"type": "InternalServerError", "message": "injected", "code": status}
-                    self._answer(status, json.dumps({"error": error}).encode())
+                failure = proxy.fail_commits.pop(0) if is_commit and proxy.fail_commits else None
+                if failure is not None:
+                    error = {"type": "BadGateway", "message": "injected", "code": failure}
+                    self._answer(failure, json.dumps({"error": error}).encode())
                     return
                 # The Host header goes along: Lakekeeper advertises the URI the client used, so
                 # the client keeps talking to the proxy.
-                headers = {k: v for k, v in self.headers.items() if k.lower() != "content-length"}
+                # Accept-Encoding stays behind: the answer is passed on without its encoding.
+                skip = {"content-length", "accept-encoding"}
+                headers = {k: v for k, v in self.headers.items() if k.lower() not in skip}
                 request = urllib.request.Request(  # noqa: S310 (fixed http URL)
                     CATALOG_URL + self.path, data=body or None, method=self.command, headers=headers
                 )
