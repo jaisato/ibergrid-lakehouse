@@ -123,14 +123,18 @@ def bootstrap_catalog(
 def update_credential(
     admin: CatalogAdmin, catalog: CatalogSettings, storage: StorageSettings
 ) -> None:
-    """Replace the warehouse's stored S3 credential with the keys in ``storage``."""
+    """Replace the warehouse's stored S3 credential, and its storage profile, with the current
+    settings.
+
+    The profile goes along because Lakekeeper validates a profile update with the credential
+    and because warehouses created before ADR 0002 still have remote signing on.
+    """
     warehouse_id = _warehouse_id(admin, catalog)
     if warehouse_id is None:
         raise CatalogError(f"warehouse {catalog.warehouse!r} does not exist: bootstrap it first")
-    path = f"/management/v1/warehouse/{warehouse_id}/storage-credential"
-    _send_secret(
-        admin, path, {"new-storage-credential": storage_credential(storage)}, storage, ok=200
-    )
+    body = warehouse_request(catalog, storage)
+    del body["warehouse-name"]
+    _send_secret(admin, f"/management/v1/warehouse/{warehouse_id}/storage", body, storage, ok=200)
     log.info("catalog.credential", warehouse=catalog.warehouse, changed=True)
 
 

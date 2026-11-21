@@ -123,9 +123,24 @@ def test_update_credential_replaces_the_stored_keys(serve: Serve) -> None:
 
     update_credential(admin_for(server), CATALOG, rotated)
 
-    stored = lakekeeper.warehouses["lakehouse"]["storage-credential"]
-    assert stored["secret-access-key"] == "rotated-secret"
-    assert stored["credential-type"] == "access-key"
+    stored = lakekeeper.warehouses["lakehouse"]
+    assert stored["storage-credential"]["secret-access-key"] == "rotated-secret"
+    assert stored["storage-credential"]["credential-type"] == "access-key"
+    assert stored["storage-profile"]["remote-signing-enabled"] is False
+
+
+def test_update_credential_also_turns_remote_signing_off(serve: Serve) -> None:
+    """A warehouse created before ADR 0002 gets the current profile (remote signing off)."""
+    lakekeeper = FakeLakekeeper()
+    server = serve(lakekeeper)
+    bootstrap_catalog(admin_for(server), CATALOG, STORAGE)
+    lakekeeper.warehouses["lakehouse"]["storage-profile"]["remote-signing-enabled"] = True
+
+    update_credential(admin_for(server), CATALOG, STORAGE)
+
+    assert lakekeeper.warehouses["lakehouse"]["storage-profile"]["remote-signing-enabled"] is False
+    [call] = [r for r in server.requests if r.path.endswith("/storage")]
+    assert set(call.body) == {"storage-profile", "storage-credential"}
 
 
 def test_update_credential_needs_an_existing_warehouse(serve: Serve) -> None:

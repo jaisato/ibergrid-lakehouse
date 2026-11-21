@@ -103,12 +103,11 @@ class FakeLakekeeper:
                 name = request.body["warehouse-name"]
                 self.warehouses[name] = request.body
                 return 201, {"name": name, "id": f"id-{name}"}
-            case "POST", path if path.endswith("/storage-credential"):
+            case "POST", path if path.endswith("/storage"):
                 name = path.removeprefix("/management/v1/warehouse/id-").split("/")[0]
                 if name not in self.warehouses:
                     return 404, error("WarehouseNotFound", f"no warehouse {name}", 404)
-                credential = request.body["new-storage-credential"]
-                self.warehouses[name]["storage-credential"] = credential
+                self.warehouses[name] |= request.body
                 return 200, {"name": name, "id": f"id-{name}"}
         return 404, error("NotFound", f"no route for {request.method} {request.path}", 404)
 

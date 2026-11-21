@@ -82,7 +82,7 @@ def catalog_bootstrap() -> None:
 
 @catalog_app.command("update-credential")
 def catalog_update_credential() -> None:
-    """Store the current IBERGRID_S3_* keys in the warehouse (after rotating them)."""
+    """Store the current IBERGRID_S3_* keys and storage profile in the warehouse."""
     settings = _load_settings()
     admin = CatalogAdmin(base_url(settings.catalog.url))
     try:
