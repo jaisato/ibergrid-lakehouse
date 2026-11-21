@@ -35,7 +35,7 @@ class RedataClient(_http.PoliteClient):
     def fetch(self, chunk: Chunk) -> bytes:
         """The response body of a 200, or ``RedataError`` naming the widget and the parameters."""
         what = f"REData {chunk.dataset.widget} {chunk.params()}"
-        status, body = self.get(self.url(chunk), what)
+        status, body = self.get(self.url(chunk), what, widget=chunk.dataset.widget)
         if status != 200:
             failure = f"HTTP {status}: {self.detail(body)}"
             raise RedataError(f"{what}: {failure} (permanent, not retried)")

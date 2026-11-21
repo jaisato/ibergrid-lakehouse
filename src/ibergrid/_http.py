@@ -102,9 +102,10 @@ class PoliteClient:
         """What an error answer says, for messages: by default the start of its body."""
         return body[:200].decode(errors="replace") or "(empty body)"
 
-    def get(self, url: str, what: str) -> tuple[int, bytes]:
+    def get(self, url: str, what: str, **context: str) -> tuple[int, bytes]:
         """The first answer that is not 429 or 5xx, as ``(status, body)``; ``self.error`` naming
-        ``what`` once the attempts run out or ``Retry-After`` asks for too long."""
+        ``what`` once the attempts run out or ``Retry-After`` asks for too long. ``context`` goes
+        into each retry's log event (``<source>.retry``)."""
         attempt = 0
         while True:
             attempt += 1
@@ -128,7 +129,7 @@ class PoliteClient:
                 delay = base * random.uniform(0.5, 1.0)  # noqa: S311 (jitter, not security)
             elif delay > self.max_delay:
                 raise self.error(f"{what}: {failure}; Retry-After {delay:.0f} s is too long")
-            log.warning(f"{self.source}.retry", what=what, attempt=attempt, error=failure)
+            log.warning(f"{self.source}.retry", **context, attempt=attempt, error=failure)
             self._sleep(delay)
 
     def _pace(self) -> None:
