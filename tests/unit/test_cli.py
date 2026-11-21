@@ -94,12 +94,35 @@ def test_catalog_bootstrap_is_idempotent(
 
 
 @pytest.mark.usefixtures("stack")
-def test_catalog_bootstrap_exits_1_when_the_catalog_never_answers(
+def test_catalog_bootstrap_exits_1_when_the_catalog_does_not_answer(
     monkeypatch: pytest.MonkeyPatch, closed_port: int
 ) -> None:
     monkeypatch.setenv("IBERGRID_CATALOG_URL", f"http://127.0.0.1:{closed_port}")
 
-    result = runner.invoke(app, ["catalog", "bootstrap", "--attempts", "1"])
+    result = runner.invoke(app, ["catalog", "bootstrap"])
 
     assert result.exit_code == 1
-    assert result.stderr.startswith("error: catalog not healthy after 1 attempts")
+    assert result.stderr.startswith("error: no answer from the catalog: GET http://127.0.0.1")
+
+
+def test_update_credential_stores_rotated_keys(
+    stack: FakeLakekeeper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert runner.invoke(app, ["catalog", "bootstrap"]).exit_code == 0
+    monkeypatch.setenv("IBERGRID_S3_SECRET_KEY", "rotated-secret-do-not-log")
+
+    result = runner.invoke(app, ["catalog", "update-credential"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "catalog: warehouse 'lakehouse' now uses the current S3 keys\n"
+    credential = stack.warehouses["lakehouse"]["storage-credential"]
+    assert credential["secret-access-key"] == "rotated-secret-do-not-log"
+    assert "rotated-secret-do-not-log" not in result.output
+
+
+@pytest.mark.usefixtures("stack")
+def test_update_credential_exits_1_before_bootstrap() -> None:
+    result = runner.invoke(app, ["catalog", "update-credential"])
+
+    assert result.exit_code == 1
+    assert "warehouse 'lakehouse' does not exist" in result.stderr

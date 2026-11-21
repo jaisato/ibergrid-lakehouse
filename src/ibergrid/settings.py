@@ -19,16 +19,18 @@ def _config(prefix: str) -> SettingsConfigDict:
 
 
 class StorageSettings(BaseSettings):
-    """S3-compatible object storage: RustFS locally, Cloudflare R2 in production."""
+    """S3-compatible object storage: RustFS locally, Cloudflare R2 in production.
+
+    Always addressed path-style (``<endpoint>/<bucket>``), which both accept.
+    """
 
     model_config = _config("IBERGRID_S3_")
 
     endpoint_url: HttpUrl = HttpUrl("http://storage:9000")
     region: str = "us-east-1"
     bucket: str = "ibergrid"
-    access_key: SecretStr
-    secret_key: SecretStr
-    path_style: bool = True
+    access_key: SecretStr = Field(min_length=1)
+    secret_key: SecretStr = Field(min_length=1)
 
 
 class CatalogSettings(BaseSettings):

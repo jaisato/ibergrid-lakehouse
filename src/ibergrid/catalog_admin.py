@@ -1,19 +1,16 @@
-"""Lakekeeper management API: bootstrap the server and create the warehouse, idempotently.
+"""Lakekeeper management API: bootstrap the server, create the warehouse, rotate its credential.
 
-Standard library only (``urllib``): this runs in a one-shot init container and from the deploy job,
-where a smaller dependency surface is worth more than a nicer HTTP client.
+Compose starts ``catalog-init`` only once the catalog is healthy, so nothing here retries: an
+unreachable catalog is one clear error.
 """
 
 import json
-import time
-import urllib.error
-import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
 
+from ibergrid import _http
 from ibergrid.settings import CatalogSettings, StorageSettings, base_url
 
 log = structlog.get_logger(__name__)
@@ -30,7 +27,7 @@ class BootstrapResult:
 
 
 class CatalogAdmin:
-    """A thin JSON client for Lakekeeper's ``/health`` and ``/management/v1`` endpoints."""
+    """A thin JSON client for Lakekeeper's ``/management/v1`` endpoints."""
 
     def __init__(self, url: str, *, timeout: float = 10.0) -> None:
         self.url = url.rstrip("/")
@@ -39,22 +36,17 @@ class CatalogAdmin:
     def request(
         self, method: str, path: str, body: dict[str, Any] | None = None
     ) -> tuple[int, Any]:
-        """Send one request and return ``(status, parsed JSON or None)``; no retries."""
-        # The URL comes from an HttpUrl setting, so only http and https can reach urlopen.
-        req = urllib.request.Request(  # noqa: S310
-            self.url + path,
-            data=None if body is None else json.dumps(body).encode(),
-            method=method,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-        )
+        """Send one request and return ``(status, parsed JSON or None)``."""
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310
-                status, raw = resp.status, resp.read()
-        except urllib.error.HTTPError as exc:
-            status, raw = exc.code, exc.read()
-        except OSError as exc:  # URLError, refused connections and timeouts
-            reason = getattr(exc, "reason", exc)
-            raise CatalogError(f"{method} {path}: no answer from {self.url} ({reason})") from exc
+            status, raw = _http.send(
+                method,
+                self.url + path,
+                timeout=self.timeout,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                body=None if body is None else json.dumps(body).encode(),
+            )
+        except _http.Unreachable as exc:
+            raise CatalogError(f"no answer from the catalog: {exc}") from exc
         try:
             return status, json.loads(raw) if raw else None
         except ValueError as exc:
@@ -73,29 +65,19 @@ class CatalogAdmin:
             raise CatalogError(f"{method} {path} returned {status} with a non-object JSON body")
         return payload
 
-    def wait_until_healthy(
-        self, *, attempts: int = 30, sleep: Callable[[float], None] = time.sleep
-    ) -> None:
-        """Poll ``/health`` with capped exponential backoff while the catalog starts."""
-        delay, problem = 0.5, "no attempt made"
-        for attempt in range(1, attempts + 1):
-            try:
-                status, _ = self.request("GET", "/health")
-            except CatalogError as exc:
-                problem = str(exc)
-            else:
-                if status == 200:
-                    return
-                problem = f"GET /health returned {status}"
-            if attempt < attempts:
-                log.info("catalog.waiting", attempt=attempt, problem=problem, retry_in_s=delay)
-                sleep(delay)
-                delay = min(delay * 2, 5.0)
-        raise CatalogError(f"catalog not healthy after {attempts} attempts: {problem}")
+
+def storage_credential(storage: StorageSettings) -> dict[str, str]:
+    """Lakekeeper's static S3 access-key credential. It holds the secret key: never log it."""
+    return {
+        "type": "s3",
+        "credential-type": "access-key",
+        "access-key-id": storage.access_key.get_secret_value(),
+        "secret-access-key": storage.secret_key.get_secret_value(),
+    }
 
 
 def warehouse_request(catalog: CatalogSettings, storage: StorageSettings) -> dict[str, Any]:
-    """The ``POST /management/v1/warehouse`` body. It carries the secret key: never log it."""
+    """The ``POST /management/v1/warehouse`` body."""
     return {
         "warehouse-name": catalog.warehouse,
         "storage-profile": {
@@ -105,44 +87,72 @@ def warehouse_request(catalog: CatalogSettings, storage: StorageSettings) -> dic
             "key-prefix": catalog.warehouse,
             "region": storage.region,
             "endpoint": base_url(storage.endpoint_url),
-            "path-style-access": storage.path_style,
+            # RustFS and Cloudflare R2 both accept path-style addressing.
+            "path-style-access": True,
             "sts-enabled": False,
         },
-        "storage-credential": {
-            "type": "s3",
-            "credential-type": "access-key",
-            "access-key-id": storage.access_key.get_secret_value(),
-            "secret-access-key": storage.secret_key.get_secret_value(),
-        },
+        "storage-credential": storage_credential(storage),
     }
 
 
 def bootstrap_catalog(
     admin: CatalogAdmin, catalog: CatalogSettings, storage: StorageSettings
 ) -> BootstrapResult:
-    """Bootstrap Lakekeeper and create the warehouse; each step is skipped if already done."""
+    """Bootstrap Lakekeeper and create the warehouse; each step is skipped if already done.
+
+    An existing warehouse keeps its stored credential: rotate keys with ``update_credential``.
+    """
     info = admin.expect("GET", "/management/v1/info", ok=200)
     bootstrapped = not info.get("bootstrapped", False)
     if bootstrapped:
         admin.expect("POST", "/management/v1/bootstrap", {"accept-terms-of-use": True}, ok=204)
     log.info("catalog.bootstrap", changed=bootstrapped)
 
-    listing = admin.expect("GET", "/management/v1/warehouse", ok=200)
-    existing = {w.get("name") for w in listing.get("warehouses", [])}
-    created = catalog.warehouse not in existing
+    created = _warehouse_id(admin, catalog) is None
     if created:
-        admin.expect(
-            "POST", "/management/v1/warehouse", warehouse_request(catalog, storage), ok=201
-        )
+        body = warehouse_request(catalog, storage)
+        _send_secret(admin, "/management/v1/warehouse", body, storage, ok=201)
     log.info(
         "catalog.warehouse", warehouse=catalog.warehouse, bucket=storage.bucket, changed=created
     )
     return BootstrapResult(bootstrapped=bootstrapped, warehouse_created=created)
 
 
+def update_credential(
+    admin: CatalogAdmin, catalog: CatalogSettings, storage: StorageSettings
+) -> None:
+    """Replace the warehouse's stored S3 credential with the keys in ``storage``."""
+    warehouse_id = _warehouse_id(admin, catalog)
+    if warehouse_id is None:
+        raise CatalogError(f"warehouse {catalog.warehouse!r} does not exist: bootstrap it first")
+    path = f"/management/v1/warehouse/{warehouse_id}/storage-credential"
+    _send_secret(
+        admin, path, {"new-storage-credential": storage_credential(storage)}, storage, ok=200
+    )
+    log.info("catalog.credential", warehouse=catalog.warehouse, changed=True)
+
+
+def _warehouse_id(admin: CatalogAdmin, catalog: CatalogSettings) -> str | None:
+    listing = admin.expect("GET", "/management/v1/warehouse", ok=200)
+    ids = [w.get("id") for w in listing.get("warehouses", []) if w.get("name") == catalog.warehouse]
+    return str(ids[0]) if ids else None
+
+
+def _send_secret(
+    admin: CatalogAdmin, path: str, body: dict[str, Any], storage: StorageSettings, *, ok: int
+) -> None:
+    """POST a body that carries the secret key; an error that echoes it gets it masked."""
+    try:
+        admin.expect("POST", path, body, ok=ok)
+    except CatalogError as exc:
+        secret = storage.secret_key.get_secret_value()
+        raise CatalogError(str(exc).replace(secret, "**********")) from None
+
+
 def _describe(payload: Any) -> str:
     # Lakekeeper answers errors in the Iceberg REST shape: {"error": {"type", "message", "code"}}.
+    # Anything else is summarised, never echoed: an unexpected body could hold anything.
     error = payload.get("error") if isinstance(payload, dict) else None
     if isinstance(error, dict):
         return f"{error.get('type')}: {error.get('message')}"
-    return "no error details" if payload is None else json.dumps(payload)[:300]
+    return "no error details" if payload is None else f"unexpected {type(payload).__name__} body"

@@ -10,7 +10,6 @@ def test_defaults_match_the_compose_network() -> None:
 
     assert base_url(settings.storage.endpoint_url) == "http://storage:9000"
     assert settings.storage.bucket == "ibergrid"
-    assert settings.storage.path_style is True
     assert base_url(settings.catalog.url) == "http://catalog:8181"
     assert settings.catalog.warehouse == "lakehouse"
     assert settings.broker.addresses() == [("broker", 9092)]
@@ -21,7 +20,6 @@ def test_defaults_match_the_compose_network() -> None:
 def test_each_group_reads_its_own_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IBERGRID_S3_ENDPOINT_URL", "https://acct.r2.cloudflarestorage.com")
     monkeypatch.setenv("IBERGRID_S3_REGION", "auto")
-    monkeypatch.setenv("IBERGRID_S3_PATH_STYLE", "false")
     monkeypatch.setenv("IBERGRID_CATALOG_WAREHOUSE", "prod")
     monkeypatch.setenv("IBERGRID_BROKER_BOOTSTRAP_SERVERS", "a:9092, b:19092")
     monkeypatch.setenv("IBERGRID_LOG_LEVEL", "debug")
@@ -31,7 +29,6 @@ def test_each_group_reads_its_own_prefix(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert base_url(settings.storage.endpoint_url) == "https://acct.r2.cloudflarestorage.com"
     assert settings.storage.region == "auto"
-    assert settings.storage.path_style is False
     assert settings.catalog.warehouse == "prod"
     assert settings.broker.addresses() == [("a", 9092), ("b", 19092)]
     assert (settings.log.level, settings.log.format) == ("DEBUG", "json")
@@ -65,6 +62,16 @@ def test_invalid_value_is_named_by_variable(monkeypatch: pytest.MonkeyPatch) -> 
         Settings()
 
     assert describe_validation_error(caught.value).startswith("  IBERGRID_LOG_FORMAT: ")
+
+
+def test_empty_key_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IBERGRID_S3_ACCESS_KEY", "")
+    monkeypatch.setenv("IBERGRID_S3_SECRET_KEY", "test-secret-key-do-not-log")
+
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+
+    assert describe_validation_error(caught.value).startswith("  IBERGRID_S3_ACCESS_KEY: ")
 
 
 @pytest.mark.parametrize("value", ["broker", "broker:kafka", ":9092", "a:9092,b"])

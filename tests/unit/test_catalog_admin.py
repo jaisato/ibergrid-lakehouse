@@ -4,21 +4,26 @@ from typing import Any
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from ibergrid.catalog_admin import CatalogAdmin, CatalogError, bootstrap_catalog
+from ibergrid.catalog_admin import (
+    CatalogAdmin,
+    CatalogError,
+    bootstrap_catalog,
+    update_credential,
+)
 from ibergrid.settings import CatalogSettings, StorageSettings
 
 from .conftest import FakeLakekeeper, LocalServer, Recorded, Responder, error
 
 Serve = Callable[[Responder], LocalServer]
 
+SECRET = "test-secret-key-do-not-log"
 CATALOG = CatalogSettings(warehouse="lakehouse")
 STORAGE = StorageSettings(
     endpoint_url=HttpUrl("http://storage:9000"),
     region="us-east-1",
     bucket="ibergrid",
     access_key=SecretStr("test-access-key"),
-    secret_key=SecretStr("test-secret-key-do-not-log"),
-    path_style=True,
+    secret_key=SecretStr(SECRET),
 )
 
 
@@ -50,7 +55,7 @@ def test_fresh_catalog_is_bootstrapped_and_gets_the_warehouse(serve: Serve) -> N
             "type": "s3",
             "credential-type": "access-key",
             "access-key-id": "test-access-key",
-            "secret-access-key": "test-secret-key-do-not-log",
+            "secret-access-key": SECRET,
         },
     }
     bootstrap_call = next(r for r in server.requests if r.path == "/management/v1/bootstrap")
@@ -78,60 +83,73 @@ def test_existing_server_still_gets_a_missing_warehouse(serve: Serve) -> None:
     assert (result.bootstrapped, result.warehouse_created) == (False, True)
 
 
-def test_wait_retries_with_capped_exponential_backoff(serve: Serve) -> None:
-    server = serve(FakeLakekeeper(unhealthy_answers=6))
-    delays: list[float] = []
-
-    admin_for(server).wait_until_healthy(attempts=10, sleep=delays.append)
-
-    assert delays == [0.5, 1.0, 2.0, 4.0, 5.0, 5.0]
-
-
-def test_wait_gives_up_with_the_last_problem(serve: Serve) -> None:
-    server = serve(FakeLakekeeper(unhealthy_answers=99))
-    delays: list[float] = []
-
-    with pytest.raises(
-        CatalogError, match=r"not healthy after 3 attempts: GET /health returned 503"
-    ):
-        admin_for(server).wait_until_healthy(attempts=3, sleep=delays.append)
-    assert len(delays) == 2
-
-
-def test_unreachable_catalog_is_a_catalog_error(closed_port: int) -> None:
+def test_unreachable_catalog_is_one_clear_error(closed_port: int) -> None:
     admin = CatalogAdmin(f"http://127.0.0.1:{closed_port}", timeout=2)
 
-    with pytest.raises(CatalogError, match="not healthy after 2 attempts: GET /health: no answer"):
-        admin.wait_until_healthy(attempts=2, sleep=lambda _: None)
+    with pytest.raises(CatalogError, match=r"^no answer from the catalog: GET http://127\.0\.0\.1"):
+        bootstrap_catalog(admin, CATALOG, STORAGE)
 
 
-def test_error_answer_carries_lakekeeper_type_and_message(serve: Serve) -> None:
+def test_rejected_warehouse_reports_lakekeeper_error_with_the_secret_masked(serve: Serve) -> None:
+    lakekeeper = FakeLakekeeper()
+
     def reject_warehouse(request: Recorded) -> tuple[int, Any]:
-        if request.method == "POST":
-            return 400, error("StorageProfileValidationFailed", "bucket does not exist", 400)
-        return FakeLakekeeper()(request)
+        if (request.method, request.path) == ("POST", "/management/v1/warehouse"):
+            # A server that echoes the request must still not leak the key through our error.
+            echoed = f"cannot use secret-access-key {SECRET}"
+            return 400, error("StorageProfileValidationFailed", echoed, 400)
+        return lakekeeper(request)
 
     server = serve(reject_warehouse)
 
     with pytest.raises(CatalogError) as caught:
         bootstrap_catalog(admin_for(server), CATALOG, STORAGE)
+
     message = str(caught.value)
-    assert "returned 400: StorageProfileValidationFailed: bucket does not exist" in message
+    assert message == (
+        "POST /management/v1/warehouse returned 400: "
+        "StorageProfileValidationFailed: cannot use secret-access-key **********"
+    )
+    assert caught.value.__cause__ is None
+    assert lakekeeper.bootstrapped, "the warehouse call comes after a successful bootstrap"
+
+
+def test_update_credential_replaces_the_stored_keys(serve: Serve) -> None:
+    lakekeeper = FakeLakekeeper()
+    server = serve(lakekeeper)
+    bootstrap_catalog(admin_for(server), CATALOG, STORAGE)
+    rotated = STORAGE.model_copy(update={"secret_key": SecretStr("rotated-secret")})
+
+    update_credential(admin_for(server), CATALOG, rotated)
+
+    stored = lakekeeper.warehouses["lakehouse"]["storage-credential"]
+    assert stored["secret-access-key"] == "rotated-secret"
+    assert stored["credential-type"] == "access-key"
+
+
+def test_update_credential_needs_an_existing_warehouse(serve: Serve) -> None:
+    server = serve(FakeLakekeeper())
+
+    with pytest.raises(CatalogError, match="warehouse 'lakehouse' does not exist"):
+        update_credential(admin_for(server), CATALOG, STORAGE)
 
 
 @pytest.mark.parametrize(
     ("answer", "expected"),
     [
         ((502, None), "returned 502: no error details"),
-        ((500, {"detail": "boom"}), 'returned 500: {"detail": "boom"}'),
+        ((500, {"detail": SECRET}), "returned 500: unexpected dict body"),
         ((200, b"<html>proxy page</html>"), "returned 200 with a non-JSON body"),
         ((200, ["not", "an", "object"]), "returned 200 with a non-object JSON body"),
     ],
 )
-def test_unexpected_answers_are_explained(
+def test_unexpected_answers_are_explained_without_echoing_bodies(
     serve: Serve, answer: tuple[int, Any], expected: str
 ) -> None:
     server = serve(lambda _: answer)
 
-    with pytest.raises(CatalogError, match=expected.replace("{", r"\{").replace("}", r"\}")):
+    with pytest.raises(CatalogError) as caught:
         admin_for(server).expect("GET", "/management/v1/info", ok=200)
+
+    assert str(caught.value).endswith(expected)
+    assert SECRET not in str(caught.value)

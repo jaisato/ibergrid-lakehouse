@@ -1,19 +1,17 @@
 """Readiness checks for object storage, the catalog and the broker.
 
 ``ibergrid doctor`` runs them inside the compose network (``make smoke``) and after a deploy.
-Standard library only, like :mod:`ibergrid.catalog_admin`.
 """
 
 import hashlib
 import hmac
 import socket
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from ibergrid import _http
 from ibergrid.settings import BrokerSettings, CatalogSettings, Settings, StorageSettings, base_url
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -39,7 +37,7 @@ def check_storage(storage: StorageSettings, timeout: float) -> CheckResult:
 
     RustFS also serves an anonymous ``/health/ready`` (the compose healthcheck uses it), but
     Cloudflare R2 has no equivalent, so the check that works on both is an authenticated
-    HeadBucket. Path-style addressing, which RustFS and R2 both accept.
+    HeadBucket.
     """
     url = f"{base_url(storage.endpoint_url)}/{urllib.parse.quote(storage.bucket)}"
     headers = sigv4_headers("HEAD", url, storage, datetime.now(UTC))
@@ -102,16 +100,11 @@ def _probe(
     headers: dict[str, str],
     hints: dict[int, str],
 ) -> CheckResult:
-    # The URL comes from an HttpUrl setting, so only http and https can reach urlopen.
-    request = urllib.request.Request(url, method=method, headers=headers)  # noqa: S310
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-    except OSError as exc:  # URLError, refused connections and timeouts
-        return CheckResult(name, False, f"{method} {url}: {getattr(exc, 'reason', exc)}")
+        status, _ = _http.send(method, url, timeout=timeout, headers=headers)
+    except _http.Unreachable as exc:
+        return CheckResult(name, False, str(exc))
     elapsed_ms = round((time.monotonic() - started) * 1000)
     detail = f"{method} {url} -> {status} ({elapsed_ms} ms)"
     if status in hints:

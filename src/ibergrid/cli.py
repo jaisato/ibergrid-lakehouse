@@ -1,12 +1,17 @@
 """The ``ibergrid`` command line: the entrypoint of the app image."""
 
 from importlib.metadata import version as package_version
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from pydantic import ValidationError
 
-from ibergrid.catalog_admin import CatalogAdmin, CatalogError, bootstrap_catalog
+from ibergrid.catalog_admin import (
+    CatalogAdmin,
+    CatalogError,
+    bootstrap_catalog,
+    update_credential,
+)
 from ibergrid.doctor import run_checks
 from ibergrid.logging import configure_logging
 from ibergrid.settings import Settings, base_url, describe_validation_error
@@ -55,20 +60,31 @@ def doctor(
 
 
 @catalog_app.command("bootstrap")
-def catalog_bootstrap(
-    attempts: Annotated[
-        int, typer.Option(min=1, help="Health checks while the catalog starts (backoff up to 5 s).")
-    ] = 30,
-) -> None:
+def catalog_bootstrap() -> None:
     """Bootstrap Lakekeeper and create the warehouse; a no-op when both already exist."""
     settings = _load_settings()
     admin = CatalogAdmin(base_url(settings.catalog.url))
     try:
-        admin.wait_until_healthy(attempts=attempts)
         result = bootstrap_catalog(admin, settings.catalog, settings.storage)
     except CatalogError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1) from exc
+        _fail(exc)
     server = "bootstrapped now" if result.bootstrapped else "already bootstrapped"
     warehouse = "created" if result.warehouse_created else "already exists"
     typer.echo(f"catalog: server {server}; warehouse {settings.catalog.warehouse!r} {warehouse}")
+
+
+@catalog_app.command("update-credential")
+def catalog_update_credential() -> None:
+    """Store the current IBERGRID_S3_* keys in the warehouse (after rotating them)."""
+    settings = _load_settings()
+    admin = CatalogAdmin(base_url(settings.catalog.url))
+    try:
+        update_credential(admin, settings.catalog, settings.storage)
+    except CatalogError as exc:
+        _fail(exc)
+    typer.echo(f"catalog: warehouse {settings.catalog.warehouse!r} now uses the current S3 keys")
+
+
+def _fail(exc: CatalogError) -> NoReturn:
+    typer.echo(f"error: {exc}", err=True)
+    raise typer.Exit(1) from exc

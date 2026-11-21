@@ -94,10 +94,19 @@ class FakeLakekeeper:
                 self.bootstrapped = True
                 return 204, None
             case "GET", "/management/v1/warehouse":
-                return 200, {"warehouses": [{"name": name} for name in self.warehouses]}
+                listing = [{"name": name, "id": f"id-{name}"} for name in self.warehouses]
+                return 200, {"warehouses": listing}
             case "POST", "/management/v1/warehouse":
-                self.warehouses[request.body["warehouse-name"]] = request.body
-                return 201, {"name": request.body["warehouse-name"], "warehouse-id": "w-1"}
+                name = request.body["warehouse-name"]
+                self.warehouses[name] = request.body
+                return 201, {"name": name, "id": f"id-{name}"}
+            case "POST", path if path.endswith("/storage-credential"):
+                name = path.removeprefix("/management/v1/warehouse/id-").split("/")[0]
+                if name not in self.warehouses:
+                    return 404, error("WarehouseNotFound", f"no warehouse {name}", 404)
+                credential = request.body["new-storage-credential"]
+                self.warehouses[name]["storage-credential"] = credential
+                return 200, {"name": name, "id": f"id-{name}"}
         return 404, error("NotFound", f"no route for {request.method} {request.path}", 404)
 
 
