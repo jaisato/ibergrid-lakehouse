@@ -127,15 +127,21 @@ def write(
     data: pa.Table,
     *,
     overwrite_filter: BooleanExpression | str | None = None,
+    snapshot_properties: Mapping[str, str] | None = None,
 ) -> int | None:
     """Append ``data`` to the branch, or replace the branch rows matching ``overwrite_filter``.
 
     Returns ``head(table, audit)`` afterwards. Each snapshot records the run id under
-    ``ibergrid.run-id``. An append of no rows commits nothing; an overwrite of no rows deletes.
+    ``ibergrid.run-id``, next to ``snapshot_properties`` (a run's measurements, for example),
+    which may not set that key or the checkpoint marker. An append of no rows commits nothing; an
+    overwrite of no rows deletes.
     """
+    reserved = {RUN_ID_PROPERTY, CHECKPOINT_PROPERTY} & set(snapshot_properties or {})
+    if reserved:
+        raise ValueError(f"snapshot properties {sorted(reserved)} are set by the WAP protocol")
     _lineage_head(table, audit)
     if data.num_rows or overwrite_filter is not None:
-        properties = {RUN_ID_PROPERTY: audit.run_id}
+        properties = {**(snapshot_properties or {}), RUN_ID_PROPERTY: audit.run_id}
         with _concurrently(f"writing run {audit.run_id!r}"):
             if overwrite_filter is None:
                 table.append(data, snapshot_properties=properties, branch=audit.name)
