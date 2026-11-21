@@ -1,10 +1,26 @@
 """The PyIceberg catalog: Lakekeeper's Iceberg REST API, with this client's own S3 access."""
 
+from typing import override
+
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.io import FileIO
 from pyiceberg.typedef import EMPTY_DICT, Properties
 
 from ibergrid.settings import Settings, StorageSettings, base_url
+
+# Credentials a catalog could vend; dropped so that they never mix with the client's static keys.
+VENDED_KEYS = frozenset(
+    {
+        "s3.session-token",
+        "s3.role-arn",
+        "s3.role-session-name",
+        "client.access-key-id",
+        "client.secret-access-key",
+        "client.session-token",
+        "client.role-arn",
+        "client.role-session-name",
+    }
+)
 
 
 def s3_properties(storage: StorageSettings) -> dict[str, str]:
@@ -33,12 +49,14 @@ class LakeCatalog(RestCatalog):
         self._client_io = dict(client_io)
         super().__init__(name, **properties)
 
-    # shortcut: overrides PyIceberg 0.12's private FileIO hook (a unit test pins it); re-check on
-    # every PyIceberg upgrade.
+    # shortcut: overrides PyIceberg 0.12's private FileIO hook (a unit test pins it, and @override
+    # makes mypy fail if it disappears); re-check on every PyIceberg upgrade.
+    @override
     def _load_file_io(
         self, properties: Properties = EMPTY_DICT, location: str | None = None
     ) -> FileIO:
-        return super()._load_file_io({**properties, **self._client_io}, location)
+        served = {k: v for k, v in properties.items() if k not in VENDED_KEYS}
+        return super()._load_file_io({**served, **self._client_io}, location)
 
 
 def rest_catalog(settings: Settings) -> LakeCatalog:

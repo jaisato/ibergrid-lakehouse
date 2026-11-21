@@ -35,16 +35,20 @@ def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
 
     storage = settings.storage
     endpoint = urlsplit(base_url(storage.endpoint_url))
-    secret = (
-        "CREATE TEMPORARY SECRET lake_s3 (TYPE s3, URL_STYLE 'path', "
-        f"KEY_ID {_quote(storage.access_key.get_secret_value())}, "
-        f"SECRET {_quote(storage.secret_key.get_secret_value())}, "
-        f"REGION {_quote(storage.region)}, ENDPOINT {_quote(endpoint.netloc)}, "
-        f"USE_SSL {str(endpoint.scheme == 'https').lower()}, "
-        f"SCOPE {_quote(f's3://{storage.bucket}')})"
+    # Values as prepared parameters: a DuckDB parser error quotes the statement, never these.
+    # The trailing slash keeps the scope from matching sibling buckets (s3://<bucket>-other).
+    con.execute(
+        "CREATE TEMPORARY SECRET lake_s3 (TYPE s3, URL_STYLE 'path', KEY_ID $key, SECRET $secret, "
+        "REGION $region, ENDPOINT $endpoint, USE_SSL $ssl, SCOPE $scope)",
+        {
+            "key": storage.access_key.get_secret_value(),
+            "secret": storage.secret_key.get_secret_value(),
+            "region": storage.region,
+            "endpoint": endpoint.netloc,
+            "ssl": endpoint.scheme == "https",
+            "scope": f"s3://{storage.bucket}/",
+        },
     )
-    # Quoted values cannot break the statement, and duckdb_secrets() shows the key redacted.
-    con.execute(secret)
     con.execute(
         f"ATTACH {_quote(settings.catalog.warehouse)} AS {CATALOG} (TYPE iceberg, "
         f"ENDPOINT {_quote(base_url(settings.catalog.url) + '/catalog')}, "
@@ -84,7 +88,8 @@ def ref_head(con: duckdb.DuckDBPyConnection, table: str, ref: str) -> int | None
 
 def scan_ref(con: duckdb.DuckDBPyConnection, table: str, ref: str) -> duckdb.DuckDBPyRelation:
     """A branch's rows. DuckDB 2.0.1 has no branch syntax (``AT (VERSION => ...)`` takes only a
-    snapshot id), so this reads the snapshot the branch points at."""
+    snapshot id), so this reads the snapshot the branch points at now. An audit reads
+    ``wap.head``'s snapshot with ``scan`` instead, so that ``wap.publish`` can require it."""
     head = ref_head(con, table, ref)
     if head is None:
         raise ValueError(f"{table} has no ref {ref!r}")

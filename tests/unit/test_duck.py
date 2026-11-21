@@ -61,10 +61,19 @@ def test_connect_attaches_the_catalog_with_a_scoped_redacted_secret(
     ).fetchall()
 
     assert duck.CATALOG in databases
-    assert (name, scope) == ("lake_s3", ["s3://ibergrid"])
+    # The trailing slash: a sibling bucket such as s3://ibergrid-other is out of scope.
+    assert (name, scope) == ("lake_s3", ["s3://ibergrid/"])
     assert "endpoint=acct.r2.cloudflarestorage.com" in secret
+    assert "key_id=test-access-key" in secret
+    assert "region=auto" in secret
     assert "use_ssl=true" in secret
     assert "test-secret-key-do-not-log" not in secret
+    assert con.execute(
+        "SELECT name FROM which_secret('s3://ibergrid/x/y.parquet', 's3')"
+    ).fetchall() == [("lake_s3",)]
+    assert (
+        con.execute("SELECT name FROM which_secret('s3://ibergrid-other/x', 's3')").fetchall() == []
+    )
 
 
 def test_a_baked_extension_directory_is_used_without_downloading(
@@ -90,6 +99,39 @@ def test_a_baked_extension_directory_is_used_without_downloading(
         ).fetchall()
     }
     assert set(duck.EXTENSIONS) <= loaded
+
+
+def test_a_baked_extension_directory_never_downloads(tmp_path: Path) -> None:
+    empty = tmp_path / "extensions"
+    empty.mkdir()
+
+    # Loading fails before the catalog is contacted, so no server is needed.
+    with pytest.raises(duckdb.IOException, match="not found"):
+        duck.connect(settings_for("http://127.0.0.1:9", extension_directory=str(empty)))
+
+    assert list(empty.rglob("*")) == []
+
+
+def test_duckdb_has_no_way_to_move_iceberg_refs() -> None:
+    """Pins ADR 0002: besides rollback, no DuckDB function creates, moves or removes a ref."""
+    con = duckdb.connect()
+    con.load_extension("iceberg")
+
+    names = {
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name ILIKE "
+            "'%iceberg%' AND (function_name ILIKE '%branch%' OR function_name ILIKE '%tag%' "
+            "OR function_name ILIKE '%ref%' OR function_name ILIKE '%snapshot%')"
+        ).fetchall()
+    }
+
+    assert names == {
+        "iceberg_refs",
+        "iceberg_snapshots",
+        "iceberg_expire_snapshots",
+        "iceberg_rollback_to_snapshot",
+    }
 
 
 def test_the_app_image_bakes_exactly_these_extensions() -> None:

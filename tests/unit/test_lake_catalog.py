@@ -12,7 +12,7 @@ from pyiceberg.table.metadata import new_table_metadata
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
 from pyiceberg.types import LongType, NestedField
 
-from ibergrid.lake.catalog import rest_catalog
+from ibergrid.lake.catalog import VENDED_KEYS, rest_catalog
 from ibergrid.settings import CatalogSettings, Settings, StorageSettings
 
 from .conftest import LocalServer, Recorded, Responder
@@ -27,13 +27,19 @@ LAKEKEEPER_TABLE_CONFIG = {
     "s3.path-style-access": "true",
     "s3.remote-signing-enabled": "true",
     "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
+    # Vended credentials, as a catalog with STS would add them: they must not mix with our keys.
+    "s3.session-token": "vended-session-token",
+    "client.access-key-id": "vended-access-key",
 }
 
 
 def lakekeeper(request: Recorded) -> tuple[int, Any]:
     if request.path == "/catalog/v1/config?warehouse=lakehouse":
         return 200, {"defaults": {"prefix": "wh-id"}, "overrides": {}}
-    if request.path == "/catalog/v1/wh-id/namespaces/ops/tables/smoke":
+    if request.path in (
+        "/catalog/v1/wh-id/namespaces/ops/tables/smoke",  # loadTable
+        "/catalog/v1/wh-id/namespaces/ops/tables",  # createTable
+    ):
         metadata = new_table_metadata(
             Schema(NestedField(1, "x", LongType(), required=False)),
             UNPARTITIONED_PARTITION_SPEC,
@@ -61,12 +67,17 @@ def settings_for(catalog_url: str) -> Settings:
 
 def test_the_clients_storage_settings_override_the_table_config(serve: Serve) -> None:
     server = serve(lakekeeper)
+    catalog = rest_catalog(settings_for(server.url))
 
-    table = rest_catalog(settings_for(server.url)).load_table(("ops", "smoke"))
+    loaded = catalog.load_table(("ops", "smoke"))
+    created = catalog.create_table(("ops", "smoke"), Schema(NestedField(1, "x", LongType())))
 
-    assert isinstance(table.io, PyArrowFileIO)
-    assert table.io.properties["s3.endpoint"] == "http://127.0.0.1:29000"
-    assert table.io.properties["s3.access-key-id"] == "test-access-key"
-    assert table.io.properties["s3.remote-signing-enabled"] == "false"
+    for table in (loaded, created):
+        assert isinstance(table.io, PyArrowFileIO)
+        assert table.io.properties["s3.endpoint"] == "http://127.0.0.1:29000"
+        assert table.io.properties["s3.access-key-id"] == "test-access-key"
+        assert table.io.properties["s3.remote-signing-enabled"] == "false"
+        assert not VENDED_KEYS & set(table.io.properties)
     # The keys stay on the client: nothing sent to the catalog carries them.
-    assert "test-secret-key-do-not-log" not in str([(r.path, r.headers) for r in server.requests])
+    sent = str([(r.path, r.headers, r.body) for r in server.requests])
+    assert "test-secret-key-do-not-log" not in sent
