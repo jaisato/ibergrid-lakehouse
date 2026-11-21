@@ -302,21 +302,25 @@ make chaos-stream    # the crash/restart proof, in its own compose project (unde
 docker compose run --rm --no-deps stream-consumer stream reset --to latest   # or --to earliest
 ```
 
+A consumer that refuses to start is unhealthy at once; `stream reset` refuses a checkpoint that
+still fits the topic unless `--force`, and `stream drop-property <name>` removes another group's
+checkpoint (or a property an earlier version left) through the same fenced publish.
+
 ```text
-table:        bronze.redata_demand_stream: 2047 rows, snapshot 2718558410151017304
-checkpoint:   ibergrid.stream.checkpoint.redata-demand-to-bronze = {"topic": "redata.demand.realtime.v1", "topic_id": "Zw7KxI8+TgyZmhnNa3ma5g", "offsets": {"0": 3385, "1": 3220, "2": 3384}}
+table:        bronze.redata_demand_stream: 2671 rows, snapshot 4092455876848438779
+checkpoint:   ibergrid.stream.checkpoint.redata-demand-to-bronze = {"topic": "redata.demand.realtime.v1", "topic_id": "Zw7KxI8+TgyZmhnNa3ma5g", "epoch": 0, "offsets": {"0": 3772, "1": 3648, "2": 3838}, "timestamps": {"0": 1795274710777, "1": 1795274710777, "2": 1795274710777}}
 topic:        redata.demand.realtime.v1 Zw7KxI8+TgyZmhnNa3ma5g
-partition 0:  checkpoint 3385, end 3385, lag 0
-partition 1:  checkpoint 3220, end 3220, lag 0
-partition 2:  checkpoint 3384, end 3384, lag 0
+partition 0:  checkpoint 3772, end 3772, lag 0
+partition 1:  checkpoint 3648, end 3648, lag 0
+partition 2:  checkpoint 3838, end 3838, lag 0
 lag:          0 message(s) behind redata.demand.realtime.v1
 dead letters: 0 retained in redata.demand.realtime.dlq.v1
 ```
 
-That is the table after a 34-minute run against the live API (ADR 0006): 8 polls, 3,071 events,
-1,024 duplicates from a producer restart dropped, 1,020 revisions kept (REE reprograms the rest
-of the day every few minutes), and every key's latest value equal to the batch lane's for the
-same day. The batch table stays authoritative for closed days; Silver (phase 3) reconciles the
+Two runs against the live API are measured in ADR 0006: 34 minutes with the first version (8
+polls, 3,071 events, 1,024 duplicates from a producer restart dropped, 1,020 revisions kept: REE
+reprograms the rest of the day every few minutes) and 17 minutes with the final code (4 polls,
+1,269 events, 645 duplicates of the first run's points dropped, 591 revisions kept, lag 0). The batch table stays authoritative for closed days; Silver (phase 3) reconciles the
 two.
 
 ## Services

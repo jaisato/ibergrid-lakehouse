@@ -68,8 +68,10 @@ local stack and in the chaos project. Unless marked †, a result is pinned by
 | `ibergrid version` in the app image | 0.86 s of CPU, 133 MiB maximum RSS per start † |
 | 120 one-row flushes on Lakekeeper, from the host | 74.5 s (0.62 s each: branch, append, publish); with `commit.manifest-merge.enabled` `main` holds 21 manifests instead of 120, and DuckDB reads all 120 rows † |
 | Topic ids (`AdminClient.describe_topics`) | Redpanda returns one per topic, the same on every call, another after the topic is deleted and created again |
-| `auto.offset.reset=error`, a fetch at an offset past the end | The consumer gets `_AUTO_OFFSET_RESET` (not fatal) instead of a silent jump to the earliest offset |
-| With `auto.offset.reset=earliest` (the first version) | Review, on the stack: a checkpoint of 5 on a topic back with 3 messages rewrote offsets 0 and 1 (7 rows for 5 messages); a recreated topic refilled past the checkpoint lost 3 events without a warning. Both refused now, pinned by unit tests and, for the recreated topic, an integration test |
+| `auto.offset.reset=error`, a fetch at an offset past the end | The consumer gets `_AUTO_OFFSET_RESET` (not fatal) instead of a silent jump to the earliest offset (pinned on the real broker) |
+| A topic recreated under a running consumer, refilled past its position | No out-of-range error: the new topic's messages arrive as if the old one went on. The topic-id check before each publish refuses them (pinned on the real broker: no row added) |
+| Broker unreachable or password refused while the consumer idles | Review: no error event reaches `consume()` in 12 s; the minute probe (`DescribeTopics`) fails instead (unit-tested with an injected outage) |
+| With `auto.offset.reset=earliest` (the first version, and still the second's by mistake) | Review, on the stack: a checkpoint of 5 on a topic back with 3 messages rewrote offsets 0 and 1 (7 rows for 5 messages); a recreated topic refilled past the checkpoint lost 3 events without a warning; a running consumer read a recreated topic and published it under the old topic id. All refused now, pinned by unit and integration tests |
 | The image's `pandaproxy: {}` and `schema_registry: {}` | Both listen without authentication (review: an anonymous POST registered a subject that survived a restart); with the two sections deleted before `redpanda start`, ports 8081 and 8082 refuse connections (pinned) |
 | SCRAM users through the admin API with `curl` | `POST /v1/security/users` creates (200; 500 "User already exists" with another password), `PUT /v1/security/users/<name>` sets the password (200), a wrong superuser password gets 401 † |
 | Default `segment.ms` | 14 days, so at this volume a segment closes, and retention can delete it, 14 days after it opens † |
@@ -132,10 +134,13 @@ REData request per five minutes rather than a restart loop.
 ### The consumer
 
 The checkpoint is the table property `ibergrid.stream.checkpoint.<group>` (the group is
-`redata-demand-to-bronze`), a JSON object: the topic, the topic's id and the next offset per
-partition. A Kafka topic id (KIP-516; Redpanda 26.2 hands it out through `DescribeTopics`, and a
-deleted and recreated topic of the same name gets another, measured) is what tells an offset of
-this topic from the same number in a topic that was recreated under the checkpoint.
+`redata-demand-to-bronze`), a JSON object: the topic, the topic's id, the reset epoch, the next
+offset per partition and the Kafka timestamp of the message before it. A Kafka topic id (KIP-516;
+Redpanda 26.2 hands it out through `DescribeTopics`, and a deleted and recreated topic of the
+same name gets another, measured) tells an offset of this topic from the same number in a topic
+recreated under the checkpoint; the timestamp tells it from the same number in a log that lost its
+tail and grew back under the same id; the epoch orders rows across a deliberate reset that hands
+offsets out again.
 
 On start, the consumer:
 
@@ -143,29 +148,45 @@ On start, the consumer:
 2. refuses to start when the table holds another group's checkpoint
    (`ibergrid.stream.checkpoint.*`): one table has one writer, and a consumer started with
    another group id would otherwise replay the topic into it from the beginning
-   (`--allow-other-checkpoints` for a deliberate migration);
-3. reads its checkpoint (the table's property, not the consumer group) and the topic's id, and
-   refuses to start when they differ: the topic was deleted and recreated, so the offsets name
-   other messages;
+   (`--allow-other-checkpoints` for a deliberate migration, then `ibergrid stream drop-property`
+   removes the old group's checkpoint through the fenced publish);
+3. reads its checkpoint (the table's property, not the consumer group) and refuses to start when
+   it names another topic than the one configured, or the topic's id changed (the topic was
+   deleted and recreated, so the offsets name other messages);
 4. per partition: refuses a checkpoint past the end of the log (the broker lost the tail of its
    log, which dev-container mode makes possible: offsets the checkpoint covers would be handed
    out again to new messages); starts a checkpoint older than the earliest message still there
    at that message, with a `stream.consumer.retention_gap` warning naming the messages lost (the
    batch lane still has those days), and records the jump in its next checkpoint; starts a
    partition without a checkpoint at its earliest message;
-5. rebuilds the duplicate check from the table: the latest `content_sha256` of every key of the
-   last three days (`IBERGRID_STREAM_DEDUP_DAYS`) of this topic incarnation, the latest being the
-   highest `kafka_offset` (every version of a key is in the same partition);
-6. assigns every partition at those offsets (manual assignment, no group rebalancing: one writer
-   owns the table). `auto.offset.reset` is `error`: an offset that goes out of range while it
-   reads (retention passing a consumer that fell behind) makes it start again from step 1 instead
-   of silently jumping. So do an authorization or authentication failure and an unknown topic.
+5. reads back the message before each checkpointed offset and refuses to start when its timestamp
+   is not the recorded one (a lost tail that grew back past the checkpoint before this start);
+6. rebuilds the duplicate check from the table: the latest `content_sha256` of every key of the
+   last three days (`IBERGRID_STREAM_DEDUP_DAYS`), the latest being the highest
+   (`stream_epoch`, `kafka_offset`): within an epoch every version of a key is in the same
+   partition, and a reset starts a later epoch;
+7. assigns every partition at those offsets (manual assignment, no group rebalancing: one writer
+   owns the table).
 
-Both refusals end with the same deliberate way out, run by an operator with the consumer stopped:
-`ibergrid stream reset --to earliest` (write again what the topic retains, under the new topic
-id: the duplicate check starts empty for it) or `--to latest` (skip it). It publishes a checkpoint
-for the topic as it is now, through the same fenced publish, so a consumer left running conflicts
-instead of interleaving. `ibergrid stream status` says when the checkpoint is not the topic's.
+While it runs, three checks keep the same guarantees. `auto.offset.reset` is `error` (pinned by
+the configuration's unit test and by an integration test: assigned past the end, the real broker
+answers `_AUTO_OFFSET_RESET` and delivers nothing), so an offset that goes out of range (retention
+passing a consumer that fell behind, a topic recreated shorter) starts it again from step 1
+instead of a silent jump; so do an authorization or authentication failure and an unknown topic.
+A topic recreated and refilled past the consumer's position gives no such error: its messages
+read as if they continued the old topic. So before every publish the consumer compares the
+topic's id with the checkpoint's and refuses on a mismatch, nothing published (pinned on the real
+broker: a topic recreated under a running consumer adds no row, and the next start refuses). And
+every minute it probes the broker the same way: without traffic librdkafka reports neither an
+unreachable broker nor a rejected password to the consumer (review measured no error event in
+12 s), so the probe is what feeds the failure streak then.
+
+Every refusal leaves the consumer running, unhealthy at once (`refused` in its heartbeat), until an
+operator, with the consumer stopped, runs `ibergrid stream reset --to earliest` (write again what
+the topic retains) or `--to latest` (skip it). The reset publishes a checkpoint for the topic as it
+is now, with the epoch plus one, through the same fenced publish, so a consumer left running
+conflicts instead of interleaving; it refuses a checkpoint that still fits the topic unless
+`--force`. `ibergrid stream status` says when the checkpoint is not the topic's.
 
 Each message is validated (pydantic), checked against its key and against the duplicate check:
 
@@ -178,11 +199,11 @@ Each message is validated (pydantic), checked against its key and against the du
 
 The latest version, not any earlier one, is the reference: a value that goes A, B, A again keeps
 the third as a revision, so the latest row per key stays the source's truth. Each row records its
-topic incarnation (`kafka_topic_id`). **Silver's rule**: per key, the latest incarnation wins
-(incarnations follow each other by deliberate resets; order them by their first `ingested_at`),
-and within an incarnation the highest `kafka_offset`. Offsets order the versions of a key only
-because the key always hashes to the same partition: adding partitions to the topic moves keys
-and needs a migration (a new topic, `.v2`, and a reset), never a plain `alter`.
+topic id (`kafka_topic_id`) and epoch (`stream_epoch`; rows written before epochs existed count as
+0). **Silver's rule**: per key, the highest (`stream_epoch`, `kafka_offset`). Offsets order the
+versions of a key only because the key always hashes to the same partition: adding partitions to
+the topic moves keys and needs a migration (a new topic, `.v2`, and a reset), never a plain
+`alter`.
 
 A flush is one WAP run, `stream-<UTC start to the microsecond>Z-<hex>` (unique per attempt):
 
@@ -199,7 +220,8 @@ A flush is one WAP run, `stream-<UTC start to the microsecond>Z-<hex>` (unique p
    properties;
 4. the audit reads the branch head back, bounded by the batch's instants so planning prunes the
    other months: one row per message of this run, no more;
-5. `wap.publish(..., set_properties={checkpoint property: checkpoint})`: rows and checkpoint land
+5. the topic's id is compared with the checkpoint's (above); then
+   `wap.publish(..., set_properties={checkpoint property: checkpoint})`: rows and checkpoint land
    in one catalog commit or not at all. A `WapError` (the catalog may have lost its answer) is
    retried twice with the same arguments, which completes the run or resumes from its own
    checkpoint snapshot (ADR 0002); `PublishConflict` is not retried;
@@ -229,8 +251,12 @@ At about 300 snapshots a day, metadata that every flush loads ten times would ot
 | Lost publish answer | Either landed or not | Published again with the same arguments; if that fails too, restart from the table |
 | Second consumer of the same group | One of them publishes | The other's flush conflicts (fence or `main`) and it restarts from the winner's checkpoint |
 | A consumer of another group on the same table | Nothing | It refuses to start (`--allow-other-checkpoints` to migrate deliberately) |
-| The topic deleted and recreated (another topic id), refilled or not | Nothing of the new topic | The consumer refuses to start; an operator runs `stream reset --to earliest` or `--to latest` |
+| The topic deleted and recreated (another topic id) while the consumer is stopped | Nothing of the new topic | The consumer refuses to start, unhealthy at once; an operator runs `stream reset --to earliest` or `--to latest` |
+| The topic deleted and recreated under a running consumer | Nothing of the new topic: an out-of-range error restarts it, or, refilled past its position, the topic-id check before the publish refuses | The next start refuses; `stream reset` |
 | The broker lost the tail of a partition (checkpoint past its end) | Nothing of the reused offsets | The consumer refuses to start; `stream reset` |
+| The tail was lost and grew back past the checkpoint before a start (same topic id) | Nothing of the rewritten messages | The read-back of the message before the checkpoint finds another timestamp: refuses; `stream reset` |
+| A reset on the same topic hands out offsets again | Earlier rows at higher offsets | The new epoch orders the new rows after them (duplicate check and Silver) |
+| The broker unreachable, or the consumer's password refused, while idle | Nothing new | The minute probe fails: a failure streak, unhealthy after 10 minutes |
 | Checkpoint older than the retention (7 days), or retention passing a running consumer | Earlier events never arrive | Starts at the earliest message left (after an out-of-range error, through a restart), logs `stream.consumer.retention_gap` with the count; the batch lane covers closed days |
 | A message the contract refuses | Not in the table | In the dead-letter topic, with its reason |
 | The producer restarts | Nothing new | It re-emits its window; the consumer drops the exact repeats |
@@ -289,7 +315,8 @@ memory follows the keys (about 3,500 for three days), not the rows. Measured on 
 synthetic rows in 1,000 files (three days of 4,608 keys) on the SQL catalog: the rebuild adds
 75 MiB to the process (peak 223 MiB) where the first version, which turned every row into Python
 lists, added 213 to 233 MiB (peak 361 to 381 MiB: the consumer's whole 384 MiB limit; review
-measured 360 MiB for 393,000 rows in the container); both take about 4 s †.
+measured 360 MiB for 393,000 rows the same way, host RSS on a local SQL catalog); both take about
+4 s †.
 
 ### The table, and why not the batch table
 
@@ -367,7 +394,9 @@ runs `python -m ibergrid.stream.health` (standard library only) rather than the 
 health` is the same check for humans. It fails when the heartbeat is older than its limit (330 s
 for the producer, whose poll can take four REData attempts of up to 60 s; 120 s for the consumer)
 or when the loop has been failing for longer than `--max-failing` (15 minutes for the producer,
-10 for the consumer; rows waiting for a flush keep a failure streak open across restarts). Docker
+10 for the consumer; rows waiting for a flush keep a failure streak open across restarts), and at
+once while the consumer refuses to start (`refused`), so a deploy's `up --wait` does not pass a
+consumer that will never write. Docker
 restarts exited containers, not unhealthy ones, so a watchdog thread ends the process (exit 70)
 when the loop has not gone round for `IBERGRID_STREAM_WATCHDOG_TIMEOUT` (900 s): a request that
 never returns then becomes a restart. Logs are JSON events: `stream.producer.polled` (window,
@@ -379,6 +408,26 @@ and checkpoint, whether the checkpoint is the topic's, the lag per partition (hi
 checkpoint) and the dead letters retained. Compose passes every `IBERGRID_STREAM_*` setting to the
 services (`x-stream-env`).
 
+### Upgrading a deployment of the first version
+
+The first version of this lane wrote its checkpoint as `ibergrid.stream.<group>.<topic>.offsets`
+under the group `ibergrid.stream.bronze`, without a topic id, and the broker started the HTTP
+Proxy and the Schema Registry. An existing deployment (the local stack of phase 2's review was
+one) cleans up after `up`, with the stream services stopped:
+
+- `docker compose run --rm --no-deps stream-consumer stream reset --to latest`: adopt the new
+  checkpoint (or `--to earliest` to write the retained topic again; repeats inside the duplicate
+  window are dropped);
+- `... stream drop-property ibergrid.stream.ibergrid.stream.bronze.redata.demand.realtime.v1.offsets`:
+  the old property, through the fenced publish;
+- as the superuser (`docker compose run --rm --no-deps --entrypoint rpk broker-init ...`):
+  `security acl delete --allow-principal User:ibergrid-consumer --operation read,describe --group
+  ibergrid.stream.bronze --no-confirm` and `group delete ibergrid.stream.bronze`;
+- the Schema Registry's `_schemas` topic is protected by the cluster property
+  `kafka_nodelete_topics`: deleting it means taking it off that list first and putting the list
+  back afterwards, an operator's decision. Left alone it is one idle partition that nothing
+  reads; on the review's local stack it stays.
+
 ### One image
 
 Both services run the app image: the consumer needs PyIceberg, pyarrow and DuckDB's catalog
@@ -389,8 +438,10 @@ and `deploy/remote.sh` stay as they are (the app digest already covers both serv
 
 ### Live journey
 
-From 12:07:54 to 12:41:35 UTC on 2026-11-21 (34 minutes), on the local stack holding the phase-1
-backfill (1.7 M REData rows), against the live API:
+Two runs on the local stack holding the phase-1 backfill (1.7 M REData rows), against the live
+API. **The first ran the first version of this lane** (before the review: checkpoint without
+topic id, `auto.offset.reset=earliest`, no probe, no epochs), from 12:07:54 to 12:41:35 UTC on
+2026-11-21 (34 minutes):
 
 | Measure | Result |
 |---|---|
@@ -410,6 +461,24 @@ The revisions were the finding: REE reprograms the rest of the day every few min
 stream writes tens of thousands of rows a day, not the 1,150 points a day has. 21 rows repeat an
 earlier version's hash (a value that went back), kept by design (see "The consumer").
 
+**The second ran the final code**, from 15:09:32 to 15:26:15 UTC the same day (17 minutes), on
+the same table, after `stream reset --to latest` adopted the new checkpoint and `stream
+drop-property` removed the first version's (see "Upgrading a deployment of the first version"):
+
+| Measure | Result |
+|---|---|
+| Polls | 4, 0.7 to 1.3 s each, none failed, no point rejected |
+| Events emitted | 1,269 (1,057 at the first poll of a fresh producer, then 61, 134 and 17) |
+| Flushes | 4, 1.7 to 2.6 s each, lag 0 after every one |
+| Rows added | 624 (2,671 in the table, 2,671 distinct messages): 33 new points and 591 revisions |
+| Duplicates dropped | 645, at the first poll: the points the first run had already written, recognised by the rebuilt duplicate check (1,027 keys at start) |
+| Dead letters | 0 |
+| Topic probes | One a minute, none failed; no error or warning in the consumer's log |
+| Consumer restart | Resumed at the checkpoint after reading back the message before it on all three partitions (timestamps matched), 1,060 keys rebuilt |
+| Health | Both healthy throughout; heartbeat `failures 0`, `failing_since null`, `refused null` |
+| Against the batch lane | `ingest redata --dataset demand_realtime` right after: 1,060 keys in both; 976 equal; the 84 others are all Scheduled (2053) values for 15:00 to 22:40 UTC, still ahead, which REE reprogrammed between the stream's last poll (15:25:10) and the batch's fetch (15:27:15) |
+| Peak cgroup memory | Producer 91 MiB (limit 256), consumer 172 MiB (limit 384) |
+
 ## Consequences
 
 - Good: an event lands in Bronze once whatever the crash point, without Kafka transactions and
@@ -420,7 +489,7 @@ earlier version's hash (a value that went back), kept by design (see "The consum
 - Good: the broker is authenticated and least-privilege in every environment, nothing on it
   listens without authentication, and a producer container has nothing that reaches the lake.
 - Good: duplicates from producer restarts, replays and re-emitted windows cost nothing in the
-  table; revisions are kept with their Kafka coordinates and topic incarnation for Silver.
+  table; revisions are kept with their Kafka coordinates, topic id and epoch for Silver.
 - Bad: one writer per table: a second consumer of the group only ever wastes work (it conflicts
   and restarts), a consumer of another group refuses to start; scaling out means more tables or a
   partition-aware design, not more consumers. Adding partitions to the topic needs a migration.
@@ -428,9 +497,8 @@ earlier version's hash (a value that went back), kept by design (see "The consum
   but compaction (phase 4) is mandatory for the stream table, and until orphan-file cleanup exists
   its storage only grows.
 - Bad: dead letters are at least once (a crash between producing them and the publish repeats
-  them); the duplicate check only reaches back `dedup_days` within one topic incarnation, so an
-  exact repeat of an older point, or the first poll after a reset, is stored again (Silver
-  deduplicates by key and hash anyway).
+  them); the duplicate check only reaches back `dedup_days`, so an exact repeat of an older
+  point is stored again (Silver deduplicates by key and hash anyway).
 - Bad: no TLS on the broker; the superuser's password rotates by hand; a topic reset is an
   operator's decision, not automatic.
 - Neutral: the broker's healthcheck relies on `rpk cluster health` answering without credentials,
@@ -443,8 +511,8 @@ earlier version's hash (a value that went back), kept by design (see "The consum
 ### For the next phases
 
 - **Phase 3, Silver.** `silver` reconciles the lanes: the latest stream version per key (the
-  latest topic incarnation, then the highest `kafka_offset`) for days the batch lane has not
-  closed, the batch table's value once it has.
+  highest (`stream_epoch`, `kafka_offset`)) for days the batch lane has not closed, the batch
+  table's value once it has.
 - **Phase 4, quality and maintenance.** The audit step of each flush is where quality gates go;
   compaction (when no flush is open: a compaction makes the open flush conflict, and it restarts)
   and orphan-file cleanup are required for this table.
