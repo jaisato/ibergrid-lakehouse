@@ -42,7 +42,13 @@ def exchange(
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             return response.status, _lower(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
-        return exc.code, _lower(exc.headers.items()), exc.read()
+        try:
+            error_body = exc.read()
+        except (OSError, http.client.HTTPException):
+            # An error answer whose body is cut short still has its status (and Retry-After):
+            # keep them, so the caller's retry policy decides instead of a transport error.
+            error_body = b""
+        return exc.code, _lower(exc.headers.items()), error_body
     # OSError: URLError, refused connections and timeouts; HTTPException: a response cut short
     # (IncompleteRead) or not HTTP at all.
     except (OSError, http.client.HTTPException) as exc:

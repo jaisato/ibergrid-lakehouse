@@ -219,3 +219,28 @@ def test_a_response_cut_short_is_retried() -> None:
 
     assert body == b"{}"
     assert len(delays) == 1
+
+
+def test_an_error_answer_cut_short_keeps_its_status_and_is_retried() -> None:
+    """A 503 whose body stops before its Content-Length still reaches the retry policy."""
+    replies = [
+        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100\r\n\r\n{",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    ]
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+
+        def answer() -> None:
+            for reply in replies:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.recv(65536)
+                    connection.sendall(reply)
+
+        threading.Thread(target=answer, daemon=True).start()
+        delays: list[float] = []
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+        body = RedataClient(url, timeout=2, max_rps=1e9, sleep=delays.append).fetch(CANARIAS)
+
+    assert body == b"{}"
+    assert len(delays) == 1
