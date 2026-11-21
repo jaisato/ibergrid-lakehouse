@@ -575,3 +575,92 @@ def test_ingest_omie_finds_a_republished_day() -> None:
 
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("omie: 2023-05-28..2023-05-28: 1 file(s) (v1 1), 24 rows, ")
+
+
+def test_lake_maintain_and_quality_check_cli(
+    catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> None:
+    from ibergrid.quality.gates import GateReport, QualityViolation
+    from ibergrid.quality.metadata import MetadataAuditResult, TableMetadataSummary
+
+    ensure_table(catalog, registry.OMIE_DAY_AHEAD_PRICES)
+    monkeypatch.setattr(cli, "rest_catalog", lambda _s: catalog)
+
+    res = runner.invoke(
+        app,
+        [
+            "lake",
+            "maintain",
+            "--table",
+            "bronze.omie_day_ahead_prices",
+            "--table",
+            "bronze.missing_table",
+            "--no-compact",
+            "--dry-run",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "maintain: bronze.omie_day_ahead_prices:" in res.stdout
+    assert "[dry-run]" in res.stdout
+    assert "maintain: bronze.missing_table: not found (skipped)" in res.stdout
+
+    summary = TableMetadataSummary(
+        table="lake.silver.mibel_prices_hourly",
+        snapshot_id=42,
+        snapshot_committed_utc=None,
+        operation="overwrite",
+        data_files=1,
+        delete_files=0,
+        total_records=24,
+        total_data_bytes=1024,
+        data_bytes_scanned=0,
+        partitions=1,
+        columns={},
+        elapsed_ms=1.5,
+    )
+    ok_report = GateReport(
+        table="silver.mibel_prices_hourly",
+        contract_path="contracts/soda/silver_mibel_prices_hourly.yml",
+        snapshot_id=42,
+        audit_branch="main",
+        passed=True,
+        checks_passed=10,
+        checks_failed=0,
+        violations=(),
+        metadata_result=MetadataAuditResult(
+            summary=summary, passed=True, violations=(), elapsed_ms=1.5
+        ),
+        decoupled_periods_verified=4,
+        elapsed_ms=12.3,
+    )
+    monkeypatch.setattr(cli, "check_tables", lambda *_a, **_kw: [ok_report])
+
+    ok_text = runner.invoke(app, ["quality", "check", "--metadata-only"])
+    assert ok_text.exit_code == 0, ok_text.output
+    assert (
+        "ok   silver.mibel_prices_hourly: passed=10 failed=0, decoupled_verified=4"
+        in ok_text.stdout
+    )
+
+    ok_json = runner.invoke(app, ["quality", "check", "--json"])
+    assert ok_json.exit_code == 0, ok_json.output
+    parsed = json.loads(ok_json.stdout)
+    assert parsed[0]["data_bytes_scanned"] == 0
+    assert parsed[0]["decoupled_periods_verified"] == 4
+
+    bad_report = GateReport(
+        table="silver.mibel_prices_hourly",
+        contract_path=None,
+        snapshot_id=42,
+        audit_branch="main",
+        passed=False,
+        checks_passed=9,
+        checks_failed=1,
+        violations=(QualityViolation("silver.mibel_prices_hourly", "soda.dup", "error", "1 dup"),),
+        elapsed_ms=5.0,
+    )
+    monkeypatch.setattr(cli, "check_tables", lambda *_a, **_kw: [bad_report])
+    fail_res = runner.invoke(app, ["quality", "check"])
+    assert fail_res.exit_code == 1
+    assert "FAIL silver.mibel_prices_hourly" in fail_res.stdout
+    assert "soda.dup: 1 dup" in fail_res.stdout

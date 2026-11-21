@@ -72,8 +72,9 @@ LABEL org.opencontainers.image.title="ibergrid-lakehouse-orchestration" \
       org.opencontainers.image.description="IberGrid Lakehouse orchestration: Dagster code server, webserver, daemon and dbt medallion transforms"
 
 COPY --from=builder-orchestration /app/.venv /app/.venv
-# dbt medallion project (ADR 0007): kept read-only; runs write target/ and logs/ to /tmp.
+# dbt medallion project (ADR 0007) and Soda quality contracts (ADR 0008): kept read-only.
 COPY dbt /opt/ibergrid/dbt
+COPY contracts/soda /opt/ibergrid/contracts/soda
 # dagster.yaml and workspace.yaml (ADR 0005). The home is writable for Dagster's own files; the
 # compute-log directory is a volume mount point, owned by the user so a new volume inherits it.
 COPY config/dagster/ /opt/dagster/home/
@@ -81,7 +82,8 @@ RUN mkdir -p /opt/dagster/compute-logs \
  && chown 10001:10001 /opt/dagster/home /opt/dagster/compute-logs
 
 ENV DAGSTER_HOME=/opt/dagster/home \
-    IBERGRID_TRANSFORM_DBT_PROJECT_DIR=/opt/ibergrid/dbt
+    IBERGRID_TRANSFORM_DBT_PROJECT_DIR=/opt/ibergrid/dbt \
+    IBERGRID_QUALITY_CONTRACTS_DIR=/opt/ibergrid/contracts/soda
 
 USER 10001
 

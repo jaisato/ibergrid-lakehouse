@@ -152,3 +152,40 @@ def test_transform_settings_reads_its_prefix_and_validates_threads(
     with pytest.raises(ValidationError) as caught:
         Settings()
     assert describe_validation_error(caught.value).startswith("  IBERGRID_TRANSFORM_THREADS: ")
+
+
+@pytest.mark.usefixtures("credentials")
+def test_quality_maintenance_and_lineage_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = Settings()
+    assert defaults.quality.contracts_dir is None
+    assert (
+        defaults.maintenance.snapshot_retention_days,
+        defaults.maintenance.retain_last_snapshots,
+        defaults.maintenance.orphan_grace_hours,
+    ) == (7, 5, 48.0)
+    assert (
+        defaults.lineage.namespace,
+        defaults.lineage.endpoint_url,
+        defaults.lineage.sink_path,
+    ) == ("ibergrid", None, None)
+
+    # Empty strings in compose env pass-through normalize cleanly to None.
+    monkeypatch.setenv("IBERGRID_LINEAGE_ENDPOINT_URL", "   ")
+    monkeypatch.setenv("IBERGRID_LINEAGE_SINK_PATH", "")
+    monkeypatch.setenv("IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS", "24")
+    monkeypatch.setenv("IBERGRID_QUALITY_CONTRACTS_DIR", "/opt/ibergrid/contracts/soda")
+    updated = Settings()
+    assert updated.lineage.endpoint_url is None
+    assert updated.lineage.sink_path is None
+    assert updated.maintenance.orphan_grace_hours == 24.0
+    assert updated.quality.contracts_dir == "/opt/ibergrid/contracts/soda"
+
+    monkeypatch.setenv("IBERGRID_LINEAGE_ENDPOINT_URL", "http://marquez:5000")
+    assert base_url(Settings().lineage.endpoint_url) == "http://marquez:5000"  # type: ignore[arg-type]
+
+    monkeypatch.setenv("IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS", "-1")
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+    assert describe_validation_error(caught.value).startswith(
+        "  IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS: "
+    )

@@ -28,6 +28,7 @@ services:
   dagster-code: *build-orchestration
   dagster-daemon: *build-orchestration
   transform: *build-orchestration
+  quality: *build-orchestration
   dagster-webserver:
     <<: *build-orchestration
     ports:

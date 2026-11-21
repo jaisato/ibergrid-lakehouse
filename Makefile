@@ -28,7 +28,7 @@ PROD_DUMMY_ENV := $(COMPOSE_DUMMY_ENV) \
 
 .PHONY: help sync lock lint format typecheck test test-integration test-live contracts audit ci compose-config \
 	hadolint shellcheck actionlint gitleaks env build up down down-volumes ps logs smoke \
-	transform stream-up stream-down stream-status chaos-stream
+	transform quality-check maintain stream-up stream-down stream-status chaos-stream chaos-data
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -124,6 +124,12 @@ transform: ## Build, test and WAP-publish Silver and Gold medallion tables from 
 	$(COMPOSE) run --rm --no-deps doctor lake init
 	$(COMPOSE) run --rm --no-deps transform run
 
+quality-check: ## Run zero-scan Iceberg metadata checks and Soda v4 contracts against the stack
+	$(COMPOSE) run --rm --no-deps quality check
+
+maintain: ## Compact small Parquet files, expire snapshots and clean orphans (dry-run by default)
+	$(COMPOSE) run --rm --no-deps --entrypoint ibergrid quality lake maintain --dry-run
+
 # --- Streaming lane (ADR 0006) -------------------------------------------------------------------
 
 stream-up: ## Create the lake's tables, then start the stream producer and consumer (they poll REData)
@@ -138,3 +144,6 @@ stream-status: ## The stream table's checkpoint, the lag per partition and the d
 
 chaos-stream: build ## SIGKILL the consumer mid-flush in a throwaway compose project, then prove exactly once
 	$(UV) run python -u scripts/chaos_stream.py
+
+chaos-data: build ## Inject corrupt data into WAP audit branches in a throwaway stack; prove 100 % blocking & quarantine
+	$(UV) run python -u scripts/chaos_data.py

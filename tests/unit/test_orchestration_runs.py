@@ -18,6 +18,7 @@ from ibergrid.lake import wap
 from ibergrid.lake.registry import OMIE_DAY_AHEAD_PRICES, REDATA_OBSERVATIONS, TABLES
 from ibergrid.lake.tables import ensure_table
 from ibergrid.orchestration import definitions, sweeper
+from ibergrid.orchestration import maintenance as orch_maintenance
 from ibergrid.orchestration.assets import (
     REDATA_ASSETS,
     IngestConfig,
@@ -25,6 +26,7 @@ from ibergrid.orchestration.assets import (
     medallion_models,
     omie_day_ahead_prices,
 )
+from ibergrid.orchestration.maintenance import MaintenanceConfig, lake_maintenance
 from ibergrid.orchestration.resources import Lake
 from ibergrid.orchestration.sweeper import sweep_audit_branches
 from ibergrid.settings import base_url
@@ -586,3 +588,41 @@ def test_medallion_models_materialize_all_and_subsets_in_process(
     assert isinstance(meta["dbt_tests_passed"], int)
     assert meta["dbt_tests_passed"] > 0
     assert meta["snapshot_id"] != "none"
+
+
+def test_lake_maintenance_job_runs_and_emits_openlineage(
+    lake: Lake,
+    instance: dg.DagsterInstance,
+    catalog: SqlCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = tmp_path / "lineage.jsonl"
+    monkeypatch.setenv("IBERGRID_LINEAGE_SINK_PATH", str(sink))
+    monkeypatch.setattr(orch_maintenance, "rest_catalog", lambda _settings: catalog)
+
+    result = lake_maintenance.execute_in_process(
+        instance=instance,
+        resources={"lake": lake},
+        run_config=dg.RunConfig(
+            ops={"maintain_lake_tables": MaintenanceConfig(compact=False, dry_run=True)}
+        ),
+    )
+
+    assert result.success
+    events = [line for line in sink.read_text(encoding="utf-8").splitlines() if line]
+    assert len(events) == 2
+    assert '"eventType":"START"' in events[0]
+    assert '"eventType":"COMPLETE"' in events[1]
+    assert '"name":"lake_maintenance"' in events[1]
+
+    # Missing tables are skipped cleanly.
+    elsewhere = Lake(namespace="nowhere")
+    skipped = lake_maintenance.execute_in_process(
+        instance=instance,
+        resources={"lake": elsewhere},
+        run_config=dg.RunConfig(
+            ops={"maintain_lake_tables": MaintenanceConfig(compact=False, dry_run=True)}
+        ),
+    )
+    assert skipped.success

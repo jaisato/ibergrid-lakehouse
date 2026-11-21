@@ -13,8 +13,10 @@ Write-Audit-Publish works, in [ADR 0002](adr/0002-iceberg-write-and-read-paths.m
 ingested, in [ADR 0003](adr/0003-redata-ingestion.md), and OMIE, in
 [ADR 0004](adr/0004-omie-ingestion.md); how both are orchestrated, in
 [ADR 0005](adr/0005-dagster-orchestration.md); the streaming lane and the broker's security, in
-[ADR 0006](adr/0006-streaming-lane.md); and the dbt Silver/Gold medallion, in
-[ADR 0007](adr/0007-dbt-medallion.md).
+[ADR 0006](adr/0006-streaming-lane.md); the dbt Silver/Gold medallion, in
+[ADR 0007](adr/0007-dbt-medallion.md); and declarative Soda v4 quality gates, zero-scan metadata
+audits, S3 orphan-file maintenance and OpenLineage v2 observability, in
+[ADR 0008](adr/0008-quality-maintenance-lineage.md).
 
 ## System context (C4 level 1)
 
@@ -53,6 +55,7 @@ C4Container
     ContainerDb(orchdb, "orchestration-db", "Postgres 17", "Runs, event logs (materializations and metadata), schedules")
     Container(app, "ibergrid CLI", "Python 3.12, PyIceberg, DuckDB, app image", "catalog-init bootstraps the catalog; doctor checks readiness and runs lake commands; ingest pulls REData and OMIE")
     Container(transform, "transform", "dbt Core 1.12, dbt-duckdb 1.11, orchestration image", "On-demand `ibergrid transform run`: builds and tests Silver/Gold in staging DuckDB and WAP-publishes to Iceberg")
+    Container(quality, "quality", "Soda Core 4.29, DuckDB, orchestration image", "On-demand `ibergrid quality check` and `lake maintain`: zero-scan metadata checks, Soda v4 contracts, quarantine and orphan cleanup")
     Container(catalog, "catalog", "Lakekeeper 0.15.1", "Iceberg REST catalog and management API")
     ContainerDb(catalogdb, "catalog-db", "Postgres 17", "Catalog state and encrypted storage credentials")
     Container(producer, "stream-producer", "Python 3.12, confluent-kafka, app image", "Polls the REData real-time demand every 5 min; emits changed points")
@@ -84,6 +87,8 @@ C4Container
   Rel(app, broker, "TCP readiness", "Kafka port")
   Rel(transform, catalog, "Reads Bronze snapshots; publishes Silver/Gold via WAP", "HTTP")
   Rel(transform, storage, "Reads Bronze Parquet; writes Silver/Gold Parquet", "S3 API")
+  Rel(quality, catalog, "Audits snapshots/branches; writes quarantine; expires snapshots", "HTTP")
+  Rel(quality, storage, "Zero-scan manifest reads; Soda checks; orphan cleanup", "S3 API")
   Rel(producer, ree, "demanda-tiempo-real, every 5 min, at most 1 request/s", "HTTPS")
   Rel(producer, broker, "Produces events as ibergrid-producer", "Kafka, SASL/SCRAM")
   Rel(consumer, broker, "Consumes; dead letters; group offsets for lag", "Kafka, SASL/SCRAM")
@@ -93,6 +98,72 @@ C4Container
   Rel(catalog, catalogdb, "Reads and writes", "SQL")
   Rel(catalog, storage, "Validates and manages the warehouse", "S3 API")
   Rel(catalog, r2, "Same role in production", "S3 API")
+```
+
+## OpenLineage data flow
+
+```mermaid
+flowchart LR
+  subgraph Sources
+    REE[REData API]
+    OMIE[OMIE marginalpdbc]
+  end
+
+  subgraph Bronze["Bronze (Apache Iceberg)"]
+    B_RE[bronze.redata_observations]
+    B_OM[bronze.omie_day_ahead_prices]
+    B_ST[bronze.redata_demand_stream]
+  end
+
+  subgraph Silver["Silver (dbt + WAP)"]
+    S_D5[silver.demand_national_5min]
+    S_DH[silver.demand_system_hourly]
+    S_MP[silver.mibel_prices_period]
+    S_MH[silver.mibel_prices_hourly]
+    S_GN[silver.generation_daily]
+  end
+
+  subgraph Gold["Gold (dbt + WAP)"]
+    G_HM[gold.mibel_hourly_market]
+    G_DS[gold.mibel_daily_summary]
+    G_SD[gold.system_demand_daily]
+    G_OW[gold.optimal_consumption_windows]
+  end
+
+  subgraph Quality["Quality & Lineage (ADR 0008)"]
+    QG["Zero-scan Metadata + Soda v4 WAP Gates"]
+    QR["quarantine.rejected_records"]
+    OL["OpenLineage v2 RunEvents (structlog / JSONL / HTTP)"]
+  end
+
+  REE --> B_RE
+  REE -->|Redpanda SASL/SCRAM| B_ST
+  OMIE --> B_OM
+
+  B_RE --> S_D5
+  B_ST --> S_D5
+  B_RE --> S_DH
+  B_OM --> S_MP
+  S_MP --> S_MH
+  B_RE --> S_MH
+  B_RE --> S_GN
+
+  S_MH --> G_HM
+  S_DH --> G_HM
+  S_GN --> G_HM
+  G_HM --> G_DS
+  S_DH --> G_DS
+  S_DH --> G_SD
+  S_GN --> G_SD
+  G_HM --> G_OW
+
+  B_OM -.-> QG
+  S_MH -.-> QG
+  S_DH -.-> QG
+  G_HM -.-> QG
+  QG -->|blocked before publish| QR
+  Silver -.-> OL
+  Gold -.-> OL
 ```
 
 ## Service inventory
@@ -110,6 +181,7 @@ C4Container
 | `doctor` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid doctor`; also runs `ibergrid lake ...` | storage, catalog, broker | |
 | `ingest` | `ibergrid-app` (this repository) | On demand (scale 0): `ibergrid ingest ...`, with a 384 MiB memory limit | storage, catalog | |
 | `transform` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid transform run` (`make transform`), 1.25 GiB limit | storage, catalog | |
+| `quality` | `ibergrid-orchestration` (this repository) | On demand (scale 0): `ibergrid quality check` (`make quality-check`) and `lake maintain` (`make maintain`), 1 GiB limit | storage, catalog | |
 | `stream-producer` | `ibergrid-app` (this repository) | `ibergrid stream produce` (`stream` profile locally); no lake keys; 256 MiB | broker | |
 | `stream-consumer` | `ibergrid-app` (this repository) | `ibergrid stream consume` (`stream` profile locally); 384 MiB | broker, catalog, storage | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs and schedules | orchestration-db (internal) | |

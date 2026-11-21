@@ -1,0 +1,77 @@
+# Declarative Soda v4 data-quality contract for silver.demand_system_hourly (ADR 0003, ADR 0008).
+# Enforces strict peninsular vs non-peninsular scoping and Canarias unverified timestamp flag.
+dataset: ibergrid/audit/silver_demand_system_hourly
+columns:
+  - name: ts_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: madrid_date
+    data_type: date
+    checks:
+      - missing:
+          must_be: 0
+  - name: madrid_hour
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 0
+          valid_max: 23
+          must_be: 0
+  - name: electric_system
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [peninsular, baleares, canarias, ceuta, melilla]
+          must_be: 0
+  - name: system_scope
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [peninsular, non_peninsular]
+          must_be: 0
+  - name: ts_utc_verified
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: demand_mw
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 0.0001
+          must_be: 0
+  - name: series_last_update_utc
+    data_type: timestamp_tz
+checks:
+  - schema: {}
+  - duplicate:
+      columns: [electric_system, ts_utc]
+      must_be: 0
+  - failed_rows:
+      qualifier: peninsular_non_peninsular_isolation
+      name: peninsular_non_peninsular_isolation
+      query: |
+        SELECT electric_system, system_scope, ts_utc, demand_mw
+        FROM audit.silver_demand_system_hourly
+        WHERE (electric_system = 'peninsular' AND system_scope <> 'peninsular')
+           OR (electric_system <> 'peninsular' AND system_scope <> 'non_peninsular')
+      must_be: 0
+  - failed_rows:
+      qualifier: canarias_unverified_timestamp_flag
+      name: canarias_unverified_timestamp_flag
+      query: |
+        SELECT electric_system, ts_utc, ts_utc_verified
+        FROM audit.silver_demand_system_hourly
+        WHERE (electric_system = 'canarias' AND ts_utc_verified IS NOT FALSE)
+           OR (electric_system <> 'canarias' AND ts_utc_verified IS NOT TRUE)
+      must_be: 0

@@ -4,18 +4,18 @@ An open, multi-engine lakehouse for Iberian electricity data: Red Eléctrica's R
 day-ahead market files, stored as Apache Iceberg tables behind a REST catalog and readable from
 DuckDB, Polars and PyIceberg without a JVM.
 
-**Status: phase 3 (dbt medallion) complete.** The stack runs end to end (object storage,
-Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes Iceberg
-tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
-Eléctrica's REData API (demand, daily generation mix, prices) into `bronze.redata_observations`
-and OMIE's day-ahead marginal prices for Spain and Portugal into `bronze.omie_day_ahead_prices`;
-Dagster runs them as partitioned assets, with daily schedules, backfills from 2023-01-01 and a
-sweeper for the audit branches of dead runs; a streaming lane carries REData's five-minute
-national demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly
-once; and dbt Core + `dbt-duckdb` builds and tests 5 Silver and 4 Gold medallion Iceberg tables
-published through PyIceberg WAP (reconciling batch and stream demand, harmonizing 60-min/15-min
-MIBEL prices across DST, and isolating peninsular from non-peninsular systems). Quality gates,
-automated maintenance and OpenLineage are next (see [Roadmap](#roadmap)).
+**Status: phase 4 (quality, maintenance & lineage) complete.** The stack runs end to end (object
+storage, Iceberg REST catalog, broker, Dagster) with CI/CD around it; the lake library writes
+Iceberg tables through Write-Audit-Publish and reads them with DuckDB; two connectors ingest Red
+Eléctrica's REData API and OMIE's day-ahead marginal prices into Bronze; Dagster runs them as
+partitioned assets with daily schedules, backfills from 2023-01-01, a dead-branch sweeper and daily
+automated table maintenance; a streaming lane carries REData's five-minute national demand through
+Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once; dbt Core +
+`dbt-duckdb` builds and tests 5 Silver and 4 Gold medallion Iceberg tables published via PyIceberg
+WAP; and zero-scan Iceberg metadata checks, declarative Soda v4 contracts (`contracts/soda/*.yml`),
+ACID quarantine (`quarantine.rejected_records`), safety-windowed S3 orphan-file cleanup,
+OpenLineage v2 events and a reproducible data chaos proof (`make chaos-data`, 5/5 = 100 % WAP
+blocking) guard every layer. Benchmarks are next (see [Roadmap](#roadmap)).
 
 ## Why
 
@@ -357,6 +357,40 @@ make transform                                                   # full Silver +
 docker compose run --rm --no-deps transform run --select gold    # build upstreams, publish Gold only
 ```
 
+## Quality gates, maintenance and OpenLineage
+
+Data quality, storage reclamation and lineage observability follow
+[ADR 0008](docs/adr/0008-quality-maintenance-lineage.md):
+
+- **Zero-scan Iceberg metadata checks (`ibergrid.quality.metadata`):** queries DuckDB's
+  `iceberg_snapshots`, `iceberg_files` and `iceberg_column_stats` (supporting `snapshot_from_id`
+  on WAP audit branches) to validate row counts, non-null columns, typed numeric min/max bounds and
+  freshness with **0 Parquet data bytes scanned** (~150 ms per table).
+- **Declarative Soda Core v4 contracts (`contracts/soda/*.yml`):** 5 strict schema + domain
+  contracts (`bronze_omie_day_ahead_prices`, `bronze_redata_observations`,
+  `silver_mibel_prices_hourly`, `silver_demand_system_hourly`, `gold_mibel_hourly_market`) enforce
+  MIBEL price limits (`-500..4000 EUR/MWh`), zero duplicate keys, DST 23/24/25-hour continuity,
+  strict peninsular/non-peninsular scoping with Canarias `ts_utc_verified = FALSE`, and the
+  **cross-source OMIE ES vs REData spot reconciliation gate** (verifying **3,049 real decoupled
+  hours** across 2023–2026 to detect ES/PT swaps).
+- **ACID quarantine (`quarantine.rejected_records`):** any WAP audit branch failing metadata or
+  Soda checks writes offending violations and sampled JSON payloads to `quarantine.rejected_records`
+  via WAP and discards the audit branch before `wap.publish` so `main` stays untouched.
+- **Automated Iceberg maintenance (`ibergrid.lake.maintenance`):** combines DuckDB compaction,
+  PyIceberg `expire_snapshots` (7-day retention, min 5 snapshots, tags and open audit branches
+  preserved) and TOCTOU-safe S3 orphan-file cleanup (`remove_orphan_files`, mandatory 48 h safety
+  grace window, `--dry-run` supported). Scheduled daily at **04:00 Europe/Madrid** in Dagster
+  (`lake_maintenance`).
+- **OpenLineage v2 (`ibergrid.lineage`):** emits `START`/`COMPLETE`/`FAIL` RunEvents with dataset
+  schemas, Iceberg snapshot ids, output row counts and quality assertions to structured logs plus
+  optional JSONL (`IBERGRID_LINEAGE_SINK_PATH`) or HTTP (`IBERGRID_LINEAGE_ENDPOINT_URL`) sinks.
+
+```bash
+make quality-check   # zero-scan metadata + Soda v4 contracts across Bronze, Silver and Gold
+make maintain        # dry-run compaction, snapshot expiry and S3 orphan-file scan
+make chaos-data      # 5-scenario WAP data chaos proof in a throwaway compose project (100 % blocked)
+```
+
 ## Services
 
 One container per service. Ports are published on 127.0.0.1 only, and only in local development.
@@ -374,6 +408,7 @@ One container per service. Ports are published on 127.0.0.1 only, and only in lo
 | `doctor` | app image (`ibergrid doctor`) | On demand: readiness report (`make smoke`); also runs `lake` commands | |
 | `ingest` | app image (`ibergrid ingest`) | On demand: `ingest redata ...`, `ingest omie ...` (384 MiB limit) | |
 | `transform` | orchestration image (`ibergrid transform`) | On demand: `make transform` (`dbt build` + WAP publish; 1.25 GiB limit) | |
+| `quality` | orchestration image (`ibergrid quality`) | On demand: `make quality-check` (Soda v4 + zero-scan metadata) and `make maintain` (1 GiB limit) | |
 | `stream-producer` | app image (`ibergrid stream produce`) | REData's real-time demand into the topic (`stream` profile locally) | |
 | `stream-consumer` | app image (`ibergrid stream consume`) | The topic into `bronze.redata_demand_stream` (`stream` profile locally) | |
 | `orchestration-db` | `postgres:17-alpine` | Dagster's runs, event logs, schedules | |
@@ -447,7 +482,7 @@ Each phase lands as reviewed pull requests; later phases may be reordered as the
 | 1 | Batch ingestion: REE REData ([ADR 0003](docs/adr/0003-redata-ingestion.md)) and OMIE ([ADR 0004](docs/adr/0004-omie-ingestion.md)) connectors, orchestrated with Dagster: assets, partitions, schedules, backfills ([ADR 0005](docs/adr/0005-dagster-orchestration.md)) | Done |
 | 2 | Streaming lane: REData's real-time demand through Redpanda (SASL/SCRAM, ACLs) into `bronze.redata_demand_stream`, exactly once through offsets in the WAP publish, contract, dead-letter topic, deduplication, crash test ([ADR 0006](docs/adr/0006-streaming-lane.md)) | Done |
 | 3 | dbt medallion: 5 Silver and 4 Gold Iceberg tables built with dbt Core + `dbt-duckdb`, 87 schema/singular tests, PyIceberg WAP publication, Dagster `@multi_asset` and full 2023-2026 materialization ([ADR 0007](docs/adr/0007-dbt-medallion.md)) | Done |
-| 4 | Quality and maintenance: WAP quality gates, quarantine, compaction and snapshot expiry, OpenLineage, data chaos tests | Planned |
+| 4 | Quality and maintenance: zero-scan Iceberg metadata checks, Soda v4 YAML contracts, ACID quarantine, S3 orphan cleanup + Dagster maintenance, OpenLineage v2, reproducible data chaos proof ([ADR 0008](docs/adr/0008-quality-maintenance-lineage.md)) | Done |
 | 5 | Benchmarks | Planned |
 | 6 | Serving (API and Evidence portal), production on a single server with R2 at `ibergrid-lakehouse.jasato.com`, final README | Planned |
 

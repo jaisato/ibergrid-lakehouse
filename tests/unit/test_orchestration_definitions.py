@@ -52,6 +52,7 @@ def test_the_definitions_load_and_validate() -> None:
         "omie_afternoon",
         "omie_evening",
         "medallion_transform",
+        "lake_maintenance",
         "sweep_audit_branches",
     ):
         assert definitions.defs.resolve_job_def(job).name == job
@@ -140,6 +141,7 @@ def test_the_schedules_run_at_their_madrid_times() -> None:
     }
 
     assert times == {
+        "lake_maintenance_schedule": ["0", "4"],
         "redata_daily_schedule": ["0", "9"],
         "medallion_morning_schedule": ["30", "9"],
         "omie_afternoon_schedule": ["0", "16"],

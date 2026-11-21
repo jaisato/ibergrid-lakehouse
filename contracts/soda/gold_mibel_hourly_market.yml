@@ -1,0 +1,146 @@
+# Declarative Soda v4 data-quality contract for gold.mibel_hourly_market (ADR 0007, ADR 0008).
+dataset: ibergrid/audit/gold_mibel_hourly_market
+columns:
+  - name: hour_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: delivery_date
+    data_type: date
+    checks:
+      - missing:
+          must_be: 0
+  - name: madrid_hour
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 0
+          valid_max: 23
+          must_be: 0
+  - name: day_type
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [weekday, weekend]
+          must_be: 0
+  - name: price_es_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: price_pt_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: spread_es_minus_pt_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+  - name: is_decoupled
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: is_zero_or_negative_es
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: pvpc_eur_mwh
+    data_type: double
+  - name: peninsular_demand_mw
+    data_type: double
+  - name: demand_ramp_1h_mw
+    data_type: double
+  - name: price_ramp_1h_eur_mwh
+    data_type: double
+  - name: intraday_price_rank
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 1
+          valid_max: 25
+          must_be: 0
+  - name: is_evening_ramp_window
+    data_type: boolean
+    checks:
+      - missing:
+          must_be: 0
+  - name: peninsular_renewable_share_pct
+    data_type: double
+  - name: peninsular_solar_share_pct
+    data_type: double
+  - name: peninsular_wind_share_pct
+    data_type: double
+  - name: source_attribution
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: updated_at_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+checks:
+  - schema: {}
+  - duplicate:
+      columns: [hour_utc]
+      must_be: 0
+  - failed_rows:
+      qualifier: dst_hourly_continuity
+      name: dst_hourly_continuity
+      query: |
+        SELECT
+            delivery_date,
+            count(*) AS observed_hours,
+            CAST(
+                epoch(
+                    timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                    - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+                ) / 3600 AS INTEGER
+            ) AS expected_hours
+        FROM audit.gold_mibel_hourly_market
+        GROUP BY delivery_date
+        HAVING count(*) <> CAST(
+            epoch(
+                timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+            ) / 3600 AS INTEGER
+        )
+      must_be: 0
+  - failed_rows:
+      qualifier: peninsular_demand_positive
+      name: peninsular_demand_positive
+      query: |
+        SELECT hour_utc, delivery_date, peninsular_demand_mw
+        FROM audit.gold_mibel_hourly_market
+        WHERE peninsular_demand_mw IS NOT NULL
+          AND peninsular_demand_mw <= 0
+      must_be: 0
+  - failed_rows:
+      qualifier: source_attribution_required
+      name: source_attribution_required
+      query: |
+        SELECT hour_utc, source_attribution
+        FROM audit.gold_mibel_hourly_market
+        WHERE source_attribution NOT LIKE '%OMIE%'
+           OR source_attribution NOT LIKE '%Red Eléctrica%'
+      must_be: 0

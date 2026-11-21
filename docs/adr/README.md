@@ -13,3 +13,4 @@ never edited to say something else, it is superseded by a new record.
 | [0005](0005-dagster-orchestration.md) | Dagster asset-oriented orchestration of the batch lane | Accepted |
 | [0006](0006-streaming-lane.md) | Streaming lane: REData real-time demand through Redpanda into Iceberg, exactly once | Accepted |
 | [0007](0007-dbt-medallion.md) | Medallion Silver and Gold layers with dbt Core, DuckDB and PyIceberg WAP | Accepted |
+| [0008](0008-quality-maintenance-lineage.md) | Quality gates, Iceberg maintenance, OpenLineage and data chaos proof | Accepted |

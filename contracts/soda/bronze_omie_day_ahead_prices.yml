@@ -1,0 +1,120 @@
+# Declarative Soda v4 data-quality contract for bronze.omie_day_ahead_prices (ADR 0004, ADR 0008).
+# Evaluated on an ephemeral DuckDB view over the WAP audit snapshot before publish.
+dataset: ibergrid/audit/bronze_omie_day_ahead_prices
+columns:
+  - name: delivery_date
+    data_type: date
+    checks:
+      - missing:
+          must_be: 0
+  - name: period
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: 1
+          valid_max: 100
+          must_be: 0
+  - name: resolution_minutes
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [15, 60]
+          must_be: 0
+  - name: interval_start_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: interval_end_utc
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: price_es_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: price_pt_eur_mwh
+    data_type: double
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_min: -500
+          valid_max: 4000
+          must_be: 0
+  - name: contract_version
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+      - invalid:
+          valid_values: [1, 2]
+          must_be: 0
+  - name: source_file
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: file_version
+    data_type: integer
+    checks:
+      - missing:
+          must_be: 0
+  - name: content_sha256
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: fetched_at
+    data_type: timestamp_tz
+    checks:
+      - missing:
+          must_be: 0
+  - name: run_id
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+  - name: landing_path
+    data_type: varchar
+    checks:
+      - missing:
+          must_be: 0
+checks:
+  - schema: {}
+  - duplicate:
+      columns: [delivery_date, period]
+      must_be: 0
+  - failed_rows:
+      qualifier: dst_period_count_continuity
+      name: dst_period_count_continuity
+      query: |
+        SELECT
+            delivery_date,
+            count(*) AS observed_periods,
+            CAST(
+                epoch(
+                    timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                    - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+                ) / (min(resolution_minutes) * 60) AS INTEGER
+            ) AS expected_periods
+        FROM audit.bronze_omie_day_ahead_prices
+        GROUP BY delivery_date
+        HAVING count(*) <> CAST(
+            epoch(
+                timezone('Europe/Madrid', (delivery_date + INTERVAL 1 DAY)::TIMESTAMP)
+                - timezone('Europe/Madrid', delivery_date::TIMESTAMP)
+            ) / (min(resolution_minutes) * 60) AS INTEGER
+        )
+        OR min(resolution_minutes) <> max(resolution_minutes)
+      must_be: 0
