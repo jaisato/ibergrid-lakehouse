@@ -328,6 +328,109 @@ def test_an_empty_checkpoint_run_can_be_published_twice(loaded: Table) -> None:
     assert loaded.properties["stream.offsets"] == "p0:5"
 
 
+def fail_commit(
+    table: Table, monkeypatch: pytest.MonkeyPatch, number: int, error: Exception, *, landed: bool
+) -> None:
+    """The ``number``-th commit from now raises ``error``, after reaching the catalog or not."""
+    commit = table.catalog.commit_table
+    calls = {"count": 0}
+
+    def failing(*args: Any) -> Any:
+        calls["count"] += 1
+        if calls["count"] < number:
+            return commit(*args)
+        monkeypatch.setattr(table.catalog, "commit_table", commit)
+        if landed:
+            commit(*args)
+        raise error
+
+    monkeypatch.setattr(table.catalog, "commit_table", failing)
+
+
+OFFSETS = {"stream.offsets": "p0:5"}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [CommitStateUnknownException("504 Gateway Timeout"), RuntimeError("process killed")],
+    ids=["lost answer", "crash"],
+)
+def test_a_checkpoint_interrupted_after_its_append_resumes(
+    loaded: Table, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    fail_commit(loaded, monkeypatch, 2, failure, landed=False)  # 1: the append, 2: the publish
+
+    with pytest.raises((wap.WapError, RuntimeError), match=r"same arguments|killed"):
+        wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+    assert loaded.metadata.current_snapshot_id == audit.base_snapshot_id
+    assert loaded.metadata.refs[audit.name].snapshot_id != audited  # its checkpoint is staged
+
+    checkpoint = wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+
+    assert loaded.metadata.current_snapshot_id == checkpoint != audited
+    assert loaded.properties["stream.offsets"] == "p0:5"
+    assert set(loaded.metadata.refs) == {"main"}
+    assert wap.publish(loaded, audit, audited, set_properties=OFFSETS) == checkpoint
+
+
+def test_a_checkpoint_whose_answer_was_lost_after_landing_is_recognised(
+    loaded: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    fail_commit(loaded, monkeypatch, 2, CommitStateUnknownException("502"), landed=True)
+
+    checkpoint = wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+
+    assert checkpoint == loaded.metadata.current_snapshot_id != audited
+    assert loaded.properties["stream.offsets"] == "p0:5"
+
+
+def test_a_foreign_write_after_an_interrupted_checkpoint_still_conflicts(
+    loaded: Table, other: Table, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = wap.start(loaded, "idle")
+    audited = wap.head(loaded, audit)
+    fail_commit(loaded, monkeypatch, 2, RuntimeError("process killed"), landed=False)
+    with pytest.raises(RuntimeError):
+        wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+    wap.write(other, audit, rows(("2026-01-09", 9)))  # on top of the staged checkpoint
+
+    with pytest.raises(wap.PublishConflict, match="since its audit"):
+        wap.publish(loaded, audit, audited, set_properties=OFFSETS)
+    assert "stream.offsets" not in loaded.properties
+
+
+def test_a_checkpoint_needs_live_data_in_main(loaded: Table) -> None:
+    """After a published delete-everything run, main holds no data file: an empty append on it
+    would have an empty manifest list, which DuckDB cannot read."""
+    wipe = wap.start(loaded, "wipe")
+    wap.publish(loaded, wipe, wap.write(loaded, wipe, rows(), overwrite_filter="value >= 0"))
+    idle = wap.start(loaded, "idle")
+
+    with pytest.raises(wap.WapError, match="a checkpoint needs data"):
+        wap.publish(loaded, idle, wap.head(loaded, idle), set_properties=OFFSETS)
+    assert "stream.offsets" not in loaded.properties
+    con = duckdb.connect()
+    con.load_extension("iceberg")
+    loaded.refresh()
+    assert con.execute("FROM iceberg_scan(?)", [loaded.metadata_location]).fetchall() == []
+
+
+def test_a_reused_run_id_cannot_claim_the_previous_checkpoint(loaded: Table) -> None:
+    first = wap.start(loaded, "batch-10")
+    wap.publish(loaded, first, wap.head(loaded, first), set_properties={"stream.offsets": "p0:20"})
+    second = wap.start(loaded, "batch-10")  # its base is the first run's checkpoint
+    audited = wap.head(loaded, second)
+    wap.discard(loaded, second)
+
+    with pytest.raises(wap.WapError, match="was discarded"):
+        wap.publish(loaded, second, audited, set_properties={"stream.offsets": "p0:30"})
+    assert loaded.properties["stream.offsets"] == "p0:20"
+
+
 def test_a_discarded_empty_run_cannot_claim_its_checkpoint(loaded: Table) -> None:
     audit = wap.start(loaded, "idle")
     audited = wap.head(loaded, audit)
@@ -452,7 +555,7 @@ def test_a_checkpoint_on_a_table_without_snapshots_needs_data(
         wap.discard(table, audit)
 
     with pytest.raises(wap.WapError, match="a checkpoint needs data"):
-        wap.publish(table, audit, None, set_properties={"stream.offsets": "p0:5"})
+        wap.publish(table, audit, None, set_properties=OFFSETS)
     assert "stream.offsets" not in table.properties
     assert table.metadata.current_snapshot_id is None
 

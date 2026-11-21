@@ -50,6 +50,7 @@ from pyiceberg.table.update import (
 
 BRANCH_PREFIX = "audit-"
 RUN_ID_PROPERTY = "ibergrid.run-id"
+CHECKPOINT_PROPERTY = "ibergrid.checkpoint"  # marks a run's checkpoint snapshot (no data change)
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 
@@ -161,11 +162,8 @@ def head(table: Table, audit: AuditBranch) -> int | None:
     read (DuckDB cannot read the empty root) and nothing to publish.
     """
     snapshot_id = _lineage_head(table, audit)
-    if audit.base_snapshot_id is None:
-        snapshot = table.snapshot_by_id(snapshot_id)
-        summary = None if snapshot is None else snapshot.summary
-        if summary is not None and summary["total-data-files"] == "0":
-            return None
+    if audit.base_snapshot_id is None and not _has_data(table, snapshot_id):
+        return None
     return snapshot_id
 
 
@@ -191,8 +189,10 @@ def publish(
     ``main`` or not at all, and only if ``main`` is still at the run's base. A run that wrote
     nothing still has to move ``main`` for that guard to order it against other publishes, so it
     gets a checkpoint snapshot of its own: an empty append (no data change) on the branch, which
-    is then published. A table without any snapshot cannot take one (DuckDB cannot read an empty
-    first snapshot), so there a checkpoint needs data.
+    is then published. When ``main`` holds no live data file (no snapshot yet, or everything
+    deleted), that append would have an empty manifest list, which DuckDB cannot read, so there a
+    checkpoint needs data. If the publish commit fails after the checkpoint append (lost answer,
+    crash), publishing again with the same arguments resumes from that checkpoint.
 
     Returns the snapshot ``main`` moved to (None: nothing was written on an empty table).
     Publishing again after success returns it too. An empty run without properties changes
@@ -204,9 +204,9 @@ def publish(
     table.refresh()
     _check_table(table, audit)
     checkpoint = bool(set_properties) and expected_head == audit.base_snapshot_id
-    if checkpoint and expected_head is None:
+    if checkpoint and (expected_head is None or not _has_data(table, expected_head)):
         raise WapError(
-            f"run {audit.run_id!r} wrote nothing on a table without snapshots: a checkpoint "
+            f"run {audit.run_id!r} wrote nothing and main holds no data file: a checkpoint "
             "needs data there"
         )
     branch = _ref(table, audit.name)
@@ -222,22 +222,24 @@ def publish(
             f"started; branch {audit.name!r} is kept"
         )
     audited = head(table, audit)
-    if audited != expected_head:
+    # A checkpoint run whose earlier attempt appended its checkpoint and then failed (lost
+    # answer, crash) resumes from it; anything else on the branch since the audit conflicts.
+    resumed = checkpoint and _own_checkpoint(table, audit, audited, expected_head)
+    if audited != expected_head and not resumed:
         raise PublishConflict(
             f"branch {audit.name!r} moved from {expected_head} to {audited} since its audit; "
             "audit it again"
         )
-    target = expected_head
-    if checkpoint:
+    target = audited
+    if checkpoint and not resumed:
         with _concurrently(f"checkpointing run {audit.run_id!r}"):
             table.append(
                 table.schema().as_arrow().empty_table(),
-                snapshot_properties={RUN_ID_PROPERTY: audit.run_id},
+                snapshot_properties={RUN_ID_PROPERTY: audit.run_id, CHECKPOINT_PROPERTY: "true"},
                 branch=audit.name,
             )
         target = branch = table.metadata.refs[audit.name].snapshot_id
-        snapshot = table.snapshot_by_id(target)
-        if snapshot is None or snapshot.parent_snapshot_id != expected_head:
+        if not _own_checkpoint(table, audit, target, expected_head):
             raise PublishConflict(f"branch {audit.name!r} moved since its audit; audit it again")
     requirements = (
         AssertTableUUID(uuid=audit.table_uuid),
@@ -271,7 +273,7 @@ def publish(
             return target
         raise WapError(
             f"the catalog did not confirm publishing run {audit.run_id!r} and it has not landed; "
-            "publish again"
+            "publish again with the same arguments"
         ) from exc
     table.refresh()
     return target
@@ -313,6 +315,9 @@ def _published(
     if expected_head == audit.base_snapshot_id and not by_run_id:
         return True, expected_head
     for snapshot in ancestors_of(table.current_snapshot(), table.metadata):
+        # The base first: with a reused run id, it may be the previous run's checkpoint.
+        if snapshot.snapshot_id == audit.base_snapshot_id:
+            return False, None
         if by_run_id:
             found = (
                 snapshot.summary is not None and snapshot.summary[RUN_ID_PROPERTY] == audit.run_id
@@ -321,9 +326,28 @@ def _published(
             found = snapshot.snapshot_id == expected_head
         if found:
             return True, snapshot.snapshot_id
-        if snapshot.snapshot_id == audit.base_snapshot_id:
-            return False, None
     return False, None
+
+
+def _has_data(table: Table, snapshot_id: int) -> bool:
+    snapshot = table.snapshot_by_id(snapshot_id)
+    summary = None if snapshot is None else snapshot.summary
+    return summary is None or summary["total-data-files"] != "0"
+
+
+def _own_checkpoint(
+    table: Table, audit: AuditBranch, snapshot_id: int | None, parent: int | None
+) -> bool:
+    """Whether ``snapshot_id`` is this run's checkpoint snapshot on top of ``parent``."""
+    snapshot = None if snapshot_id is None else table.snapshot_by_id(snapshot_id)
+    summary = None if snapshot is None else snapshot.summary
+    return (
+        snapshot is not None
+        and summary is not None
+        and snapshot.parent_snapshot_id == parent
+        and summary[RUN_ID_PROPERTY] == audit.run_id
+        and summary[CHECKPOINT_PROPERTY] == "true"
+    )
 
 
 def _ref(table: Table, ref: str) -> int | None:
