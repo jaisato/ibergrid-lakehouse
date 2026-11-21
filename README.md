@@ -277,13 +277,18 @@ five-minute poll, then a flush 60 s after the burst):
 - **`stream-consumer`** validates every message (failures go to `redata.demand.realtime.dlq.v1`
   with their reason in the headers), drops exact duplicates and keeps revisions, and writes
   micro-batches (at 10,000 rows or 60 s) as Write-Audit-Publish runs whose publish also commits
-  the Kafka offsets as a table property. On start it seeks to the offsets in the table, not in the
-  consumer group: a crash anywhere replays from the last published batch, so nothing is lost or
-  written twice. `make chaos-stream` proves it by SIGKILLing the consumer between the write and
-  the publish, and between the publish and the group commit, in a throwaway compose project.
+  the checkpoint (the topic's id and the next offsets) as a table property. On start it seeks to
+  the checkpoint in the table, not in the consumer group: a crash anywhere replays from the last
+  published batch, so nothing is lost or written twice. A topic that changed under the checkpoint
+  (recreated, or a log a crash shortened) stops it until `ibergrid stream reset` says where to
+  resume. `make chaos-stream` proves it by SIGKILLing the consumer between the write and the
+  publish, between the publish and the group commit, and after a checkpoint-only publish, in a
+  throwaway compose project. It expires its table's snapshots daily; a watchdog ends a stuck
+  process so that its restart policy recovers it.
 - **`broker-init`** (one-shot) turns SASL/SCRAM on for the Kafka listener and authentication on
   for the admin API, disables automatic topic creation, and creates the topics, one user per
-  service and their least-privilege ACLs.
+  service and their least-privilege ACLs. The broker's unauthenticated HTTP Proxy and Schema
+  Registry, unused, do not start.
 
 The stream services are in the `stream` profile locally, so a local stack never calls REData on
 its own; production runs them:
@@ -292,12 +297,15 @@ its own; production runs them:
 make stream-up       # lake init, then the producer and the consumer (they poll REData)
 make stream-status   # the table's rows and checkpoint, the lag per partition, the dead letters
 make stream-down     # stop both (the consumer flushes first)
-make chaos-stream    # the crash/restart proof, in its own compose project (about a minute)
+make chaos-stream    # the crash/restart proof, in its own compose project (under two minutes)
+# After the topic was recreated (the consumer refuses to start), with the consumer stopped:
+docker compose run --rm --no-deps stream-consumer stream reset --to latest   # or --to earliest
 ```
 
 ```text
-table:        bronze.redata_demand_stream: 2047 rows, snapshot 4824344040039726969
-checkpoint:   ibergrid.stream.ibergrid.stream.bronze.redata.demand.realtime.v1.offsets = {"0": 3385, "1": 3220, "2": 3384}
+table:        bronze.redata_demand_stream: 2047 rows, snapshot 2718558410151017304
+checkpoint:   ibergrid.stream.checkpoint.redata-demand-to-bronze = {"topic": "redata.demand.realtime.v1", "topic_id": "Zw7KxI8+TgyZmhnNa3ma5g", "offsets": {"0": 3385, "1": 3220, "2": 3384}}
+topic:        redata.demand.realtime.v1 Zw7KxI8+TgyZmhnNa3ma5g
 partition 0:  checkpoint 3385, end 3385, lag 0
 partition 1:  checkpoint 3220, end 3220, lag 0
 partition 2:  checkpoint 3384, end 3384, lag 0

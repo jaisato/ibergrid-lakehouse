@@ -171,14 +171,17 @@ and the stream services wait for (the consumer also for `catalog-init`). `docker
   listener in every environment; one user per service with least-privilege ACLs
   (`ibergrid-producer` writes the data topic; `ibergrid-consumer` reads it, writes the DLQ and
   commits its group); the superuser `ibergrid-admin` is used by `broker-init` only; the admin API
-  requires it and is not published; topics are never created on demand. No TLS yet: plaintext on
-  the Docker networks.
+  requires it and is not published; the unauthenticated HTTP Proxy (8082) and Schema Registry
+  (8081) do not start; topics are never created on demand. No TLS yet: plaintext on the Docker
+  networks.
 - **Streaming ([ADR 0006](adr/0006-streaming-lane.md)).** The consumer writes WAP micro-batches
-  whose publish commits the Kafka offsets as a table property, and resumes from that property:
-  exactly once into `bronze.redata_demand_stream` without Kafka transactions. Both stream
-  services beat a heartbeat file; their healthchecks run `python -m ibergrid.stream.health`
-  (standard library only) because the full CLI costs 133 MiB per start inside the service's own
-  memory limit.
+  whose publish commits the checkpoint (the topic's id and the next offsets) as a table property,
+  and resumes from that property: exactly once into `bronze.redata_demand_stream` without Kafka
+  transactions; it refuses a topic that changed under the checkpoint until `ibergrid stream
+  reset`, and expires its table's snapshots daily. Both stream services beat a heartbeat file with
+  their failure streak; their healthchecks run `python -m ibergrid.stream.health` (standard
+  library only) because the full CLI costs 133 MiB per start inside the service's own memory
+  limit, and a watchdog ends a process whose loop is stuck so that its restart policy recovers it.
 - **Two images, one Dockerfile.** `catalog-init`, `doctor`, `ingest` and the stream services run
   the app image (confluent-kafka is a runtime dependency: 23 MB of 813); the
   Dagster services run the orchestration image (`--target orchestration`: the same environment

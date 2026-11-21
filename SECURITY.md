@@ -31,6 +31,7 @@ These services must not be exposed to untrusted networks:
   APIs accept any caller. Public endpoints (phase 6) require authentication in front of it.
 - The broker (Redpanda) authenticates every Kafka client with SASL/SCRAM and enforces
   least-privilege ACLs, one user per service; its admin API requires the superuser and is
-  published nowhere ([ADR 0006](docs/adr/0006-streaming-lane.md)). Its traffic is not encrypted
+  published nowhere, and its HTTP Proxy and Schema Registry, which have no authentication and are
+  unused, do not start ([ADR 0006](docs/adr/0006-streaming-lane.md)). Its traffic is not encrypted
   (no TLS), so its listeners must stay on the Docker networks and, locally, the host's loopback;
   TLS comes before any listener leaves the host. The superuser's password rotates by hand.
