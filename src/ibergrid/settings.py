@@ -190,6 +190,39 @@ class LineageSettings(BaseSettings):
         return value
 
 
+class ApiSettings(BaseSettings):
+    """FastAPI + DuckDB real-time serving layer and interactive portal (ADR 0010)."""
+
+    model_config = _config("IBERGRID_API_")
+
+    host: str = "0.0.0.0"  # noqa: S104 - container listens on all interfaces; compose binds loopback
+    port: int = Field(default=8000, ge=1, le=65535)
+    # Sliding-window per-IP request budget for /v1/* endpoints.
+    rate_limit_rpm: int = Field(default=120, ge=1, le=10_000)
+    # Comma-separated browser origins allowed by CORS (never wildcard in production).
+    cors_origins: str = "http://127.0.0.1:28000,http://localhost:28000"
+    # Short TTL cache (seconds) for read-only Gold/Silver queries; 0 disables caching.
+    cache_ttl_seconds: float = Field(default=60.0, ge=0.0, le=3600.0)
+    # Strict date-window guards against unbounded analytical scans from public clients.
+    max_hourly_range_days: int = Field(default=90, ge=1, le=366)
+    max_daily_range_days: int = Field(default=1825, ge=1, le=3660)
+    # Static portal and benchmark artifact paths (baked in the api image; auto-discovered locally).
+    portal_dir: str | None = None
+    benchmarks_path: str | None = None
+    # Only honor X-Forwarded-For when running behind our trusted Caddy reverse proxy.
+    trust_proxy_headers: bool = False
+
+    @field_validator("portal_dir", "benchmarks_path", mode="before")
+    @classmethod
+    def _empty_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+
 class OrchestrationSettings(BaseSettings):
     """Dagster's code server (ADR 0005). Not part of ``Settings``: loading the definitions must
     not need the storage keys."""
@@ -231,6 +264,7 @@ class Settings(BaseModel):
     quality: QualitySettings = Field(default_factory=QualitySettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     lineage: LineageSettings = Field(default_factory=LineageSettings)
+    api: ApiSettings = Field(default_factory=ApiSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -253,6 +287,7 @@ def describe_validation_error(exc: ValidationError) -> str:
         QualitySettings,
         MaintenanceSettings,
         LineageSettings,
+        ApiSettings,
         LogSettings,
     )
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}

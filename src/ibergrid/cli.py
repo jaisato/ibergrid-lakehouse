@@ -31,6 +31,7 @@ from ibergrid.lake.maintenance import maintain_table
 from ibergrid.lake.tables import EnsureResult, IncompatibleTableChange, ensure_table
 from ibergrid.lake.wap import WapError
 from ibergrid.logging import configure_logging
+from ibergrid.portal import export_portal_bundle
 from ibergrid.quality import QualityGateError, check_tables
 from ibergrid.settings import (
     BrokerSettings,
@@ -102,6 +103,16 @@ quality_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(quality_app, name="quality")
+portal_app = typer.Typer(
+    help="Export static analytical portal bundles to local disk or S3/R2 (ADR 0010).",
+    no_args_is_help=True,
+)
+app.add_typer(portal_app, name="portal")
+api_app = typer.Typer(
+    help="Run the FastAPI + DuckDB real-time serving layer (ADR 0010).",
+    no_args_is_help=True,
+)
+app.add_typer(api_app, name="api")
 
 
 def _load[T](factory: Callable[[], T]) -> T:
@@ -679,6 +690,87 @@ def quality_check(
 
     if any(not r.passed for r in reports):
         raise typer.Exit(1)
+
+
+@portal_app.command("export")
+def portal_export(
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(help="Local directory to write JSON/CSV portal bundles (e.g. portal/data)."),
+    ] = None,
+    s3_prefix: Annotated[
+        str | None,
+        typer.Option(
+            help="S3/R2 bucket key prefix to publish portal bundles and assets (e.g. portal)."
+        ),
+    ] = None,
+    benchmarks_json: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Optional benchmarks JSON path (default: benchmarks/results/latest.json).",
+        ),
+    ] = None,
+    include_assets: Annotated[
+        bool,
+        typer.Option(
+            "--include-assets/--no-include-assets",
+            help="When publishing to --s3-prefix, also upload portal HTML/CSS/JS assets.",
+        ),
+    ] = True,
+) -> None:
+    """Export precalculated Gold & Silver portal summaries to local disk and/or S3/R2."""
+    settings = _load_settings()
+    resolved_dir = output_dir
+    if resolved_dir is None and s3_prefix is None:
+        resolved_dir = Path("portal/data")
+    try:
+        report = export_portal_bundle(
+            settings,
+            output_dir=resolved_dir,
+            s3_prefix=s3_prefix,
+            benchmarks_path=benchmarks_json,
+            include_assets=include_assets,
+        )
+    except (ValueError, OSError, duckdb.Error) as exc:
+        _fail(exc)
+    typer.echo(
+        f"portal: exported {len(report.local_files)} local file(s), "
+        f"{len(report.s3_uris)} S3 object(s) "
+        f"(daily={report.daily_market_rows}, windows={report.optimal_window_rows}, "
+        f"blackout_hours={report.blackout_hourly_rows})"
+    )
+
+
+@api_app.command("serve")
+def api_serve(
+    host: Annotated[
+        str | None, typer.Option(help="Bind host (default: IBERGRID_API_HOST).")
+    ] = None,
+    port: Annotated[
+        int | None, typer.Option(min=1, max=65535, help="Bind port (default: IBERGRID_API_PORT).")
+    ] = None,
+) -> None:
+    """Serve the FastAPI + DuckDB real-time REST API and mounted static portal (ADR 0010)."""
+    settings = _load_settings()
+    try:
+        import uvicorn
+
+        from ibergrid.api.app import create_app
+    except ImportError as exc:
+        _fail(
+            RuntimeError(
+                f"API dependencies are not installed ({exc}); install the `api` dependency group"
+            )
+        )
+    application = create_app(settings)
+    uvicorn.run(
+        application,
+        host=host or settings.api.host,
+        port=port or settings.api.port,
+        log_level=settings.log.level.lower(),
+    )
 
 
 def _stream_clients(settings: Settings, client_id: str) -> tuple[Consumer, AdminClient]:

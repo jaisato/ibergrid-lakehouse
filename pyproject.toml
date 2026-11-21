@@ -55,9 +55,17 @@ orchestration = [
 benchmarks = [
   "polars==2.1.0",
 ]
+# FastAPI + Uvicorn (ADR 0010): real-time serving API and static portal host. Lives in its own
+# `api` container target so the lean `app` CLI image stays without HTTP server dependencies.
+api = [
+  "fastapi==0.165.0",
+  "uvicorn==0.54.0",
+]
 dev = [
   { include-group = "orchestration" },
   { include-group = "benchmarks" },
+  { include-group = "api" },
+  "httpx>=0.28,<1",
   "mypy>=2.4",
   "pip-audit>=2.10",
   "pre-commit>=4.7",

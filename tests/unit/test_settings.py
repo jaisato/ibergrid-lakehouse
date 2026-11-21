@@ -189,3 +189,28 @@ def test_quality_maintenance_and_lineage_settings(monkeypatch: pytest.MonkeyPatc
     assert describe_validation_error(caught.value).startswith(
         "  IBERGRID_MAINTENANCE_ORPHAN_GRACE_HOURS: "
     )
+
+
+@pytest.mark.usefixtures("credentials")
+def test_api_settings_reads_prefix_and_validates_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = Settings().api
+    assert (defaults.host, defaults.port, defaults.rate_limit_rpm) == ("0.0.0.0", 8000, 120)  # noqa: S104
+    assert defaults.trust_proxy_headers is False
+    assert defaults.cors_origin_list() == ["http://127.0.0.1:28000", "http://localhost:28000"]
+
+    monkeypatch.setenv("IBERGRID_API_PORT", "8080")
+    monkeypatch.setenv("IBERGRID_API_RATE_LIMIT_RPM", "60")
+    monkeypatch.setenv("IBERGRID_API_CORS_ORIGINS", "https://a.example, https://b.example ")
+    monkeypatch.setenv("IBERGRID_API_PORTAL_DIR", "  ")
+    monkeypatch.setenv("IBERGRID_API_BENCHMARKS_PATH", "")
+    monkeypatch.setenv("IBERGRID_API_TRUST_PROXY_HEADERS", "true")
+    updated = Settings().api
+    assert (updated.port, updated.rate_limit_rpm, updated.trust_proxy_headers) == (8080, 60, True)
+    assert updated.portal_dir is None
+    assert updated.benchmarks_path is None
+    assert updated.cors_origin_list() == ["https://a.example", "https://b.example"]
+
+    monkeypatch.setenv("IBERGRID_API_RATE_LIMIT_RPM", "0")
+    with pytest.raises(ValidationError) as caught:
+        Settings()
+    assert describe_validation_error(caught.value).startswith("  IBERGRID_API_RATE_LIMIT_RPM: ")

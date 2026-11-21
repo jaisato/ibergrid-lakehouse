@@ -1,10 +1,11 @@
 # Production overlay, as deploy/remote.sh runs it on the server:
 #   docker compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml <command>
 # - object storage is Cloudflare R2 (the local-storage profile stays off);
-# - the app and orchestration images come from GHCR pinned by digest (the deploy job writes
+# - the app, orchestration and api images come from GHCR pinned by digest (the deploy job writes
 #   release.env);
 # - the Dagster schedules run (locally they start stopped);
-# - nothing is published on host ports (phase 6 adds a reverse proxy for public endpoints);
+# - internal services publish no host ports; enabling the `edge` profile starts Caddy with
+#   automatic TLS on 80/443 forwarding exclusively to `api:8000` over `public-edge` (ADR 0010);
 # - the broker runs in production mode (fsync on, startup checks on), and the streaming lane runs
 #   (locally its services are in the `stream` profile);
 # - long-running services restart unless stopped and every log rotates.
@@ -32,6 +33,16 @@ x-orchestration: &orchestration
 x-orchestration-long-running: &orchestration-long-running
   <<: *orchestration
   restart: unless-stopped
+
+x-api: &api
+  image: ${IBERGRID_API_IMAGE:-ghcr.io/jaisato/ibergrid-lakehouse-api}@${IBERGRID_API_DIGEST:?set IBERGRID_API_DIGEST (sha256:...) in release.env; the deploy job writes it}
+  restart: unless-stopped
+  logging: *logging
+  environment:
+    IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:?set IBERGRID_S3_ENDPOINT_URL to https://<account-id>.r2.cloudflarestorage.com}
+    IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-auto}
+    IBERGRID_API_TRUST_PROXY_HEADERS: "true"
+    IBERGRID_API_CORS_ORIGINS: https://${IBERGRID_DOMAIN:-ibergrid-lakehouse.jasato.com}
 
 # The stream services: the app image, out of the `stream` profile, restarted unless stopped.
 x-stream: &stream
@@ -95,3 +106,43 @@ services:
       IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING: ${IBERGRID_ORCHESTRATION_SCHEDULES_RUNNING:-true}
   dagster-webserver: *orchestration-long-running
   dagster-daemon: *orchestration-long-running
+  api: *api
+
+  # Optional public HTTPS edge (ADR 0010): enable on a server with DNS pointing to it via
+  # `COMPOSE_PROFILES=edge` in .env (or `--profile edge`). Joins ONLY `public-edge`: Lakekeeper,
+  # Redpanda, Postgres, RustFS and Dagster are unreachable at the Docker network layer.
+  proxy:
+    profiles: [edge]
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 128m
+    environment:
+      IBERGRID_DOMAIN: ${IBERGRID_DOMAIN:-ibergrid-lakehouse.jasato.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [public-edge]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  caddy-data:
+  caddy-config:

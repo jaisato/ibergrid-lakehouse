@@ -1,0 +1,38 @@
+# IberGrid Lakehouse public HTTPS edge reverse proxy (ADR 0010).
+#
+# Security boundary:
+# - Caddy joins ONLY the `public-edge` Docker network alongside the `api` container.
+# - Lakekeeper (catalog), Redpanda (broker), Postgres, RustFS and Dagster are unreachable
+#   at the Docker network layer; the explicit 403 block below is defense in depth.
+# - Automatic Let's Encrypt HTTPS for {$IBERGRID_DOMAIN} with HTTP->HTTPS redirect and HTTP/3.
+
+{$IBERGRID_DOMAIN:ibergrid-lakehouse.jasato.com} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Strict CSP for the portal, API JSON and all non-doc routes (no unsafe-inline scripts).
+	@not_docs not path /docs /docs/* /redoc /redoc/*
+	header @not_docs Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'self'; frame-ancestors 'none'"
+
+	# Narrowly scoped CSP for FastAPI's Swagger UI (/docs) and ReDoc (/redoc) pages only.
+	@docs path /docs /docs/* /redoc /redoc/*
+	header @docs Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; worker-src 'self' blob:; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'"
+
+	# Defense-in-depth block against accidental internal admin route exposure.
+	@blocked path /catalog /catalog/* /management /management/* /graphql /graphql/*
+	respond @blocked "Forbidden" 403
+
+	reverse_proxy api:8000 {
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+	}
+}

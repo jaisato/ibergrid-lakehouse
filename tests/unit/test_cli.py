@@ -664,3 +664,68 @@ def test_lake_maintain_and_quality_check_cli(
     assert fail_res.exit_code == 1
     assert "FAIL silver.mibel_prices_hourly" in fail_res.stdout
     assert "soda.dup: 1 dup" in fail_res.stdout
+
+
+def test_portal_export_and_api_serve_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, credentials: None
+) -> None:
+    import builtins
+    import sys
+
+    from ibergrid.portal.export import PortalExportReport
+
+    captured: dict[str, object] = {}
+
+    def _fake_export(_settings: object, **kwargs: object) -> PortalExportReport:
+        captured.update(kwargs)
+        return PortalExportReport(
+            exported_at_utc="2026-11-21T20:00:00Z",
+            local_files=(tmp_path / "summary.json",),
+            s3_uris=(),
+            daily_market_rows=10,
+            optimal_window_rows=24,
+            systems_monthly_rows=5,
+            blackout_hourly_rows=72,
+        )
+
+    monkeypatch.setattr(cli, "export_portal_bundle", _fake_export)
+    res = runner.invoke(app, ["portal", "export"])
+    assert res.exit_code == 0, res.output
+    assert "portal: exported 1 local file(s), 0 S3 object(s)" in res.stdout
+    assert captured["output_dir"] == Path("portal/data")
+
+    def _bad_export(_settings: object, **_kwargs: object) -> PortalExportReport:
+        raise ValueError("s3_prefix must not contain '..' path segments")
+
+    monkeypatch.setattr(cli, "export_portal_bundle", _bad_export)
+    err = runner.invoke(app, ["portal", "export", "--s3-prefix", "../bad"])
+    assert err.exit_code == 1
+    assert "error: s3_prefix" in err.stderr
+
+    # api serve calls uvicorn.run with the FastAPI app and configured host/port.
+    uvicorn_calls: list[dict[str, object]] = []
+
+    class _FakeUvicorn:
+        @staticmethod
+        def run(application: object, **kwargs: object) -> None:
+            uvicorn_calls.append({"app": application, **kwargs})
+
+    monkeypatch.setitem(sys.modules, "uvicorn", _FakeUvicorn)
+    served = runner.invoke(app, ["api", "serve", "--host", "127.0.0.1", "--port", "9009"])
+    assert served.exit_code == 0, served.output
+    assert uvicorn_calls[0]["host"] == "127.0.0.1"
+    assert uvicorn_calls[0]["port"] == 9009
+
+    # Missing uvicorn/fastapi exits 1 with a clear actionable error.
+    real_import = builtins.__import__
+
+    def _deny_uvicorn(name: str, *args: object, **kwargs: object) -> object:
+        if name == "uvicorn":
+            raise ImportError("No module named 'uvicorn'")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.delitem(sys.modules, "uvicorn", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _deny_uvicorn)
+    missing = runner.invoke(app, ["api", "serve"])
+    assert missing.exit_code == 1
+    assert "API dependencies are not installed" in missing.stderr

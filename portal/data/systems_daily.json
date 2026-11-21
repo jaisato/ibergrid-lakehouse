@@ -1,0 +1,2178 @@
+{
+  "exported_at_utc": "2026-11-21T20:57:11Z",
+  "source_attribution": "Source: Red El\u00e9ctrica, REData",
+  "overview": [
+    {
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 650398.9,
+      "peak_demand_mw": 41779.2,
+      "avg_renewable_share_pct": 56.91,
+      "avg_solar_share_pct": 20.24,
+      "avg_wind_share_pct": 22.64
+    },
+    {
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 17229.5,
+      "peak_demand_mw": 1515.3,
+      "avg_renewable_share_pct": 13.87,
+      "avg_solar_share_pct": 10.75,
+      "avg_wind_share_pct": 0.01
+    },
+    {
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 1420,
+      "avg_daily_demand_mwh": 24554.0,
+      "peak_demand_mw": 1510.1,
+      "avg_renewable_share_pct": 20.51,
+      "avg_solar_share_pct": 4.76,
+      "avg_wind_share_pct": 15.37
+    },
+    {
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 545.4,
+      "peak_demand_mw": 38.2,
+      "avg_renewable_share_pct": 0.0,
+      "avg_solar_share_pct": 0.0,
+      "avg_wind_share_pct": 0.0
+    },
+    {
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 1420,
+      "avg_daily_demand_mwh": 603.8,
+      "peak_demand_mw": 48.4,
+      "avg_renewable_share_pct": 2.48,
+      "avg_solar_share_pct": 0.03,
+      "avg_wind_share_pct": 0.0
+    }
+  ],
+  "monthly": [
+    {
+      "month": "2023-01",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14647.0,
+      "avg_renewable_share_pct": 8.22
+    },
+    {
+      "month": "2023-01",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23481.8,
+      "avg_renewable_share_pct": 21.57
+    },
+    {
+      "month": "2023-01",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 536.8,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-01",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 524.5,
+      "avg_renewable_share_pct": 2.88
+    },
+    {
+      "month": "2023-01",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 674810.8,
+      "avg_renewable_share_pct": 59.43
+    },
+    {
+      "month": "2023-02",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 15524.2,
+      "avg_renewable_share_pct": 9.7
+    },
+    {
+      "month": "2023-02",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 28,
+      "avg_daily_demand_mwh": 23482.8,
+      "avg_renewable_share_pct": 9.87
+    },
+    {
+      "month": "2023-02",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 560.7,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-02",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 532.2,
+      "avg_renewable_share_pct": 3.02
+    },
+    {
+      "month": "2023-02",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 694194.2,
+      "avg_renewable_share_pct": 47.4
+    },
+    {
+      "month": "2023-03",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 13461.4,
+      "avg_renewable_share_pct": 14.05
+    },
+    {
+      "month": "2023-03",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23299.3,
+      "avg_renewable_share_pct": 23.07
+    },
+    {
+      "month": "2023-03",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 496.3,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-03",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 490.3,
+      "avg_renewable_share_pct": 2.96
+    },
+    {
+      "month": "2023-03",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 628049.7,
+      "avg_renewable_share_pct": 55.18
+    },
+    {
+      "month": "2023-04",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 13608.0,
+      "avg_renewable_share_pct": 16.11
+    },
+    {
+      "month": "2023-04",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 22790.0,
+      "avg_renewable_share_pct": 19.95
+    },
+    {
+      "month": "2023-04",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 459.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-04",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 482.0,
+      "avg_renewable_share_pct": 3.69
+    },
+    {
+      "month": "2023-04",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 573218.4,
+      "avg_renewable_share_pct": 54.99
+    },
+    {
+      "month": "2023-05",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14979.2,
+      "avg_renewable_share_pct": 13.71
+    },
+    {
+      "month": "2023-05",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 22927.9,
+      "avg_renewable_share_pct": 23.24
+    },
+    {
+      "month": "2023-05",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 457.2,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-05",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 500.1,
+      "avg_renewable_share_pct": 3.0
+    },
+    {
+      "month": "2023-05",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 581889.4,
+      "avg_renewable_share_pct": 56.42
+    },
+    {
+      "month": "2023-06",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 18375.0,
+      "avg_renewable_share_pct": 12.62
+    },
+    {
+      "month": "2023-06",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 24075.7,
+      "avg_renewable_share_pct": 13.31
+    },
+    {
+      "month": "2023-06",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 500.0,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-06",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 554.9,
+      "avg_renewable_share_pct": 2.86
+    },
+    {
+      "month": "2023-06",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 622273.8,
+      "avg_renewable_share_pct": 48.24
+    },
+    {
+      "month": "2023-07",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 23922.6,
+      "avg_renewable_share_pct": 9.56
+    },
+    {
+      "month": "2023-07",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24877.3,
+      "avg_renewable_share_pct": 32.17
+    },
+    {
+      "month": "2023-07",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 549.2,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-07",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 708.0,
+      "avg_renewable_share_pct": 1.98
+    },
+    {
+      "month": "2023-07",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 685413.7,
+      "avg_renewable_share_pct": 48.26
+    },
+    {
+      "month": "2023-08",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 22837.7,
+      "avg_renewable_share_pct": 11.45
+    },
+    {
+      "month": "2023-08",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 26162.6,
+      "avg_renewable_share_pct": 26.6
+    },
+    {
+      "month": "2023-08",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 550.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-08",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 703.0,
+      "avg_renewable_share_pct": 2.46
+    },
+    {
+      "month": "2023-08",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 653925.9,
+      "avg_renewable_share_pct": 48.66
+    },
+    {
+      "month": "2023-09",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 18972.7,
+      "avg_renewable_share_pct": 10.48
+    },
+    {
+      "month": "2023-09",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 25070.2,
+      "avg_renewable_share_pct": 18.11
+    },
+    {
+      "month": "2023-09",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 523.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-09",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 573.7,
+      "avg_renewable_share_pct": 2.56
+    },
+    {
+      "month": "2023-09",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 613618.4,
+      "avg_renewable_share_pct": 44.0
+    },
+    {
+      "month": "2023-10",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 16086.1,
+      "avg_renewable_share_pct": 12.11
+    },
+    {
+      "month": "2023-10",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 26201.1,
+      "avg_renewable_share_pct": 11.02
+    },
+    {
+      "month": "2023-10",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 505.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-10",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 542.7,
+      "avg_renewable_share_pct": 1.66
+    },
+    {
+      "month": "2023-10",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 601505.8,
+      "avg_renewable_share_pct": 52.64
+    },
+    {
+      "month": "2023-11",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 12582.7,
+      "avg_renewable_share_pct": 12.09
+    },
+    {
+      "month": "2023-11",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 24653.5,
+      "avg_renewable_share_pct": 17.2
+    },
+    {
+      "month": "2023-11",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 488.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-11",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 507.1,
+      "avg_renewable_share_pct": 2.03
+    },
+    {
+      "month": "2023-11",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 632207.7,
+      "avg_renewable_share_pct": 62.89
+    },
+    {
+      "month": "2023-12",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 13625.4,
+      "avg_renewable_share_pct": 10.47
+    },
+    {
+      "month": "2023-12",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23933.2,
+      "avg_renewable_share_pct": 13.03
+    },
+    {
+      "month": "2023-12",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 497.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2023-12",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 518.9,
+      "avg_renewable_share_pct": 4.08
+    },
+    {
+      "month": "2023-12",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 648598.8,
+      "avg_renewable_share_pct": 56.12
+    },
+    {
+      "month": "2024-01",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14494.0,
+      "avg_renewable_share_pct": 10.77
+    },
+    {
+      "month": "2024-01",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24161.4,
+      "avg_renewable_share_pct": 10.64
+    },
+    {
+      "month": "2024-01",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 514.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-01",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 533.9,
+      "avg_renewable_share_pct": 3.81
+    },
+    {
+      "month": "2024-01",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 681379.2,
+      "avg_renewable_share_pct": 54.23
+    },
+    {
+      "month": "2024-02",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 29,
+      "avg_daily_demand_mwh": 14141.0,
+      "avg_renewable_share_pct": 12.46
+    },
+    {
+      "month": "2024-02",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 29,
+      "avg_daily_demand_mwh": 24066.0,
+      "avg_renewable_share_pct": 19.73
+    },
+    {
+      "month": "2024-02",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 29,
+      "avg_daily_demand_mwh": 505.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-02",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 29,
+      "avg_daily_demand_mwh": 518.3,
+      "avg_renewable_share_pct": 2.21
+    },
+    {
+      "month": "2024-02",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 29,
+      "avg_daily_demand_mwh": 661994.3,
+      "avg_renewable_share_pct": 61.8
+    },
+    {
+      "month": "2024-03",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 13914.4,
+      "avg_renewable_share_pct": 18.16
+    },
+    {
+      "month": "2024-03",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23619.9,
+      "avg_renewable_share_pct": 16.76
+    },
+    {
+      "month": "2024-03",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 495.1,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-03",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 500.1,
+      "avg_renewable_share_pct": 3.3
+    },
+    {
+      "month": "2024-03",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 629684.9,
+      "avg_renewable_share_pct": 68.07
+    },
+    {
+      "month": "2024-04",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 14465.5,
+      "avg_renewable_share_pct": 17.49
+    },
+    {
+      "month": "2024-04",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 23758.4,
+      "avg_renewable_share_pct": 18.68
+    },
+    {
+      "month": "2024-04",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 514.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-04",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 531.3,
+      "avg_renewable_share_pct": 3.29
+    },
+    {
+      "month": "2024-04",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 603974.1,
+      "avg_renewable_share_pct": 68.02
+    },
+    {
+      "month": "2024-05",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 15473.4,
+      "avg_renewable_share_pct": 19.57
+    },
+    {
+      "month": "2024-05",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23101.4,
+      "avg_renewable_share_pct": 26.02
+    },
+    {
+      "month": "2024-05",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 514.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-05",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 539.3,
+      "avg_renewable_share_pct": 3.33
+    },
+    {
+      "month": "2024-05",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 590736.1,
+      "avg_renewable_share_pct": 65.97
+    },
+    {
+      "month": "2024-06",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 18034.8,
+      "avg_renewable_share_pct": 17.75
+    },
+    {
+      "month": "2024-06",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 23350.4,
+      "avg_renewable_share_pct": 24.21
+    },
+    {
+      "month": "2024-06",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 530.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-06",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 568.6,
+      "avg_renewable_share_pct": 2.87
+    },
+    {
+      "month": "2024-06",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 612431.2,
+      "avg_renewable_share_pct": 61.42
+    },
+    {
+      "month": "2024-07",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 22107.7,
+      "avg_renewable_share_pct": 16.13
+    },
+    {
+      "month": "2024-07",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24781.6,
+      "avg_renewable_share_pct": 28.42
+    },
+    {
+      "month": "2024-07",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 582.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-07",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 702.6,
+      "avg_renewable_share_pct": 2.71
+    },
+    {
+      "month": "2024-07",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 686557.4,
+      "avg_renewable_share_pct": 57.67
+    },
+    {
+      "month": "2024-08",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 23662.8,
+      "avg_renewable_share_pct": 13.22
+    },
+    {
+      "month": "2024-08",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 25505.3,
+      "avg_renewable_share_pct": 32.5
+    },
+    {
+      "month": "2024-08",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 622.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-08",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 773.0,
+      "avg_renewable_share_pct": 2.1
+    },
+    {
+      "month": "2024-08",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 673884.5,
+      "avg_renewable_share_pct": 54.89
+    },
+    {
+      "month": "2024-09",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 18580.9,
+      "avg_renewable_share_pct": 15.25
+    },
+    {
+      "month": "2024-09",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 24847.6,
+      "avg_renewable_share_pct": 25.46
+    },
+    {
+      "month": "2024-09",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 583.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-09",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 653.8,
+      "avg_renewable_share_pct": 2.45
+    },
+    {
+      "month": "2024-09",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 620371.6,
+      "avg_renewable_share_pct": 54.67
+    },
+    {
+      "month": "2024-10",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 16272.2,
+      "avg_renewable_share_pct": 13.54
+    },
+    {
+      "month": "2024-10",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 25100.3,
+      "avg_renewable_share_pct": 20.11
+    },
+    {
+      "month": "2024-10",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 552.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-10",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 578.5,
+      "avg_renewable_share_pct": 2.99
+    },
+    {
+      "month": "2024-10",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 613655.0,
+      "avg_renewable_share_pct": 57.51
+    },
+    {
+      "month": "2024-11",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 12839.1,
+      "avg_renewable_share_pct": 12.14
+    },
+    {
+      "month": "2024-11",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 24944.5,
+      "avg_renewable_share_pct": 9.74
+    },
+    {
+      "month": "2024-11",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 527.3,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-11",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 552.1,
+      "avg_renewable_share_pct": 1.45
+    },
+    {
+      "month": "2024-11",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 624755.5,
+      "avg_renewable_share_pct": 52.71
+    },
+    {
+      "month": "2024-12",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14599.7,
+      "avg_renewable_share_pct": 10.26
+    },
+    {
+      "month": "2024-12",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24426.5,
+      "avg_renewable_share_pct": 17.01
+    },
+    {
+      "month": "2024-12",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 503.1,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2024-12",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 568.9,
+      "avg_renewable_share_pct": 2.23
+    },
+    {
+      "month": "2024-12",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 659083.4,
+      "avg_renewable_share_pct": 49.61
+    },
+    {
+      "month": "2025-01",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14800.4,
+      "avg_renewable_share_pct": 10.39
+    },
+    {
+      "month": "2025-01",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24410.4,
+      "avg_renewable_share_pct": 17.08
+    },
+    {
+      "month": "2025-01",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 551.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-01",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 600.2,
+      "avg_renewable_share_pct": 3.21
+    },
+    {
+      "month": "2025-01",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 699586.0,
+      "avg_renewable_share_pct": 57.53
+    },
+    {
+      "month": "2025-02",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 15014.2,
+      "avg_renewable_share_pct": 11.82
+    },
+    {
+      "month": "2025-02",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 28,
+      "avg_daily_demand_mwh": 24174.5,
+      "avg_renewable_share_pct": 21.57
+    },
+    {
+      "month": "2025-02",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 553.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-02",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 582.2,
+      "avg_renewable_share_pct": 3.14
+    },
+    {
+      "month": "2025-02",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 683399.5,
+      "avg_renewable_share_pct": 55.76
+    },
+    {
+      "month": "2025-03",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 14659.5,
+      "avg_renewable_share_pct": 13.03
+    },
+    {
+      "month": "2025-03",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23786.5,
+      "avg_renewable_share_pct": 16.06
+    },
+    {
+      "month": "2025-03",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 547.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-03",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 556.0,
+      "avg_renewable_share_pct": 3.3
+    },
+    {
+      "month": "2025-03",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 666184.7,
+      "avg_renewable_share_pct": 63.45
+    },
+    {
+      "month": "2025-04",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 14282.5,
+      "avg_renewable_share_pct": 18.26
+    },
+    {
+      "month": "2025-04",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 23245.2,
+      "avg_renewable_share_pct": 21.23
+    },
+    {
+      "month": "2025-04",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 498.7,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-04",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 529.7,
+      "avg_renewable_share_pct": 3.68
+    },
+    {
+      "month": "2025-04",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 587571.5,
+      "avg_renewable_share_pct": 66.82
+    },
+    {
+      "month": "2025-05",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 15415.6,
+      "avg_renewable_share_pct": 17.96
+    },
+    {
+      "month": "2025-05",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 22990.8,
+      "avg_renewable_share_pct": 20.64
+    },
+    {
+      "month": "2025-05",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 508.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-05",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 553.4,
+      "avg_renewable_share_pct": 3.61
+    },
+    {
+      "month": "2025-05",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 591293.6,
+      "avg_renewable_share_pct": 63.91
+    },
+    {
+      "month": "2025-06",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 20866.6,
+      "avg_renewable_share_pct": 17.56
+    },
+    {
+      "month": "2025-06",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 23560.3,
+      "avg_renewable_share_pct": 26.98
+    },
+    {
+      "month": "2025-06",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 562.1,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-06",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 669.3,
+      "avg_renewable_share_pct": 2.49
+    },
+    {
+      "month": "2025-06",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 683094.5,
+      "avg_renewable_share_pct": 56.0
+    },
+    {
+      "month": "2025-07",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 23651.3,
+      "avg_renewable_share_pct": 13.49
+    },
+    {
+      "month": "2025-07",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 25369.0,
+      "avg_renewable_share_pct": 27.53
+    },
+    {
+      "month": "2025-07",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 622.8,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-07",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 761.2,
+      "avg_renewable_share_pct": 1.89
+    },
+    {
+      "month": "2025-07",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 708662.4,
+      "avg_renewable_share_pct": 57.04
+    },
+    {
+      "month": "2025-08",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 23571.5,
+      "avg_renewable_share_pct": 13.74
+    },
+    {
+      "month": "2025-08",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 26382.1,
+      "avg_renewable_share_pct": 24.44
+    },
+    {
+      "month": "2025-08",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 618.7,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-08",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 741.9,
+      "avg_renewable_share_pct": 2.52
+    },
+    {
+      "month": "2025-08",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 668543.3,
+      "avg_renewable_share_pct": 54.22
+    },
+    {
+      "month": "2025-09",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 20157.0,
+      "avg_renewable_share_pct": 14.44
+    },
+    {
+      "month": "2025-09",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 26089.7,
+      "avg_renewable_share_pct": 26.75
+    },
+    {
+      "month": "2025-09",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 595.3,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-09",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 669.6,
+      "avg_renewable_share_pct": 1.77
+    },
+    {
+      "month": "2025-09",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 647450.3,
+      "avg_renewable_share_pct": 55.08
+    },
+    {
+      "month": "2025-10",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 16154.3,
+      "avg_renewable_share_pct": 12.46
+    },
+    {
+      "month": "2025-10",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 25576.6,
+      "avg_renewable_share_pct": 15.53
+    },
+    {
+      "month": "2025-10",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 573.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-10",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 611.1,
+      "avg_renewable_share_pct": 2.86
+    },
+    {
+      "month": "2025-10",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 618169.1,
+      "avg_renewable_share_pct": 51.99
+    },
+    {
+      "month": "2025-11",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 13945.9,
+      "avg_renewable_share_pct": 12.51
+    },
+    {
+      "month": "2025-11",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 25064.4,
+      "avg_renewable_share_pct": 17.36
+    },
+    {
+      "month": "2025-11",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 555.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-11",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 574.6,
+      "avg_renewable_share_pct": 2.66
+    },
+    {
+      "month": "2025-11",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 664172.3,
+      "avg_renewable_share_pct": 58.78
+    },
+    {
+      "month": "2025-12",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 15069.1,
+      "avg_renewable_share_pct": 9.25
+    },
+    {
+      "month": "2025-12",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24647.3,
+      "avg_renewable_share_pct": 15.13
+    },
+    {
+      "month": "2025-12",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 586.1,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2025-12",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 619.9,
+      "avg_renewable_share_pct": 2.6
+    },
+    {
+      "month": "2025-12",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 692672.4,
+      "avg_renewable_share_pct": 50.5
+    },
+    {
+      "month": "2026-01",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 16165.0,
+      "avg_renewable_share_pct": 9.96
+    },
+    {
+      "month": "2026-01",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24840.4,
+      "avg_renewable_share_pct": 17.37
+    },
+    {
+      "month": "2026-01",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 618.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-01",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 632.9,
+      "avg_renewable_share_pct": 2.73
+    },
+    {
+      "month": "2026-01",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 736516.9,
+      "avg_renewable_share_pct": 57.08
+    },
+    {
+      "month": "2026-02",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 14308.4,
+      "avg_renewable_share_pct": 14.95
+    },
+    {
+      "month": "2026-02",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 28,
+      "avg_daily_demand_mwh": 24235.0,
+      "avg_renewable_share_pct": 19.17
+    },
+    {
+      "month": "2026-02",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 548.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-02",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 602.3,
+      "avg_renewable_share_pct": 2.55
+    },
+    {
+      "month": "2026-02",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 28,
+      "avg_daily_demand_mwh": 696431.9,
+      "avg_renewable_share_pct": 65.24
+    },
+    {
+      "month": "2026-03",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 15023.6,
+      "avg_renewable_share_pct": 14.87
+    },
+    {
+      "month": "2026-03",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 24136.9,
+      "avg_renewable_share_pct": 27.43
+    },
+    {
+      "month": "2026-03",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 506.3,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-03",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 577.8,
+      "avg_renewable_share_pct": 2.66
+    },
+    {
+      "month": "2026-03",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 652811.0,
+      "avg_renewable_share_pct": 65.18
+    },
+    {
+      "month": "2026-04",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 14685.5,
+      "avg_renewable_share_pct": 22.32
+    },
+    {
+      "month": "2026-04",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 23484.0,
+      "avg_renewable_share_pct": 17.9
+    },
+    {
+      "month": "2026-04",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 478.6,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-04",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 558.7,
+      "avg_renewable_share_pct": 2.58
+    },
+    {
+      "month": "2026-04",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 593384.3,
+      "avg_renewable_share_pct": 61.42
+    },
+    {
+      "month": "2026-05",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 15975.1,
+      "avg_renewable_share_pct": 18.56
+    },
+    {
+      "month": "2026-05",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 23071.6,
+      "avg_renewable_share_pct": 19.58
+    },
+    {
+      "month": "2026-05",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 479.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-05",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 545.2,
+      "avg_renewable_share_pct": 3.0
+    },
+    {
+      "month": "2026-05",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 607990.7,
+      "avg_renewable_share_pct": 62.17
+    },
+    {
+      "month": "2026-06",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 20650.3,
+      "avg_renewable_share_pct": 18.95
+    },
+    {
+      "month": "2026-06",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 24017.6,
+      "avg_renewable_share_pct": 26.77
+    },
+    {
+      "month": "2026-06",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 554.8,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-06",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 668.7,
+      "avg_renewable_share_pct": 2.47
+    },
+    {
+      "month": "2026-06",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 697352.9,
+      "avg_renewable_share_pct": 60.66
+    },
+    {
+      "month": "2026-07",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 26956.8,
+      "avg_renewable_share_pct": 13.78
+    },
+    {
+      "month": "2026-07",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 26066.1,
+      "avg_renewable_share_pct": 25.41
+    },
+    {
+      "month": "2026-07",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 644.0,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-07",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 808.1,
+      "avg_renewable_share_pct": 0.31
+    },
+    {
+      "month": "2026-07",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 760351.2,
+      "avg_renewable_share_pct": 56.23
+    },
+    {
+      "month": "2026-08",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 27542.2,
+      "avg_renewable_share_pct": 12.78
+    },
+    {
+      "month": "2026-08",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 27020.6,
+      "avg_renewable_share_pct": 28.5
+    },
+    {
+      "month": "2026-08",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 650.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-08",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 835.3,
+      "avg_renewable_share_pct": 0.02
+    },
+    {
+      "month": "2026-08",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 696982.4,
+      "avg_renewable_share_pct": 54.97
+    },
+    {
+      "month": "2026-09",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 21358.3,
+      "avg_renewable_share_pct": 14.6
+    },
+    {
+      "month": "2026-09",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 30,
+      "avg_daily_demand_mwh": 27487.6,
+      "avg_renewable_share_pct": 19.47
+    },
+    {
+      "month": "2026-09",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 633.5,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-09",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 765.1,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-09",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 30,
+      "avg_daily_demand_mwh": 687241.4,
+      "avg_renewable_share_pct": 52.83
+    },
+    {
+      "month": "2026-10",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 16804.6,
+      "avg_renewable_share_pct": 14.41
+    },
+    {
+      "month": "2026-10",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 31,
+      "avg_daily_demand_mwh": 26247.9,
+      "avg_renewable_share_pct": 17.72
+    },
+    {
+      "month": "2026-10",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 595.8,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-10",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 637.8,
+      "avg_renewable_share_pct": 0.01
+    },
+    {
+      "month": "2026-10",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 31,
+      "avg_daily_demand_mwh": 620673.7,
+      "avg_renewable_share_pct": 50.4
+    },
+    {
+      "month": "2026-11",
+      "electric_system": "baleares",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 20,
+      "avg_daily_demand_mwh": 12996.8,
+      "avg_renewable_share_pct": 15.2
+    },
+    {
+      "month": "2026-11",
+      "electric_system": "canarias",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": false,
+      "days": 20,
+      "avg_daily_demand_mwh": 25635.5,
+      "avg_renewable_share_pct": 11.21
+    },
+    {
+      "month": "2026-11",
+      "electric_system": "ceuta",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 20,
+      "avg_daily_demand_mwh": 584.9,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-11",
+      "electric_system": "melilla",
+      "system_scope": "non_peninsular",
+      "ts_utc_verified": true,
+      "days": 20,
+      "avg_daily_demand_mwh": 597.4,
+      "avg_renewable_share_pct": 0.0
+    },
+    {
+      "month": "2026-11",
+      "electric_system": "peninsular",
+      "system_scope": "peninsular",
+      "ts_utc_verified": true,
+      "days": 20,
+      "avg_daily_demand_mwh": 639217.7,
+      "avg_renewable_share_pct": 56.57
+    }
+  ]
+}

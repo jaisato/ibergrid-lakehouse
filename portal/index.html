@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IberGrid Lakehouse — Iberian Electricity Observatory</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script
+    src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"
+    integrity="sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0"
+    crossorigin="anonymous"
+    defer
+  ></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-grid">
+      <div>
+        <p class="eyebrow">Apache Iceberg · Lakekeeper · DuckDB 2.0 · Polars 2.1 · FastAPI</p>
+        <h1>IberGrid Lakehouse</h1>
+        <p class="subtitle">
+          Open multi-engine analytical observatory of the Iberian electricity market (OMIE MIBEL)
+          and Spanish electric systems (Red Eléctrica, REData).
+        </p>
+      </div>
+      <div class="header-meta">
+        <div class="badge-row">
+          <span id="api-status-badge" class="badge badge-neutral">Static bundle</span>
+          <span id="coverage-badge" class="badge badge-accent">Loading coverage…</span>
+        </div>
+        <p id="updated-banner" class="meta-text">Last updated: —</p>
+        <div class="download-row">
+          <a class="btn-link" href="./data/daily_market.csv" download>Daily CSV</a>
+          <a class="btn-link" href="./data/optimal_windows.csv" download>Windows CSV</a>
+          <a class="btn-link" href="/docs" id="api-docs-link" hidden>OpenAPI Docs</a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section id="kpi-strip" class="kpi-grid" aria-label="Key metrics">
+      <article class="kpi-card">
+        <span class="kpi-label">Lakehouse Rows</span>
+        <strong id="kpi-rows" class="kpi-value">—</strong>
+        <span id="kpi-footprint" class="kpi-sub">Zero-scan Iceberg inventory</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Zero / Negative ES Hours (2026 YTD)</span>
+        <strong id="kpi-zneg" class="kpi-value">—</strong>
+        <span id="kpi-zneg-sub" class="kpi-sub">vs 2023 baseline</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Verified Decoupled ES–PT Hours</span>
+        <strong id="kpi-decoupled" class="kpi-value">—</strong>
+        <span class="kpi-sub">Cross-checked &le; 0.02 &euro;/MWh vs REData</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">EU Monthly Cloud Cost</span>
+        <strong id="kpi-cost" class="kpi-value">&euro;6.49/mo</strong>
+        <span class="kpi-sub">Hetzner CAX21 + Cloudflare R2 (&euro;0.00)</span>
+      </article>
+    </section>
+
+    <nav class="tab-bar" role="tablist" aria-label="Analytical views">
+      <button class="tab active" role="tab" aria-selected="true" data-tab="duck-curve">
+        1. Solar Duck Curve &amp; Load Shifting
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="annual-mibel">
+        2. Annual MIBEL &amp; &le;0 &euro; Explosion
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="blackout">
+        3. ES–PT Spread &amp; 2025-04-28 Blackout
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="systems">
+        4. Separated Spanish Systems
+      </button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="benchmarks">
+        5. Benchmarks &amp; Data Chaos Proof
+      </button>
+    </nav>
+
+    <section id="panel-duck-curve" class="panel active" role="tabpanel">
+      <div class="panel-header">
+        <div>
+          <h2>Solar Duck Curve &amp; Optimal 4-Hour Load-Shifting Windows</h2>
+          <p>
+            Peninsular MIBEL intraday price profile (<code>gold.optimal_consumption_windows</code>):
+            identifies the cheapest 4-hour daily windows for industrial &amp; data-center load shifting.
+          </p>
+        </div>
+        <div class="controls">
+          <label>
+            Month
+            <select id="month-select"></select>
+          </label>
+          <label>
+            Day type
+            <select id="daytype-select">
+              <option value="weekday">Weekday</option>
+              <option value="weekend">Weekend</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="chart-card">
+        <canvas id="chart-duck-curve" height="110"></canvas>
+      </div>
+      <div class="card">
+        <h3>12 &times; 24 Intraday Load-Shifting Heatmap (Mean ES &euro;/MWh)</h3>
+        <p class="hint">
+          Gold-bordered cells mark the top-4 cheapest hours (<code>is_optimal_4h_window = true</code>)
+          for each calendar month.
+        </p>
+        <div id="heatmap-container" class="heatmap-scroll"></div>
+      </div>
+    </section>
+
+    <section id="panel-annual-mibel" class="panel" role="tabpanel" hidden>
+      <div class="panel-header">
+        <div>
+          <h2>Annual MIBEL Evolution &amp; Zero/Negative Price Explosion (2023–2026)</h2>
+          <p>
+            Daily executive summary (<code>gold.mibel_daily_summary</code>): peninsular prices,
+            zero/negative-price hours and renewable share. Peninsular and non-peninsular demand
+            remain strictly separated.
+          </p>
+        </div>
+        <div class="controls">
+          <label>
+            Year filter
+            <select id="year-filter">
+              <option value="all">All years (2023–2026)</option>
+              <option value="2023">2023</option>
+              <option value="2024">2024</option>
+              <option value="2025">2025</option>
+              <option value="2026">2026</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="chart-card">
+          <h3>Annual Mean ES Price vs Zero/Negative Hours</h3>
+          <canvas id="chart-annual-mibel" height="160"></canvas>
+        </div>
+        <div class="card">
+          <h3>Annual MIBEL Summary Table</h3>
+          <div class="table-wrap">
+            <table id="table-annual-mibel">
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  <th>Days</th>
+                  <th>Mean ES (&euro;/MWh)</th>
+                  <th>Mean PT (&euro;/MWh)</th>
+                  <th>&le; 0 &euro; Hours</th>
+                  <th>Decoupled Hours</th>
+                  <th>Renewable %</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Daily MIBEL Mean Price &amp; Zero/Negative Hours</h3>
+        <canvas id="chart-daily-mibel" height="105"></canvas>
+      </div>
+    </section>
+
+    <section id="panel-blackout" class="panel" role="tabpanel" hidden>
+      <div class="panel-header">
+        <div>
+          <h2>Spain–Portugal Spread, Decoupling &amp; 2025-04-28 Iberian Blackout Spotlight</h2>
+          <p>
+            On <strong>28 April 2025</strong>, the Iberian Peninsula experienced a historic grid
+            blackout: peninsular demand plunged ~28 % day-over-day alongside decoupled Spain/Portugal
+            prices. Cross-source validation against REData spot on decoupled hours prevents silent
+            ES/PT column swaps (ADR 0004 &amp; ADR 0008).
+          </p>
+        </div>
+      </div>
+      <div id="blackout-kpis" class="three-col"></div>
+      <div class="chart-card">
+        <h3>Hourly Peninsular Demand &amp; ES / PT Prices (2025-04-27 to 2025-04-29)</h3>
+        <canvas id="chart-blackout" height="115"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Daily Mean Absolute ES–PT Spread (&euro;/MWh) Across 2023–2026</h3>
+        <canvas id="chart-spread" height="95"></canvas>
+      </div>
+    </section>
+
+    <section id="panel-systems" class="panel" role="tabpanel" hidden>
+      <div class="panel-header">
+        <div>
+          <h2>Separated Spanish Electric Systems (Peninsular vs Non-Peninsular)</h2>
+          <p>
+            Non-peninsular systems (Baleares, Canarias, Ceuta, Melilla) do not clear on the
+            peninsular MIBEL day-ahead market and are <strong>never mixed</strong> into peninsular
+            totals (ADR 0003 &amp; ADR 0007).
+          </p>
+        </div>
+      </div>
+      <div class="notice-banner warning">
+        <strong>Canarias timestamp integrity flag (ADR 0003):</strong> REData stamps Canarias
+        hourly points with peninsular UTC offsets while load shapes indicate Canarian wall-clock
+        time. Silver and Gold carry <code>ts_utc_verified = FALSE</code> on every Canarias row so
+        cross-system timestamp joins cannot occur silently.
+      </div>
+      <div id="systems-cards" class="systems-grid"></div>
+      <div class="chart-card">
+        <h3>Monthly Renewable Share (%) by Spanish Electric System</h3>
+        <canvas id="chart-systems" height="115"></canvas>
+      </div>
+      <div class="card">
+        <div class="panel-header compact">
+          <h3>Latest Reconciled 5-Minute National Demand (Batch vs Stream Provenance)</h3>
+          <button id="refresh-realtime-btn" class="btn-secondary" hidden>
+            Refresh live from API
+          </button>
+        </div>
+        <p id="realtime-meta" class="hint">—</p>
+        <div class="chart-card inner">
+          <canvas id="chart-realtime" height="90"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-benchmarks" class="panel" role="tabpanel" hidden>
+      <div class="panel-header">
+        <div>
+          <h2>Benchmarks, Zero-Scan Metadata &amp; Data Chaos Proof</h2>
+          <p>
+            Reproducible multi-engine telemetry from <code>make benchmark</code> (ADR 0009),
+            zero-scan Iceberg metadata inventory (<code>0 B</code> Parquet data read) and 100 %
+            Write-Audit-Publish fault-blocking proofs (ADR 0006 &amp; ADR 0008).
+          </p>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="chart-card">
+          <h3>DuckDB 2.0 vs Polars 2.1 Query Latency p50 (ms)</h3>
+          <canvas id="chart-bench-latency" height="165"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Isolated Process Peak RSS (VmHWM, MiB)</h3>
+          <canvas id="chart-bench-rss" height="165"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Stream &amp; Data Chaos Proof Ledger (100 % Blocked / Exactly-Once)</h3>
+        <div class="table-wrap">
+          <table id="table-chaos">
+            <thead>
+              <tr>
+                <th>Suite</th>
+                <th>Injected Fault</th>
+                <th>Target Table</th>
+                <th>Measured Outcome</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <h3>Zero-Scan Iceberg Table Inventory (0 B Data Scanned)</h3>
+          <div class="table-wrap">
+            <table id="table-inventory">
+              <thead>
+                <tr>
+                  <th>Table</th>
+                  <th>Rows</th>
+                  <th>Files</th>
+                  <th>Parquet Size</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Real European Cloud Monthly Cost</h3>
+          <div class="table-wrap">
+            <table id="table-cost">
+              <thead>
+                <tr>
+                  <th>Scenario</th>
+                  <th>Compute &euro;/mo</th>
+                  <th>R2 / Storage &euro;/mo</th>
+                  <th>Egress &euro;/mo</th>
+                  <th>Total &euro;/mo</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="quarantine-note" class="hint"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>
+        <strong>Attribution:</strong> Source: <a href="https://www.omie.es" target="_blank" rel="noopener noreferrer">OMIE (omie.es)</a>
+        &amp; <a href="https://www.ree.es/es/datos/apidatos" target="_blank" rel="noopener noreferrer">Red Eléctrica, REData</a>.
+        Non-commercial open-data portfolio project; not affiliated with or endorsed by REE or OMIE.
+      </p>
+      <p>
+        Code: MIT License · <a href="https://github.com/jaisato/ibergrid-lakehouse" target="_blank" rel="noopener noreferrer">jaisato/ibergrid-lakehouse</a>
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
