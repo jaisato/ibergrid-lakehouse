@@ -279,6 +279,7 @@ dependencies = [
     { name = "pyiceberg", extra = ["pyarrow", "pyiceberg-core"] },
     { name = "structlog" },
     { name = "typer" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -300,6 +301,7 @@ requires-dist = [
     { name = "pyiceberg", extras = ["pyarrow", "pyiceberg-core"], specifier = "==0.12.0" },
     { name = "structlog", specifier = ">=26,<27" },
     { name = "typer", specifier = ">=0.27,<1" },
+    { name = "tzdata", specifier = ">=2025.2" },
 ]
 
 [package.metadata.requires-dev]

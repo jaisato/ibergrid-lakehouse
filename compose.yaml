@@ -23,8 +23,7 @@ x-app: &app
   <<: *hardened
   image: ibergrid-app:local
   restart: "no"
-  # A month of five-minute demand (35,760 rows) peaks at 195 MiB of cgroup memory (ADR 0003).
-  mem_limit: 384m
+  mem_limit: 192m
   environment:
     IBERGRID_S3_ENDPOINT_URL: ${IBERGRID_S3_ENDPOINT_URL:-http://storage:9000}
     IBERGRID_S3_REGION: ${IBERGRID_S3_REGION:-us-east-1}
@@ -190,8 +189,7 @@ services:
 
   # --- Tools -------------------------------------------------------------------------------------
   # Readiness report from inside the network: `docker compose run --rm --no-deps doctor` (make smoke
-  # and the deploy job); with arguments it runs any ibergrid command, such as `lake init` or
-  # `ingest redata` (REData is on the public internet: the default networks allow egress).
+  # and the deploy job); with arguments it runs other ibergrid commands, such as `lake init`.
   # scale 0: `up` never starts it. Its depends_on also matters to `up --wait`, which treats a
   # one-shot that nothing depends on as failed once it exits; with a dependent, compose waits for
   # catalog-init to complete successfully instead.
@@ -203,6 +201,17 @@ services:
       catalog-init:
         condition: service_completed_successfully
     networks: [storage, catalog, broker]
+
+  # Ingestion, on demand: `docker compose run --rm --no-deps ingest redata --dataset ...`. REData is
+  # on the public internet (these networks have egress). A month of five-minute demand (35,760
+  # rows) peaks at 195 MiB of cgroup memory (ADR 0003), hence its own limit.
+  ingest:
+    <<: *app
+    scale: 0
+    mem_limit: 384m
+    entrypoint: ["ibergrid", "ingest"]
+    command: ["--help"]
+    networks: [storage, catalog]
 
 networks:
   storage:

@@ -18,6 +18,8 @@ dependencies = [
   "pyiceberg[pyarrow,pyiceberg-core]==0.12.0",
   "structlog>=26,<27",
   "typer>=0.27,<1",
+  # zoneinfo's Europe/Madrid (REData's days) wherever the OS has no time zone database.
+  "tzdata>=2025.2",
 ]
 
 [project.scripts]
