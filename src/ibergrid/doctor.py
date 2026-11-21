@@ -3,18 +3,14 @@
 ``ibergrid doctor`` runs them inside the compose network (``make smoke``) and after a deploy.
 """
 
-import hashlib
-import hmac
 import socket
 import time
-import urllib.parse
 from dataclasses import dataclass
-from datetime import UTC, datetime
+
+from pyarrow import fs
 
 from ibergrid import _http
 from ibergrid.settings import BrokerSettings, CatalogSettings, Settings, StorageSettings, base_url
-
-EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 @dataclass(frozen=True)
@@ -33,20 +29,50 @@ def run_checks(settings: Settings, timeout: float) -> list[CheckResult]:
 
 
 def check_storage(storage: StorageSettings, timeout: float) -> CheckResult:
-    """A signed ``HEAD /<bucket>``: the endpoint answers, the keys work and the bucket exists.
+    """A HeadBucket through pyarrow's S3 client: the endpoint answers, the keys work and the bucket
+    exists.
 
     RustFS also serves an anonymous ``/health/ready`` (the compose healthcheck uses it), but
     Cloudflare R2 has no equivalent, so the check that works on both is an authenticated
     HeadBucket.
     """
-    url = f"{base_url(storage.endpoint_url)}/{urllib.parse.quote(storage.bucket)}"
-    headers = sigv4_headers("HEAD", url, storage, datetime.now(UTC))
-    hints = {403: "credentials rejected", 404: f"bucket {storage.bucket!r} does not exist"}
-    return _probe("storage", "HEAD", url, timeout, headers, hints)
+    endpoint = base_url(storage.endpoint_url)
+    s3 = fs.S3FileSystem(
+        access_key=storage.access_key.get_secret_value(),
+        secret_key=storage.secret_key.get_secret_value(),
+        region=storage.region,
+        endpoint_override=endpoint,
+        force_virtual_addressing=False,
+        connect_timeout=timeout,
+        request_timeout=timeout,
+        retry_strategy=fs.AwsStandardS3RetryStrategy(max_attempts=1),
+    )
+    what = f"HeadBucket {endpoint}/{storage.bucket}"
+    started = time.monotonic()
+    try:
+        info = s3.get_file_info(storage.bucket)
+    except OSError as exc:
+        # "When getting information for bucket 'x': AWS Error ACCESS_DENIED during HeadBucket ..."
+        reason = str(exc).partition(": ")[2] or str(exc)
+        hint = "credentials rejected" if "ACCESS_DENIED" in reason else reason
+        return CheckResult("storage", False, f"{what}: {hint}")
+    elapsed = f"({round((time.monotonic() - started) * 1000)} ms)"
+    if info.type == fs.FileType.NotFound:
+        return CheckResult(
+            "storage", False, f"{what} {elapsed}: bucket {storage.bucket!r} does not exist"
+        )
+    return CheckResult("storage", True, f"{what} {elapsed}")
 
 
 def check_catalog(catalog: CatalogSettings, timeout: float) -> CheckResult:
-    return _probe("catalog", "GET", f"{base_url(catalog.url)}/health", timeout, {}, {})
+    url = f"{base_url(catalog.url)}/health"
+    started = time.monotonic()
+    try:
+        status, _ = _http.send("GET", url, timeout=timeout)
+    except _http.Unreachable as exc:
+        return CheckResult("catalog", False, str(exc))
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    return CheckResult("catalog", status == 200, f"GET {url} -> {status} ({elapsed_ms} ms)")
 
 
 def check_broker(broker: BrokerSettings, timeout: float) -> CheckResult:
@@ -61,52 +87,3 @@ def check_broker(broker: BrokerSettings, timeout: float) -> CheckResult:
     if failures:
         return CheckResult("broker", False, "TCP connect failed: " + ", ".join(failures))
     return CheckResult("broker", True, f"TCP connect to {broker.bootstrap_servers}")
-
-
-def sigv4_headers(method: str, url: str, storage: StorageSettings, now: datetime) -> dict[str, str]:
-    """AWS Signature Version 4 headers for a body-less S3 request (``url`` already encoded)."""
-    parts = urllib.parse.urlsplit(url)
-    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-    scope = f"{amz_date[:8]}/{storage.region}/s3/aws4_request"
-    # Lowercase names in sorted order, as the canonical request requires.
-    headers = {"host": parts.netloc, "x-amz-content-sha256": EMPTY_SHA256, "x-amz-date": amz_date}
-    signed = ";".join(headers)
-    canonical = "\n".join(
-        [method, parts.path or "/", parts.query]
-        + [f"{name}:{value}" for name, value in headers.items()]
-        + ["", signed, EMPTY_SHA256]
-    )
-    string_to_sign = "\n".join(
-        ["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()]
-    )
-    key = f"AWS4{storage.secret_key.get_secret_value()}".encode()
-    for part in (amz_date[:8], storage.region, "s3", "aws4_request"):
-        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
-    signature = hmac.new(key, string_to_sign.encode(), hashlib.sha256).hexdigest()
-    credential = f"{storage.access_key.get_secret_value()}/{scope}"
-    return headers | {
-        "authorization": (
-            f"AWS4-HMAC-SHA256 Credential={credential}, "
-            f"SignedHeaders={signed}, Signature={signature}"
-        )
-    }
-
-
-def _probe(
-    name: str,
-    method: str,
-    url: str,
-    timeout: float,
-    headers: dict[str, str],
-    hints: dict[int, str],
-) -> CheckResult:
-    started = time.monotonic()
-    try:
-        status, _ = _http.send(method, url, timeout=timeout, headers=headers)
-    except _http.Unreachable as exc:
-        return CheckResult(name, False, str(exc))
-    elapsed_ms = round((time.monotonic() - started) * 1000)
-    detail = f"{method} {url} -> {status} ({elapsed_ms} ms)"
-    if status in hints:
-        detail += f": {hints[status]}"
-    return CheckResult(name, status == 200, detail)
