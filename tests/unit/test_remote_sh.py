@@ -9,7 +9,8 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "deploy" / "remote.sh"
 DIGEST = "sha256:" + "a" * 64
-SECRETS = b"IBERGRID_S3_SECRET_KEY=keep-me\nLAKEKEEPER_DB_PASSWORD=keep-me-too\n"
+# Stand-in for the server's .env: the tests compare bytes, so no credential-shaped lines.
+SECRETS = b"FIRST_LINE=unchanged\nSECOND_LINE=also-unchanged\n"
 COMPOSE = "compose --env-file .env --env-file release.env -f compose.yaml -f compose.prod.yaml"
 
 
