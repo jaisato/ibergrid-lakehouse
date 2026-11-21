@@ -85,6 +85,18 @@ class RedataSettings(BaseSettings):
     max_rps: float = Field(default=1.0, gt=0, le=1)
 
 
+class OmieSettings(BaseSettings):
+    """OMIE's public file downloads (www.omie.es): no token."""
+
+    model_config = _config("IBERGRID_OMIE_")
+
+    base_url: HttpUrl = HttpUrl("https://www.omie.es")
+    # Seconds per request: a day's file (2.7 KB) took under 0.6 s on 2026-11-21.
+    timeout: float = Field(default=30.0, gt=0)
+    # The same politeness as for REData: never more than one request per second.
+    max_rps: float = Field(default=1.0, gt=0, le=1)
+
+
 class LogSettings(BaseSettings):
     """structlog output: ``json`` in containers, ``console`` for humans."""
 
@@ -109,6 +121,7 @@ class Settings(BaseModel):
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     duckdb: DuckDBSettings = Field(default_factory=DuckDBSettings)
     redata: RedataSettings = Field(default_factory=RedataSettings)
+    omie: OmieSettings = Field(default_factory=OmieSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 
 
@@ -125,6 +138,7 @@ def describe_validation_error(exc: ValidationError) -> str:
         BrokerSettings,
         DuckDBSettings,
         RedataSettings,
+        OmieSettings,
         LogSettings,
     )
     prefix = {group.__name__: group.model_config.get("env_prefix", "") for group in groups}

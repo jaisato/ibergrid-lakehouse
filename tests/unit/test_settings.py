@@ -96,11 +96,22 @@ def test_redata_defaults_are_polite(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("credentials")
+def test_omie_defaults_are_polite() -> None:
+    settings = Settings()
+
+    assert base_url(settings.omie.base_url) == "https://www.omie.es"
+    assert (settings.omie.timeout, settings.omie.max_rps) == (30.0, 1.0)
+
+
+@pytest.mark.usefixtures("credentials")
+@pytest.mark.parametrize("source", ["REDATA", "OMIE"])
 @pytest.mark.parametrize(("name", "value"), [("MAX_RPS", "2"), ("MAX_RPS", "0"), ("TIMEOUT", "0")])
-def test_redata_limits_are_enforced(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
-    monkeypatch.setenv(f"IBERGRID_REDATA_{name}", value)
+def test_source_limits_are_enforced(
+    monkeypatch: pytest.MonkeyPatch, source: str, name: str, value: str
+) -> None:
+    monkeypatch.setenv(f"IBERGRID_{source}_{name}", value)
 
     with pytest.raises(ValidationError) as caught:
         Settings()
 
-    assert describe_validation_error(caught.value).startswith(f"  IBERGRID_REDATA_{name}: ")
+    assert describe_validation_error(caught.value).startswith(f"  IBERGRID_{source}_{name}: ")

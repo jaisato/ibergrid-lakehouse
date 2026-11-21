@@ -193,6 +193,39 @@ def fixture(name: str) -> bytes:
     return (REDATA_FIXTURES / name).read_bytes()
 
 
+OMIE_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "omie"
+# The start of what OMIE answers, with 404, for a file it has not published (26 KB of HTML).
+NOT_PUBLISHED = b'<!DOCTYPE html>\n<html lang="es" dir="ltr">\n  <head>\n'
+
+
+class FakeOmie:
+    """OMIE's file downloads answered from the recorded files (``tests/fixtures/omie``); a day
+    without one gets OMIE's 404 page. ``files`` replaces or adds a day's bytes by file name."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    def __call__(self, request: Recorded) -> tuple[int, Any]:
+        path, _, query = request.path.partition("?")
+        params = dict(urllib.parse.parse_qsl(query))
+        if path != "/es/file-download" or params.get("parents") != "marginalpdbc":
+            return 404, NOT_PUBLISHED
+        name = params.get("filename", "")
+        if name in self.files:
+            return 200, self.files[name]
+        answer = OMIE_FIXTURES / name
+        return (
+            (200, answer.read_bytes())
+            if "/" not in name and answer.is_file()
+            else (404, NOT_PUBLISHED)
+        )
+
+
+def omie_file(day: str) -> bytes:
+    """The recorded file of an ISO delivery day."""
+    return (OMIE_FIXTURES / f"marginalpdbc_{day.replace('-', '')}.1").read_bytes()
+
+
 def error(kind: str, message: str, code: int) -> dict[str, Any]:
     return {"error": {"type": kind, "message": message, "code": code}}
 

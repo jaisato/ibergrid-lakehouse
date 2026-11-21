@@ -2,6 +2,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date
 from importlib.metadata import version
 from pathlib import Path
 
@@ -17,16 +18,19 @@ from ibergrid import cli
 from ibergrid.cli import app
 from ibergrid.lake import registry
 from ibergrid.lake.tables import TableSpec, ensure_table
+from ibergrid.sources.omie import ingest as omie_ingest
 from ibergrid.sources.redata import ingest as ingest_module
 
 from .conftest import (
     FakeIcebergRest,
     FakeLakekeeper,
+    FakeOmie,
     FakeRedata,
     LocalServer,
     Responder,
     error,
     fixture,
+    omie_file,
 )
 
 Serve = Callable[[Responder], LocalServer]
@@ -185,11 +189,19 @@ def test_lake_init_creates_the_bronze_tables(
     first = runner.invoke(app, ["lake", "init"])
     second = runner.invoke(app, ["lake", "init"])
 
-    assert first.stdout == "lake: bronze.redata_observations created\n", first.output
-    assert second.stdout == "lake: bronze.redata_observations unchanged\n"
+    assert first.stdout == (
+        "lake: bronze.redata_observations created\nlake: bronze.omie_day_ahead_prices created\n"
+    ), first.output
+    assert second.stdout == (
+        "lake: bronze.redata_observations unchanged\nlake: bronze.omie_day_ahead_prices unchanged\n"
+    )
     table = catalog.load_table(("bronze", "redata_observations"))
     assert [f.name for f in table.spec().fields] == ["dataset", "ts_utc_month"]
     assert [str(f.transform) for f in table.spec().fields] == ["identity", "month"]
+    omie = catalog.load_table(("bronze", "omie_day_ahead_prices"))
+    assert [(f.name, str(f.transform)) for f in omie.spec().fields] == [
+        ("delivery_date_month", "month")
+    ]
 
 
 def test_lake_init_creates_the_registry_tables_once(lake: SqlCatalog) -> None:
@@ -449,3 +461,88 @@ def test_ingest_redata_names_five_incomplete_days_and_counts_the_rest(
         "; incomplete days: 2026-11-19 0/24, 2026-11-20 0/24, 2026-11-21 0/24, 2026-11-22 0/24, "
         "2026-11-23 0/24 and 6 more"
     )
+
+
+@pytest.fixture
+def omie_stack(
+    serve: Serve,
+    catalog: SqlCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    credentials: None,
+) -> FakeOmie:
+    """``ingest omie`` against the recorded files, a real local catalog and a local bucket, on
+    2026-11-21 (Madrid), the day the files were recorded."""
+    fake = FakeOmie()
+    monkeypatch.setenv("IBERGRID_OMIE_BASE_URL", serve(fake).url)
+    ensure_table(catalog, registry.OMIE_DAY_AHEAD_PRICES)
+    monkeypatch.setattr(omie_ingest, "rest_catalog", lambda _settings: catalog)
+    landing = fs.SubTreeFileSystem(str(tmp_path), fs.LocalFileSystem())
+    monkeypatch.setattr(omie_ingest, "s3_filesystem", lambda *_args, **_kw: landing)
+    monkeypatch.setattr(omie_ingest, "madrid_today", lambda: date(2026, 11, 21))
+    return fake
+
+
+@pytest.mark.usefixtures("omie_stack")
+def test_ingest_omie_prints_one_line_per_chunk() -> None:
+    result = runner.invoke(app, ["ingest", "omie", "--start", "2025-09-30", "--end", "2025-10-01"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert re.fullmatch(
+        r"omie: 2025-09-30\.\.2025-09-30: 1 file\(s\) \(v1 1\), 24 rows, snapshot \d+", lines[0]
+    )
+    assert re.fullmatch(
+        r"omie: 2025-10-01\.\.2025-10-01: 1 file\(s\) \(v2 1\), 96 rows, snapshot \d+", lines[1]
+    )
+    assert lines[2:] == ["omie: 2 chunk(s) published"]
+
+
+def test_ingest_omie_stops_at_the_first_day_not_published_yet(
+    omie_stack: FakeOmie, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omie_ingest, "madrid_today", lambda: date(2026, 11, 17))
+    args = ["ingest", "omie", "--start", "2026-11-18", "--end", "2026-12-31"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("omie: 2026-11-18..2026-11-18: 1 file(s) (v2 1), 96 rows, snapshot ")
+    assert lines[0].endswith("; not published yet from 2026-11-19")
+    assert lines[1:] == ["omie: 1 chunk(s) published; not published yet from 2026-11-19"]
+
+
+@pytest.mark.usefixtures("omie_stack")
+def test_ingest_omie_says_when_nothing_is_published_yet() -> None:
+    result = runner.invoke(app, ["ingest", "omie", "--start", "2026-11-22", "--end", "2026-11-23"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "omie: 2026-11-22..2026-11-23: nothing published yet",
+        "omie: 0 chunk(s) published; not published yet from 2026-11-22",
+    ]
+
+
+def test_ingest_omie_names_prices_outside_the_limits(omie_stack: FakeOmie) -> None:
+    omie_stack.files["marginalpdbc_20250930.1"] = omie_file("2025-09-30").replace(
+        b"2025;09;30;1;", b"2025;09;30;1;9999"
+    )
+
+    result = runner.invoke(app, ["ingest", "omie", "--start", "2025-09-30", "--end", "2025-09-30"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0].endswith(
+        "; prices outside -500..4000 EUR/MWh: price_pt_eur_mwh 1"
+    )
+
+
+@pytest.mark.usefixtures("omie_stack")
+def test_ingest_omie_exits_1_at_a_missing_past_day() -> None:
+    result = runner.invoke(app, ["ingest", "omie", "--start", "2025-09-30", "--end", "2025-10-02"])
+
+    assert result.exit_code == 1
+    assert result.stdout.startswith("omie: 2025-09-30..2025-09-30: ")  # published, and kept
+    assert "chunk(s) published" not in result.stdout
+    error_line = result.stderr.splitlines()[-1]
+    assert error_line.startswith("error: OMIE has no marginalpdbc_20251002.1: delivery day")
